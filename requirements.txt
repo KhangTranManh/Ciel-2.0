@@ -1,0 +1,10 @@
+langchain>=0.1.0
+langchain-community
+langchain-core>=0.1.10
+langchain-ollama
+langgraph
+python-dotenv
+chromadb
+sentence-transformers
+colorama
+psutil
