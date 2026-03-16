@@ -21,6 +21,7 @@ class AgentLoop:
 
     def run_step(self, user_input: str) -> str:
         raw = self.core.chat(user_input)
+        print("[DEBUG] Raw LLM Output:", raw)  # Debugging raw output
         
         # Robust regex for thought and response extraction [cite: 8, 10]
         thought = re.search(r'<THOUGHT>(.*?)</THOUGHT>', raw, re.S | re.I)

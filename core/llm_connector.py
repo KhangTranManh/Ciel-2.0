@@ -34,16 +34,26 @@ class CielCore:
         ])
 
     def chat(self, user_input: str) -> str:
-        chain = self.prompt | self.llm
-        response = chain.invoke({
-            "chat_history": self.chat_history.messages,
-            "input": user_input
-        }).content
-        
-        self.chat_history.add_user_message(user_input)
-        self.chat_history.add_ai_message(response)
-        
-        if len(self.chat_history.messages) > self.max_history:
-            self.chat_history.messages = self.chat_history.messages[-self.max_history:]
+        try:
+            # Sử dụng invoke trực tiếp với cấu trúc tường minh
+            chain = self.prompt | self.llm
+            response = chain.invoke({
+                "chat_history": self.chat_history.messages,
+                "input": user_input
+            })
             
-        return response
+            raw_content = response.content
+            
+            # Kiểm tra nếu AI trả về rỗng
+            if not raw_content:
+                return "<THOUGHT>Lỗi: AI trả về rỗng.</THOUGHT><RESPONSE>Master, tôi đang gặp trục trặc trong việc kết nối với lõi xử lý Gemini. Ngài hãy kiểm tra lại Internet hoặc API Key.</RESPONSE>"
+
+            # Cập nhật lịch sử hội thoại
+            self.chat_history.add_user_message(user_input)
+            self.chat_history.add_ai_message(raw_content)
+            
+            return raw_content
+            
+        except Exception as e:
+            return f"<THOUGHT>Lỗi hệ thống: {str(e)}</THOUGHT><RESPONSE>Cảnh báo: Lõi Gemini bị treo. Lỗi: {str(e)}</RESPONSE>"
+            
