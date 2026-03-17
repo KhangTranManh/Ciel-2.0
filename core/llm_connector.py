@@ -1,59 +1,81 @@
 import os
+import json
+from pathlib import Path
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
+from .memory_manager import MemoryManager
 
 load_dotenv()
 
 class CielCore:
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("Missing GEMINI_API_KEY in .env")
-
-        self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-            google_api_key=api_key,
-            temperature=float(os.getenv("TEMPERATURE", "0.1")),
-            max_output_tokens=int(os.getenv("MAX_TOKENS", "2048")),
+        self.model_name = os.getenv("LOCAL_MODEL", "qwen2.5:7b-instruct")
+        
+        self.llm = ChatOllama(
+            model=self.model_name,
+            temperature=0.1,
+            num_ctx=4096 
         )
         
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
-        self.prompt = self._setup_prompt()
+        self.base_dir = Path(__file__).resolve().parent.parent
+        self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
+        
+        self.memory_manager = MemoryManager()
+        self.prompt_template = self._build_prompt()
+        self._load_chat_memory()
 
-    def _setup_prompt(self):
-        path = "persona/system_prompt.txt"
-        instructions = open(path, "r", encoding="utf-8").read() if os.path.exists(path) else "You are Ciel."
+    def _build_prompt(self):
+        prompt_path = "persona/system_prompt.txt"
+        sys_msg = open(prompt_path, "r", encoding="utf-8").read() if os.path.exists(prompt_path) else "You are Ciel."
+        
+        # Inject the Fact Vault directly into the system prompt
+        sys_msg += "\n\n{fact_vault}"
         
         return ChatPromptTemplate.from_messages([
-            ("system", instructions),
+            ("system", sys_msg),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}")
         ])
 
+    def _load_chat_memory(self):
+        if self.chat_memory_file.exists():
+            try:
+                data = json.loads(self.chat_memory_file.read_text(encoding="utf-8"))
+                for msg in data:
+                    if msg["type"] == "human": self.chat_history.add_user_message(msg["content"])
+                    else: self.chat_history.add_ai_message(msg["content"])
+            except: pass
+
+    def _save_chat_memory(self):
+        self.chat_memory_file.parent.mkdir(parents=True, exist_ok=True)
+        data = [{"type": m.type, "content": m.content} for m in self.chat_history.messages]
+        self.chat_memory_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def chat(self, user_input: str) -> str:
         try:
-            # Sử dụng invoke trực tiếp với cấu trúc tường minh
-            chain = self.prompt | self.llm
+            # Retrieve facts dynamically before every response
+            facts_context = self.memory_manager.get_all_facts_context()
+            
+            chain = self.prompt_template | self.llm
             response = chain.invoke({
+                "fact_vault": facts_context,
                 "chat_history": self.chat_history.messages,
                 "input": user_input
             })
             
-            raw_content = response.content
-            
-            # Kiểm tra nếu AI trả về rỗng
-            if not raw_content:
-                return "<THOUGHT>Lỗi: AI trả về rỗng.</THOUGHT><RESPONSE>Master, tôi đang gặp trục trặc trong việc kết nối với lõi xử lý Gemini. Ngài hãy kiểm tra lại Internet hoặc API Key.</RESPONSE>"
+            if not response.content: return ""
 
-            # Cập nhật lịch sử hội thoại
             self.chat_history.add_user_message(user_input)
-            self.chat_history.add_ai_message(raw_content)
+            self.chat_history.add_ai_message(response.content)
             
-            return raw_content
+            if len(self.chat_history.messages) > self.max_history:
+                self.chat_history.messages = self.chat_history.messages[-self.max_history:]
             
+            self._save_chat_memory()
+            return response.content
         except Exception as e:
-            return f"<THOUGHT>Lỗi hệ thống: {str(e)}</THOUGHT><RESPONSE>Cảnh báo: Lõi Gemini bị treo. Lỗi: {str(e)}</RESPONSE>"
-            
+            return f"<THOUGHT>Local API Error: {str(e)}</THOUGHT><RESPONSE>Master, local core execution failed: {str(e)}</RESPONSE>"

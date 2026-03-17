@@ -1,28 +1,25 @@
-from core.agent_loop import AgentLoop
-from colorama import Fore, Style
 import sys
+from colorama import Fore, Style
+from core.agent_loop import AgentLoop
 
 def main():
-    print(Fore.CYAN + "Ciel [System]: Đang khởi động Agent Loop..." + Style.RESET_ALL)
-    
+    print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
     try:
-        ciel_loop = AgentLoop()
-        print(Fore.BLUE + "Ciel: Nền tảng lõi đã ổn định. Ngài cần tôi làm gì, Master?" + Style.RESET_ALL)
+        ciel = AgentLoop()
+        print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
     except Exception as e:
-        print(Fore.RED + f"Ciel [Fatal Error]: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"Ciel [Fatal]: {e}" + Style.RESET_ALL)
         sys.exit(1)
 
     while True:
         try:
             user_input = input(Fore.GREEN + "\nMaster: " + Style.RESET_ALL)
-            if user_input.lower() in ['exit', 'quit', 'tắt']:
-                print(Fore.BLUE + "Ciel: Đóng băng lõi an toàn." + Style.RESET_ALL)
+            if user_input.lower() in ['exit', 'quit']:
+                print(Fore.BLUE + "Ciel: Entering sleep mode." + Style.RESET_ALL)
                 break
             
-            # Gửi qua Agent Loop thay vì LLM Connector
-            output = ciel_loop.run_step(user_input)
+            output = ciel.run_step(user_input)
             print(Fore.BLUE + f"Ciel: {output}" + Style.RESET_ALL)
-            
         except KeyboardInterrupt:
             break
 
