@@ -20,8 +20,20 @@ class ToolManager:
             print(Fore.RED + f"[Ciel Fatal] Failed to load internal tools: {e}" + Style.RESET_ALL)
 
     def _load_external_tools(self):
-        # No external third-party tools are configured.
-        print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
+        try:
+            # Load Gmail toolkit tools
+            from skills.external.gmail_ops import get_gmail_tools
+            gmail_tools = get_gmail_tools()
+            
+            if gmail_tools:
+                self.tools.extend(gmail_tools)
+                print("[Ciel System] Gmail armory fully loaded and operational.")
+            else:
+                print(Fore.CYAN + "[Ciel System] No external tools loaded." + Style.RESET_ALL)
+                
+        except Exception as e:
+            print(f"[Ciel Warning] External tool corruption detected. Error: {e}")
+            print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
@@ -32,8 +44,10 @@ class ToolManager:
         """Executes a tool by its name and returns the result."""
         if name in self.tool_map:
             try:
-                self.tool_map[name].invoke(args)
-                return f"Successfully executed tool: {name}."
+                result = self.tool_map[name].invoke(args)
+                if result is None:
+                    return f"Successfully executed tool: {name}."
+                return result if isinstance(result, str) else str(result)
             except Exception as e:
                 return f"Failed to execute {name}. Error: {str(e)}"
         return f"Warning: Tool '{name}' does not exist or was quarantined."

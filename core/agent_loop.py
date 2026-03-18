@@ -33,13 +33,14 @@ class AgentLoop:
                 
                 # Delegate to ToolManager
                 exec_result = self.core.tool_manager.execute_tool(tool_name, tool_args)
+                exec_result_text = exec_result if isinstance(exec_result, str) else str(exec_result)
                 
                 self.core.chat_history.add_user_message(user_input)
-                self.core.chat_history.add_ai_message(exec_result)
+                self.core.chat_history.add_ai_message(exec_result_text)
                 self.core._save_chat_memory()
                 
                 thought = f"I am executing the {tool_name} tool locally to protect Master's data."
-                response = f"Master, I have securely executed the operation: {tool_used_log} in the local vault."
+                response = f"Master, local tool execution complete: {tool_used_log}\n{exec_result_text}"
                 
                 self._log_interaction(user_input, thought, response, tool_used_log)
                 return response

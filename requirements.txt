@@ -1,12 +1,24 @@
+# --- Core Intelligence & Framework ---
 langchain>=0.1.0
 langchain-community
 langchain-core>=0.1.10
 langchain-ollama
 langchain-google-genai
 langgraph
-requests
-python-dotenv
+
+# --- Memory & Vector Database ---
 chromadb
 sentence-transformers
+
+# --- Google Cloud & External APIs ---
+langchain-google-community
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+beautifulsoup4
+
+# --- System & Utilities ---
+requests
+python-dotenv
 colorama
 psutil
