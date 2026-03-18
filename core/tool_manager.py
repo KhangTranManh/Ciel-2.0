@@ -20,15 +20,8 @@ class ToolManager:
             print(Fore.RED + f"[Ciel Fatal] Failed to load internal tools: {e}" + Style.RESET_ALL)
 
     def _load_external_tools(self):
-        try:
-            # Import volatile third-party integrations
-            from skills.external.zalo_messenger import send_zalo_message
-            
-            self.tools.extend([send_zalo_message])
-            print(Fore.GREEN + "[Ciel System] External third-party tools loaded." + Style.RESET_ALL)
-        except Exception as e:
-            # If a 3rd party tool breaks, it won't crash the whole bot.
-            print(Fore.YELLOW + f"[Ciel Warning] External tool corruption detected. Quarantining. Error: {e}" + Style.RESET_ALL)
+        # No external third-party tools are configured.
+        print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
