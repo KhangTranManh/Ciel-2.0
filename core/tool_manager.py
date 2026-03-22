@@ -4,6 +4,7 @@ class ToolManager:
     def __init__(self):
         self.tools = []
         self.tool_map = {}
+        self.system_prompts = [] # NEW: We now collect prompts from the tools
         
         # Load zones independently to prevent cross-corruption
         self._load_internal_tools()
@@ -21,12 +22,17 @@ class ToolManager:
 
     def _load_external_tools(self):
         try:
-            # Load Gmail toolkit tools
             from skills.external.gmail_ops import get_gmail_tools
-            gmail_tools = get_gmail_tools()
+            gmail_data = get_gmail_tools() # This now returns a dictionary!
+            
+            # Extract tools and prompt
+            gmail_tools = gmail_data.get("tools", [])
+            gmail_prompt = gmail_data.get("prompt", "")
             
             if gmail_tools:
                 self.tools.extend(gmail_tools)
+                if gmail_prompt:
+                    self.system_prompts.append(gmail_prompt) # Add the manual to our collection
                 print("[Ciel System] Gmail armory fully loaded and operational.")
             else:
                 print(Fore.CYAN + "[Ciel System] No external tools loaded." + Style.RESET_ALL)
@@ -39,6 +45,15 @@ class ToolManager:
         """Returns the list of validated tools to bind to the LLM."""
         self.tool_map = {tool.name: tool for tool in self.tools}
         return self.tools
+
+    def get_dynamic_prompt(self) -> str:
+        """NEW: Stitches all tool manuals together into one string."""
+        if not self.system_prompts:
+            return ""
+        
+        # Join all the prompts we collected with a nice divider
+        combined_prompts = "\n\n--- ACTIVE WEAPON MANUALS ---\n\n".join(self.system_prompts)
+        return f"\n\n{combined_prompts}"
 
     def execute_tool(self, name: str, args: dict) -> str:
         """Executes a tool by its name and returns the result."""

@@ -22,48 +22,60 @@ class AgentLoop:
             f.write(f"[RESPONSE]: {response.strip()}\n{'-'*50}\n")
 
     def run_step(self, user_input: str) -> str:
+        # Add the user's initial command to history
+        self.core.chat_history.add_user_message(user_input)
+        
+        # Initial core evaluation
         ai_msg = self.core.chat_with_tools(user_input)
         
-        # 1. Handle Tool Calls
-        if ai_msg.tool_calls:
+        # 1. Handle Tool Calls (The Reflection Loop)
+        # 1. Handle Tool Calls (The Reflection Loop)
+        if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
             for tool_call in ai_msg.tool_calls:
                 tool_name = tool_call["name"].lower()
                 tool_args = tool_call["args"]
                 tool_used_log = f"{tool_name}({tool_args})"
                 
-                # Delegate to ToolManager
+                # Execute the weapon locally
                 exec_result = self.core.tool_manager.execute_tool(tool_name, tool_args)
                 exec_result_text = exec_result if isinstance(exec_result, str) else str(exec_result)
                 
-                self.core.chat_history.add_user_message(user_input)
-                self.core.chat_history.add_ai_message(exec_result_text)
-                self.core._save_chat_memory()
+                # Only log the action to history, DO NOT dump raw JSON into history to prevent memory pollution
+                self.core.chat_history.add_ai_message(f"Action: {tool_used_log}")
                 
-                thought = f"I am executing the {tool_name} tool locally to protect Master's data."
-                response = f"Master, local tool execution complete: {tool_used_log}\n{exec_result_text}"
-                
-                self._log_interaction(user_input, thought, response, tool_used_log)
-                return response
+                # Log the background execution internally
+                thought = f"I executed {tool_name} to gather intelligence for the Master."
+                self._log_interaction(user_input, thought, "Tool executed silently.", tool_used_log)
 
-        # 2. Handle Normal Chat
-        raw = ai_msg.content
+                # FORCE THE CORE TO ANALYZE ONLY THE NEW DATA (DYNAMIC INJECTION)
+                reflection_prompt = (
+                    f"I just executed the tool '{tool_name}'. Here is the RAW OUTPUT:\n"
+                    f"-----------------\n{exec_result_text}\n-----------------\n"
+                    f"Analyze EXACTLY this new data and respond to my original command: '{user_input}'. "
+                    f"Do NOT use old emails from chat history. Apply your strict formatting rules."
+                )
+                
+                # Call the LLM again with the tightly packaged raw data
+                ai_msg = self.core.chat_with_tools(reflection_prompt)
+                
+        # 2. Handle Final Chat Formatting (Both normal chat AND post-tool analysis)
+        raw = getattr(ai_msg, 'content', str(ai_msg))
         
         # --- GEMINI FALLBACK NORMALIZATION SHIELD ---
-        # Forces Gemini's messy list format into a pure string
         if isinstance(raw, list):
-            raw = "".join([block["text"] for block in raw if isinstance(block, dict) and "text" in block])
+            raw = "".join([block.get("text", "") for block in raw if isinstance(block, dict)])
         elif not isinstance(raw, str):
             raw = str(raw)
         # --------------------------------------------
 
-        self.core.chat_history.add_user_message(user_input)
         self.core.chat_history.add_ai_message(raw)
         self.core._save_chat_memory()
 
+        # Extract the structured thought and response
         thought_match = re.search(r'<THOUGHT>(.*?)</THOUGHT>', raw, re.S | re.I)
         response_match = re.search(r'<RESPONSE>(.*?)(?:</RESPONSE>|$)', raw, re.S | re.I)
         
-        thought_text = thought_match.group(1) if thought_match else "EVALUATING."
+        thought_text = thought_match.group(1).strip() if thought_match else "EVALUATING."
         response_text = response_match.group(1).strip() if response_match else re.sub(r'<.*?>', '', raw, flags=re.S).strip()
 
         self._log_interaction(user_input, thought_text, response_text)

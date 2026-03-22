@@ -1,6 +1,14 @@
 import sys
+import langchain
+from langchain_core.globals import set_verbose, set_debug
 from colorama import Fore, Style
 from core.agent_loop import AgentLoop
+
+langchain.debug = False
+langchain.verbose = False
+set_debug(False)
+set_verbose(False)
+
 
 def main():
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
