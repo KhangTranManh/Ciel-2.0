@@ -11,14 +11,34 @@ class ToolManager:
         self._load_external_tools()
 
     def _load_internal_tools(self):
+        # 1. NẠP CÁC CÔNG CỤ BỘ NHỚ CŨ (Nếu ngài vẫn đang dùng)
         try:
-            # Import safe, core local operations
             from skills.internal.memory_ops import save_fact, delete_fact
-            
             self.tools.extend([save_fact, delete_fact])
-            print(Fore.GREEN + "[Ciel System] Internal tools loaded safely." + Style.RESET_ALL)
+            print(Fore.GREEN + "[Ciel System] Internal memory tools loaded safely." + Style.RESET_ALL)
         except Exception as e:
-            print(Fore.RED + f"[Ciel Fatal] Failed to load internal tools: {e}" + Style.RESET_ALL)
+            pass # Bỏ qua nếu ngài đã xóa file memory_ops
+
+        # ==========================================
+        # 2. NẠP KHO VŨ KHÍ HỆ THỐNG (QUARANTINE ZONE)
+        # ==========================================
+        try:
+            from skills.internal.system_ops import get_system_tools
+            sys_data = get_system_tools()
+            
+            sys_tools = sys_data.get("tools", [])
+            sys_prompt = sys_data.get("prompt", "")
+            
+            if sys_tools:
+                self.tools.extend(sys_tools)
+                if sys_prompt:
+                    self.system_prompts.append(sys_prompt) # Nạp chỉ thị Paranoia vào não Ciel
+                print(Fore.GREEN + "[Ciel System] Local System Armory (Quarantine Zone) locked and loaded." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No System tools loaded." + Style.RESET_ALL)
+                
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Fatal] Failed to load System tools: {e}" + Style.RESET_ALL)
 
     def _load_external_tools(self):
         try:
