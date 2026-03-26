@@ -59,6 +59,23 @@ class ToolManager:
                 
         except Exception as e:
             print(f"[Ciel Warning] External tool corruption detected. Error: {e}")
+        try:
+            from skills.external.trading_ops import get_trading_tools
+            trading_data = get_trading_tools()
+            
+            trading_tools = trading_data.get("tools", [])
+            trading_prompt = trading_data.get("prompt", "")
+            
+            if trading_tools:
+                self.tools.extend(trading_tools)
+                if trading_prompt:
+                    self.system_prompts.append(trading_prompt)
+                print(Fore.GREEN + "[Ciel System] Trading armory fully loaded and operational." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No Trading tools loaded." + Style.RESET_ALL)
+                
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Warning] Trading tool corruption detected. Error: {e}" + Style.RESET_ALL)
             print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
 
     def get_tools(self) -> list:
