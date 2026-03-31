@@ -40,6 +40,27 @@ class ToolManager:
         except Exception as e:
             print(Fore.RED + f"[Ciel Fatal] Failed to load System tools: {e}" + Style.RESET_ALL)
 
+        # ==========================================
+        # 3. NẠP KHO VŨ KHÍ OS DIRECT CONTROL
+        # ==========================================
+        try:
+            from skills.internal.os_ops import get_os_tools
+            os_data = get_os_tools()
+
+            os_tools = os_data.get("tools", [])
+            os_prompt = os_data.get("prompt", "")
+
+            if os_tools:
+                self.tools.extend(os_tools)
+                if os_prompt:
+                    self.system_prompts.append(os_prompt)
+                print(Fore.GREEN + "[Ciel System] OS Direct Control Armory loaded." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No OS Direct Control tools loaded." + Style.RESET_ALL)
+
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Warning] Failed to load OS Direct Control tools: {e}" + Style.RESET_ALL)
+
     def _load_external_tools(self):
         try:
             from skills.external.gmail_ops import get_gmail_tools
@@ -53,7 +74,7 @@ class ToolManager:
                 self.tools.extend(gmail_tools)
                 if gmail_prompt:
                     self.system_prompts.append(gmail_prompt) # Add the manual to our collection
-                print("[Ciel System] Gmail armory fully loaded and operational.")
+                print(Fore.GREEN + "[Ciel System] Gmail armory fully loaded and operational." + Style.RESET_ALL)
             else:
                 print(Fore.CYAN + "[Ciel System] No external tools loaded." + Style.RESET_ALL)
                 

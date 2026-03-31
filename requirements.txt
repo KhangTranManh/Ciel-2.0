@@ -24,3 +24,4 @@ requests
 python-dotenv
 colorama
 psutil
+pillow

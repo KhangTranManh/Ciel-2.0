@@ -16,12 +16,16 @@ class CielCore:
         self.tool_manager = ToolManager()
         tools = self.tool_manager.get_tools()
 
-        # 1. Initialize Local Core (Primary)
-        self.local_model_name = os.getenv("LOCAL_MODEL", "qwen2.5:7b-instruct")
-        self.local_llm = ChatOllama(
-            model=self.local_model_name,
-            temperature=0.1,
-            num_ctx=4096 
+        # 1. Khởi tạo Não bộ Kép (Router & Coder)
+        self.router_model_name = os.getenv("LOCAL_MODEL", "hermes3:8b")
+        self.coder_model_name = os.getenv("CODER_MODEL", "qwen2.5-coder:7b")
+
+        self.router_llm = ChatOllama(
+            model=self.router_model_name, temperature=0.01, num_ctx=8192
+        ).bind_tools(tools)
+        
+        self.coder_llm = ChatOllama(
+            model=self.coder_model_name, temperature=0.01, num_ctx=8192
         ).bind_tools(tools)
         
         # 2. Initialize Cloud Core (Fallback)
@@ -32,12 +36,6 @@ class CielCore:
                 model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
                 google_api_key=google_api_key,
                 temperature=0.1,
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
             ).bind_tools(tools)
         
         self.chat_history = ChatMessageHistory()
@@ -48,6 +46,10 @@ class CielCore:
         self.memory_manager = MemoryManager()
         self.prompt_template = self._build_prompt()
         self._load_chat_memory()
+
+    def _trim_history(self):
+        if len(self.chat_history.messages) > self.max_history:
+            self.chat_history.messages = self.chat_history.messages[-self.max_history:]
 
     def _build_prompt(self):
         persona_dir = self.base_dir / "persona"
@@ -61,8 +63,13 @@ class CielCore:
         directives = load_fragment("directives.txt")
         format_rules = load_fragment("format.txt")
         
-        # 2. Stitch them together logically
-        sys_msg = f"{identity}\n\n{directives}\n\n{format_rules}\n\nCURRENT VAULT FACTS:\n{{fact_vault}}"
+        # ==========================================================
+        # BƯỚC VÁ LỖI: Lấy toàn bộ Hướng dẫn sử dụng Tool từ ToolManager
+        # ==========================================================
+        tool_manuals = self.tool_manager.get_dynamic_prompt()
+        
+        # 2. Khâu tất cả lại với nhau
+        sys_msg = f"{identity}\n\n{directives}\n\n{format_rules}\n{tool_manuals}\n\nCURRENT VAULT FACTS:\n{{fact_vault}}"
         
         return ChatPromptTemplate.from_messages([
             ("system", sys_msg),
@@ -74,36 +81,47 @@ class CielCore:
         if self.chat_memory_file.exists():
             try:
                 data = json.loads(self.chat_memory_file.read_text(encoding="utf-8"))
+                # Lọc lịch sử độc (refusal pattern) để tránh lặp lại hành vi sai
+                toxic_markers = [
+                    "Thư viện CIEL không cung cấp",
+                    "I do not have the capability",
+                    "As an AI"
+                ]
                 for msg in data:
-                    if msg["type"] == "human": self.chat_history.add_user_message(msg["content"])
-                    else: self.chat_history.add_ai_message(msg["content"])
+                    content = msg.get("content", "")
+                    if any(marker in content for marker in toxic_markers):
+                        continue
+                    if msg.get("type") == "human":
+                        self.chat_history.add_user_message(content)
+                    else:
+                        self.chat_history.add_ai_message(content)
+                self._trim_history()
             except: pass
 
     def _save_chat_memory(self):
         self.chat_memory_file.parent.mkdir(parents=True, exist_ok=True)
+        self._trim_history()
         data = [{"type": m.type, "content": m.content} for m in self.chat_history.messages]
         self.chat_memory_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def chat_with_tools(self, user_input: str):
+    def chat_with_tools(self, user_input: str, use_coder: bool = False):
         facts_context = self.memory_manager.get_all_facts_context()
-        
         inputs = {
             "fact_vault": facts_context,
             "chat_history": self.chat_history.messages,
             "input": user_input
         }
         
-        # ATTEMPT 1: Execute Local Core
         try:
-            chain = self.prompt_template | self.local_llm
+            # Chuyển đổi linh hoạt giữa 2 bộ não tùy theo lệnh
+            active_llm = self.coder_llm if use_coder else self.router_llm
+            chain = self.prompt_template | active_llm
             return chain.invoke(inputs)
             
         except Exception as local_error:
-            # ATTEMPT 2: Fallback to Cloud Core
             if self.cloud_llm:
-                print(f"\n[CIEL SYSTEM WARNING]: Local core unreachable ({local_error}). Rerouting through Gemini Cloud...")
+                print(f"\n[CIEL SYSTEM WARNING]: Local core unreachable. Rerouting to Gemini...")
                 chain = self.prompt_template | self.cloud_llm
                 return chain.invoke(inputs)
             else:
-                # If both fail
-                raise RuntimeError(f"Local core failed and GEMINI_API_KEY is missing. I cannot process the request, Master.")
+                raise RuntimeError("Local core failed and GEMINI_API_KEY is missing.")
