@@ -2,8 +2,7 @@ import os
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
-from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlockThreshold
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 from .memory_manager import MemoryManager
@@ -16,27 +15,20 @@ class CielCore:
         self.tool_manager = ToolManager()
         tools = self.tool_manager.get_tools()
 
-        # 1. Khởi tạo Não bộ Kép (Router & Coder)
-        self.router_model_name = os.getenv("LOCAL_MODEL", "hermes3:8b")
-        self.coder_model_name = os.getenv("CODER_MODEL", "qwen2.5-coder:7b")
-
-        self.router_llm = ChatOllama(
-            model=self.router_model_name, temperature=0.01, num_ctx=8192
-        ).bind_tools(tools)
-        
-        self.coder_llm = ChatOllama(
-            model=self.coder_model_name, temperature=0.01, num_ctx=8192
-        ).bind_tools(tools)
-        
-        # 2. Initialize Cloud Core (Fallback)
         google_api_key = os.getenv("GEMINI_API_KEY")
+        if not google_api_key:
+            raise RuntimeError("GEMINI_API_KEY is required in .env")
+
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+        self.router_llm = ChatGoogleGenerativeAI(
+            model=gemini_model,
+            google_api_key=google_api_key,
+            temperature=0.1,
+        ).bind_tools(tools)
+
+        self.coder_llm = self.router_llm
         self.cloud_llm = None
-        if google_api_key:
-            self.cloud_llm = ChatGoogleGenerativeAI(
-                model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-                google_api_key=google_api_key,
-                temperature=0.1,
-            ).bind_tools(tools)
         
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
@@ -85,7 +77,15 @@ class CielCore:
                 toxic_markers = [
                     "Thư viện CIEL không cung cấp",
                     "I do not have the capability",
-                    "As an AI"
+                    "As an AI",
+                    "I have used the tool",
+                    "I've used the tool",
+                    "I have searched",
+                    "echo I have used",
+                    "echo Show me",
+                    "Action: search_gmail({'count'",
+                    "Action: execute_shell_command({'command': 'echo",
+                    "label:new",
                 ]
                 for msg in data:
                     content = msg.get("content", "")
@@ -112,16 +112,6 @@ class CielCore:
             "input": user_input
         }
         
-        try:
-            # Chuyển đổi linh hoạt giữa 2 bộ não tùy theo lệnh
-            active_llm = self.coder_llm if use_coder else self.router_llm
-            chain = self.prompt_template | active_llm
-            return chain.invoke(inputs)
-            
-        except Exception as local_error:
-            if self.cloud_llm:
-                print(f"\n[CIEL SYSTEM WARNING]: Local core unreachable. Rerouting to Gemini...")
-                chain = self.prompt_template | self.cloud_llm
-                return chain.invoke(inputs)
-            else:
-                raise RuntimeError("Local core failed and GEMINI_API_KEY is missing.")
+        active_llm = self.coder_llm if use_coder else self.router_llm
+        chain = self.prompt_template | active_llm
+        return chain.invoke(inputs)

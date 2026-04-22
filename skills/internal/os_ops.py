@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from langchain_core.tools import StructuredTool
@@ -33,6 +34,68 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 SCREENSHOT_DIR = BASE_DIR / "ciel_workspace" / "screenshots"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+SAFE_COMMANDS = {
+    "echo", "dir", "type", "whoami", "hostname", "ver", "ipconfig",
+    "ping", "systeminfo", "tasklist", "where", "cd", "cls"
+}
+
+BLOCKED_COMMAND_PATTERNS = [
+    r"\bformat\b",
+    r"\bdel\b",
+    r"\berase\b",
+    r"\brmdir\b",
+    r"\bshutdown\b",
+    r"\brestart\b",
+    r"\bmkfs\b",
+    r"\brm\s+-rf\b",
+    r"system32",
+]
+
+BLOCKED_META_CHARS = ["&&", "||", "|", ">", "<", ";", "`"]
+
+
+def _make_result(success: bool, data=None, code: str = None, message: str = None, tool_name: str = "") -> dict:
+    return {
+        "success": success,
+        "data": data,
+        "error": None if success else {
+            "code": code or "OS_OPS_ERROR",
+            "message": message or "OS operation failed."
+        },
+        "meta": {
+            "tool_name": tool_name
+        }
+    }
+
+
+def _extract_base_command(command: str) -> str:
+    parts = command.strip().split(maxsplit=1)
+    if not parts:
+        return ""
+    return parts[0].lower()
+
+
+def _validate_shell_command(command: str):
+    if not command or not isinstance(command, str):
+        return "INVALID_COMMAND", "Lệnh shell không hợp lệ hoặc đang trống."
+
+    normalized = command.strip().lower()
+    if any(token in normalized for token in BLOCKED_META_CHARS):
+        return "UNSAFE_OPERATOR", "Lệnh bị chặn vì chứa toán tử shell nguy hiểm (&&, ||, |, >, <, ;, `)."
+
+    for pattern in BLOCKED_COMMAND_PATTERNS:
+        if re.search(pattern, normalized):
+            return "BLOCKED_COMMAND", f"Lệnh '{command}' bị chặn vì khớp mẫu nguy hiểm: {pattern}"
+
+    base_command = _extract_base_command(command)
+    if base_command not in SAFE_COMMANDS:
+        return "NOT_ALLOWLISTED", (
+            f"Lệnh gốc '{base_command}' chưa nằm trong allowlist an toàn. "
+            f"Các lệnh được phép: {', '.join(sorted(SAFE_COMMANDS))}."
+        )
+
+    return None
+
 def get_os_tools() -> dict:
     try:
         tools = []
@@ -40,19 +103,38 @@ def get_os_tools() -> dict:
         # 1. Chạy lệnh Shell (Quyền lực tối thượng)
         def execute_shell_command(command: str) -> str:
             try:
-                # Ngăn chặn các lệnh phá hoại cơ bản
-                dangerous_keywords = ["rm -rf /", "format", "del /s /q c:\\windows", "mkfs"]
-                if any(kw in command.lower() for kw in dangerous_keywords):
-                    return f"[CẢNH BÁO BẢO MẬT] Lệnh '{command}' bị hệ thống chặn vì có rủi ro phá hoại hệ điều hành."
+                validation = _validate_shell_command(command)
+                if validation:
+                    code, msg = validation
+                    return _make_result(False, code=code, message=msg, tool_name="execute_shell_command")
                 
                 result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
                 if result.returncode == 0:
-                    return f"Output của '{command}':\n{result.stdout}"
-                return f"Lỗi thực thi '{command}':\n{result.stderr}"
+                    return _make_result(
+                        True,
+                        data={
+                            "message": f"Output của '{command}':\n{result.stdout}",
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "returncode": result.returncode
+                        },
+                        tool_name="execute_shell_command"
+                    )
+                return _make_result(
+                    False,
+                    code="COMMAND_FAILED",
+                    message=f"Lỗi thực thi '{command}':\n{result.stderr}",
+                    tool_name="execute_shell_command"
+                )
             except subprocess.TimeoutExpired:
-                return f"[CẢNH BÁO] Lệnh '{command}' chạy quá 15 giây. Đã buộc ngắt."
+                return _make_result(
+                    False,
+                    code="COMMAND_TIMEOUT",
+                    message=f"[CẢNH BÁO] Lệnh '{command}' chạy quá 15 giây. Đã buộc ngắt.",
+                    tool_name="execute_shell_command"
+                )
             except Exception as e:
-                return str(e)
+                return _make_result(False, code="COMMAND_EXCEPTION", message=str(e), tool_name="execute_shell_command")
                 
         tools.append(StructuredTool.from_function(
             func=execute_shell_command, 

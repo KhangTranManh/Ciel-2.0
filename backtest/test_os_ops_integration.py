@@ -28,9 +28,17 @@ def main():
 
     # Smoke test: execute_shell_command (safe read-only command)
     result = tm.execute_tool("execute_shell_command", {"command": "echo CIEL_OS_OK"})
-    result_text = str(result)
+    result_text = tm.format_tool_result(result)
     print("[INFO] execute_shell_command result:")
     print(result_text)
+
+    if not isinstance(result, dict) or "success" not in result:
+        print("[FAIL] execute_shell_command did not return standardized contract.")
+        raise SystemExit(1)
+
+    if not result.get("success"):
+        print("[FAIL] execute_shell_command failed unexpectedly:", result.get("error"))
+        raise SystemExit(1)
 
     if "CIEL_OS_OK" not in result_text:
         print("[FAIL] execute_shell_command output did not contain expected marker.")
@@ -39,9 +47,13 @@ def main():
     # Non-destructive screenshot test:
     # - Pass if screenshot succeeds, OR if Pillow is not installed and tool reports that clearly.
     screenshot_result = tm.execute_tool("take_screenshot", {})
-    screenshot_text = str(screenshot_result)
+    screenshot_text = tm.format_tool_result(screenshot_result)
     print("[INFO] take_screenshot result:")
     print(screenshot_text)
+
+    if not isinstance(screenshot_result, dict) or "success" not in screenshot_result:
+        print("[FAIL] take_screenshot did not return standardized contract.")
+        raise SystemExit(1)
 
     if (
         "Đã chụp màn hình thành công" not in screenshot_text

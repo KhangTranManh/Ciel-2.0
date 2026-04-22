@@ -1,10 +1,63 @@
 from colorama import Fore, Style
+import json
+import time
+from typing import Any
 
 class ToolManager:
     def __init__(self):
         self.tools = []
         self.tool_map = {}
         self.system_prompts = [] # NEW: We now collect prompts from the tools
+        self.tool_arg_schemas = {
+            "execute_shell_command": {
+                "required": {"command": str},
+                "optional": {}
+            },
+            "open_application": {
+                "required": {"target_path": str},
+                "optional": {}
+            },
+            "list_workspace": {
+                "required": {},
+                "optional": {}
+            },
+            "read_file": {
+                "required": {"filename": str},
+                "optional": {}
+            },
+            "write_file": {
+                "required": {"filename": str, "content": str},
+                "optional": {}
+            },
+            "append_file": {
+                "required": {"filename": str, "content": str},
+                "optional": {}
+            },
+            "delete_file": {
+                "required": {"filename": str},
+                "optional": {}
+            },
+            "get_file_info": {
+                "required": {"filename": str},
+                "optional": {}
+            },
+            "run_python_script": {
+                "required": {"filename": str},
+                "optional": {}
+            },
+            "save_fact": {
+                "required": {"key": str, "value": str},
+                "optional": {}
+            },
+            "delete_fact": {
+                "required": {"key": str},
+                "optional": {}
+            },
+            "take_screenshot": {
+                "required": {},
+                "optional": {}
+            }
+        }
         
         # Load zones independently to prevent cross-corruption
         self._load_internal_tools()
@@ -101,7 +154,7 @@ class ToolManager:
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
-        self.tool_map = {tool.name: tool for tool in self.tools}
+        self.tool_map = {tool.name.lower(): tool for tool in self.tools}
         return self.tools
 
     def get_dynamic_prompt(self) -> str:
@@ -113,14 +166,105 @@ class ToolManager:
         combined_prompts = "\n\n--- ACTIVE WEAPON MANUALS ---\n\n".join(self.system_prompts)
         return f"\n\n{combined_prompts}"
 
-    def execute_tool(self, name: str, args: dict) -> str:
-        """Executes a tool by its name and returns the result."""
-        if name in self.tool_map:
-            try:
-                result = self.tool_map[name].invoke(args)
-                if result is None:
-                    return f"Successfully executed tool: {name}."
-                return result if isinstance(result, str) else str(result)
-            except Exception as e:
-                return f"Failed to execute {name}. Error: {str(e)}"
-        return f"Warning: Tool '{name}' does not exist or was quarantined."
+    def _make_result(self, success: bool, tool_name: str, duration_ms: int, data: Any = None, error_code: str = None, error_message: str = None) -> dict:
+        return {
+            "success": success,
+            "data": data,
+            "error": None if success else {"code": error_code or "TOOL_ERROR", "message": error_message or "Tool execution failed."},
+            "meta": {
+                "tool_name": tool_name,
+                "duration_ms": duration_ms
+            }
+        }
+
+    def _validate_tool_args(self, name: str, args: dict):
+        schema = self.tool_arg_schemas.get(name)
+        if not schema:
+            return None
+
+        if args is None:
+            args = {}
+
+        if not isinstance(args, dict):
+            return f"Invalid arguments type for '{name}': expected object/dict."
+
+        required = schema.get("required", {})
+        optional = schema.get("optional", {})
+        allowed_keys = set(required.keys()) | set(optional.keys())
+
+        missing = [k for k in required if k not in args]
+        if missing:
+            return f"Missing required argument(s) for '{name}': {', '.join(missing)}."
+
+        unknown = [k for k in args.keys() if k not in allowed_keys]
+        if unknown:
+            return f"Unknown argument(s) for '{name}': {', '.join(unknown)}."
+
+        for key, expected_type in required.items():
+            if not isinstance(args.get(key), expected_type):
+                return f"Argument '{key}' for '{name}' must be of type {expected_type.__name__}."
+
+        for key, expected_type in optional.items():
+            if key in args and not isinstance(args.get(key), expected_type):
+                return f"Argument '{key}' for '{name}' must be of type {expected_type.__name__}."
+
+        return None
+
+    def format_tool_result(self, result: dict) -> str:
+        if not isinstance(result, dict):
+            return str(result)
+
+        if result.get("success"):
+            data = result.get("data")
+            if isinstance(data, dict) and "message" in data and len(data) == 1:
+                return str(data["message"])
+            if isinstance(data, str):
+                return data
+            return json.dumps(data, ensure_ascii=False, indent=2) if data is not None else "Tool executed successfully."
+
+        err = result.get("error") or {}
+        code = err.get("code", "TOOL_ERROR")
+        msg = err.get("message", "Unknown tool error")
+        return f"[{code}] {msg}"
+
+    def execute_tool(self, name: str, args: dict) -> dict:
+        """Executes a tool by its name and returns a standardized structured result."""
+        tool_name = (name or "").lower()
+        start = time.perf_counter()
+
+        if not self.tool_map:
+            self.get_tools()
+
+        if tool_name not in self.tool_map:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            return self._make_result(False, tool_name, duration_ms, error_code="TOOL_NOT_FOUND", error_message=f"Tool '{name}' does not exist or was quarantined.")
+
+        validation_error = self._validate_tool_args(tool_name, args)
+        if validation_error:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            return self._make_result(False, tool_name, duration_ms, error_code="INVALID_ARGS", error_message=validation_error)
+
+        try:
+            invoke_args = args if isinstance(args, dict) else {}
+            raw_result = self.tool_map[tool_name].invoke(invoke_args)
+            duration_ms = int((time.perf_counter() - start) * 1000)
+
+            if isinstance(raw_result, dict) and {"success", "data", "error"}.issubset(raw_result.keys()):
+                normalized = dict(raw_result)
+                meta = normalized.get("meta") or {}
+                meta.setdefault("tool_name", tool_name)
+                meta.setdefault("duration_ms", duration_ms)
+                normalized["meta"] = meta
+                return normalized
+
+            if raw_result is None:
+                return self._make_result(True, tool_name, duration_ms, data={"message": f"Successfully executed tool: {tool_name}."})
+
+            if isinstance(raw_result, str):
+                return self._make_result(True, tool_name, duration_ms, data={"message": raw_result})
+
+            return self._make_result(True, tool_name, duration_ms, data=raw_result)
+
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            return self._make_result(False, tool_name, duration_ms, error_code="EXECUTION_ERROR", error_message=str(e))
