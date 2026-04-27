@@ -4,6 +4,7 @@ import ast
 import json
 import inspect
 from datetime import datetime
+from colorama import Fore, Style
 from pathlib import Path
 from .llm_connector import CielCore
 
@@ -96,6 +97,19 @@ class AgentLoop:
 
         return {}
 
+    def _is_coding_task(self, user_input: str) -> bool:
+        """Intent router: returns True if the input is a coding/scripting task, False for general chat."""
+        text = user_input.lower()
+        code_keywords = [
+            "write code", "viết code", "create script", "tạo script",
+            "write a function", "viết hàm", "debug", "fix code", "sửa code",
+            "refactor", "implement", "algorithm", "thuật toán",
+            "write python", "viết python", "code for", "script to",
+            "class ", "function ", "def ", "import ",
+            "compile", "build", "deploy",
+        ]
+        return any(k in text for k in code_keywords)
+
     def _looks_like_tool_intent(self, user_input: str) -> bool:
         text = user_input.lower()
         keywords = [
@@ -187,8 +201,10 @@ class AgentLoop:
     def run_step(self, user_input: str) -> str:
         self.core.chat_history.add_user_message(user_input)
 
-        print(f"\n⚡ [Ciel]: Processing with Gemini...")
-        ai_msg = self.core.chat_with_tools(user_input)
+        use_coder = self._is_coding_task(user_input)
+        mode_label = "Coder" if use_coder else "Router"
+        print(Fore.CYAN + f"\n[Ciel]: Processing ({mode_label} mode)..." + Style.RESET_ALL)
+        ai_msg = self.core.chat_with_tools(user_input, use_coder=use_coder)
 
         tool_calls_to_process = getattr(ai_msg, 'tool_calls', [])
 
@@ -292,6 +308,38 @@ class AgentLoop:
             raw = "".join([block.get("text", "") for block in raw if isinstance(block, dict)])
         else:
             raw = str(raw)
+
+        # ---------------------------------------------------------
+        # OLLAMA FIX: Detect hallucinated JSON tool calls
+        # Some local models output raw JSON like {"tool_name": "..."}
+        # instead of chatting naturally. Detect and re-prompt.
+        # ---------------------------------------------------------
+        raw_stripped = raw.strip()
+        is_hallucinated_json = False
+        if raw_stripped.startswith("{") and raw_stripped.endswith("}"):
+            try:
+                parsed_json = json.loads(raw_stripped)
+                if isinstance(parsed_json, dict) and any(
+                    k in parsed_json for k in ["tool_name", "function", "action", "name", "tool"]
+                ):
+                    is_hallucinated_json = True
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        if is_hallucinated_json:
+            # Re-prompt: tell the model to just chat, no tools needed
+            retry_prompt = (
+                f"[SYSTEM] The Master said: '{user_input}'\n"
+                f"This is a normal conversation message. Do NOT call any tools.\n"
+                f"Just reply naturally as Ciel. Be concise and helpful.\n"
+                f"Wrap your answer in <RESPONSE> tags."
+            )
+            ai_msg = self.core.chat_with_tools(retry_prompt)
+            raw = getattr(ai_msg, 'content', str(ai_msg))
+            if isinstance(raw, list):
+                raw = "".join([block.get("text", "") for block in raw if isinstance(block, dict)])
+            else:
+                raw = str(raw)
 
         self.core.chat_history.add_ai_message(raw)
         self.core._save_chat_memory()

@@ -35,8 +35,21 @@ SCREENSHOT_DIR = BASE_DIR / "ciel_workspace" / "screenshots"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 SAFE_COMMANDS = {
-    "echo", "dir", "type", "whoami", "hostname", "ver", "ipconfig",
-    "ping", "systeminfo", "tasklist", "where", "cd", "cls"
+    # Basic info
+    "echo", "dir", "type", "whoami", "hostname", "ver", "cls", "where",
+    # Networking
+    "ipconfig", "ping", "systeminfo", "tasklist", "netstat", "nslookup",
+    "tracert", "arp", "route", "curl",
+    # File utilities (read-only)
+    "tree", "findstr", "find", "more", "sort", "fc",
+    # Developer tools
+    "python", "pip", "git", "node", "npm", "npx",
+    # System info
+    "wmic", "set", "path", "date", "time",
+    # Navigation
+    "cd", "pushd", "popd",
+    # Process
+    "start",
 }
 
 BLOCKED_COMMAND_PATTERNS = [
@@ -49,9 +62,12 @@ BLOCKED_COMMAND_PATTERNS = [
     r"\bmkfs\b",
     r"\brm\s+-rf\b",
     r"system32",
+    r"\breg\s+delete\b",
+    r"\bnet\s+stop\b",
 ]
 
-BLOCKED_META_CHARS = ["&&", "||", "|", ">", "<", ";", "`"]
+# Block dangerous operators but ALLOW piping (|) between safe commands
+BLOCKED_META_CHARS = ["&&", "||", ">", ">>", "<", ";", "`"]
 
 
 def _make_result(success: bool, data=None, code: str = None, message: str = None, tool_name: str = "") -> dict:
@@ -80,19 +96,27 @@ def _validate_shell_command(command: str):
         return "INVALID_COMMAND", "Lệnh shell không hợp lệ hoặc đang trống."
 
     normalized = command.strip().lower()
-    if any(token in normalized for token in BLOCKED_META_CHARS):
-        return "UNSAFE_OPERATOR", "Lệnh bị chặn vì chứa toán tử shell nguy hiểm (&&, ||, |, >, <, ;, `)."
 
+    # Block dangerous meta-characters (but NOT pipe |)
+    if any(token in normalized for token in BLOCKED_META_CHARS):
+        return "UNSAFE_OPERATOR", f"Lệnh bị chặn vì chứa toán tử shell nguy hiểm ({', '.join(BLOCKED_META_CHARS)})."
+
+    # Block dangerous command patterns
     for pattern in BLOCKED_COMMAND_PATTERNS:
         if re.search(pattern, normalized):
             return "BLOCKED_COMMAND", f"Lệnh '{command}' bị chặn vì khớp mẫu nguy hiểm: {pattern}"
 
-    base_command = _extract_base_command(command)
-    if base_command not in SAFE_COMMANDS:
-        return "NOT_ALLOWLISTED", (
-            f"Lệnh gốc '{base_command}' chưa nằm trong allowlist an toàn. "
-            f"Các lệnh được phép: {', '.join(sorted(SAFE_COMMANDS))}."
-        )
+    # Split by pipe and validate EACH segment independently
+    segments = [seg.strip() for seg in command.split("|")]
+    for segment in segments:
+        base_cmd = _extract_base_command(segment)
+        if not base_cmd:
+            continue
+        if base_cmd not in SAFE_COMMANDS:
+            return "NOT_ALLOWLISTED", (
+                f"Lệnh '{base_cmd}' chưa nằm trong allowlist an toàn. "
+                f"Các lệnh được phép: {', '.join(sorted(SAFE_COMMANDS))}."
+            )
 
     return None
 

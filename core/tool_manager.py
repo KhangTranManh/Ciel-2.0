@@ -49,6 +49,10 @@ class ToolManager:
                 "required": {"key": str, "value": str},
                 "optional": {}
             },
+            "get_fact": {
+                "required": {"key": str},
+                "optional": {}
+            },
             "delete_fact": {
                 "required": {"key": str},
                 "optional": {}
@@ -66,8 +70,8 @@ class ToolManager:
     def _load_internal_tools(self):
         # 1. NẠP CÁC CÔNG CỤ BỘ NHỚ CŨ (Nếu ngài vẫn đang dùng)
         try:
-            from skills.internal.memory_ops import save_fact, delete_fact
-            self.tools.extend([save_fact, delete_fact])
+            from skills.internal.memory_ops import save_fact, get_fact, delete_fact
+            self.tools.extend([save_fact, get_fact, delete_fact])
             print(Fore.GREEN + "[Ciel System] Internal memory tools loaded safely." + Style.RESET_ALL)
         except Exception as e:
             pass # Bỏ qua nếu ngài đã xóa file memory_ops
