@@ -151,7 +151,7 @@ def run_test(core, test_name: str, user_input: str, ilog: InteractionLog,
         # Step 1: Route
         section("BRAIN: Routing")
         start = time.time()
-        decision = core.route(user_input)
+        decision = core.router.route(user_input, core._tool_list_str, core.chat_history)
         route_time = time.time() - start
         action = decision.get("action", "chat")
 
@@ -424,6 +424,35 @@ def main():
 
 
     # ======================================================
+    # TEST 16: Self-Healing — ModuleNotFoundError (Code Rewrite)
+    # ======================================================
+    # Write a script with a fake module and syntax error
+    bad_code = "import this_module_does_not_exist_123\nprint('hello'\n"
+    core.tool_manager.execute_tool("write_file", {"filename": "test_healing.py", "content": bad_code})
+    
+    results["16_self_healing_module"] = run_test(
+        core,
+        "Self-Healing — Code Rewrite (Syntax & Module)",
+        "Run the python script test_healing.py",
+        ilog,
+        expect_action="tool",
+        validate_fn=lambda d, r: "Self-Healing Activated" in r and "TOOL_ERROR" not in r,
+    )
+
+    # ======================================================
+    # TEST 17: Self-Healing — Parameter Correction
+    # ======================================================
+    # We ask Brain to get price for 'EUR_USD' directly via ToolManager bypassing router
+    results["17_self_healing_parameter"] = run_test(
+        core,
+        "Self-Healing — Parameter Correction",
+        "Get the price for EUR_USD exactly like I typed it",
+        ilog,
+        expect_action="tool",
+        validate_fn=lambda d, r: "Self-Healing Activated" in r or "1.0" in r or "TOOL_ERROR" not in r,
+    )
+
+    # ======================================================
     # SAVE LOGS
     # ======================================================
     header("SAVING INTERACTION LOG")
@@ -449,6 +478,7 @@ def main():
         "Trading":   ["10_trading_price"],
         "Gmail":     ["11_gmail_search"],
         "Edge Cases": ["12_edge_ambiguous", "13_edge_unknown"],
+        "Self-Healing": ["16_self_healing_module", "17_self_healing_parameter"],
         "Cleanup":   ["14_memory_cleanup", "15_workspace_cleanup"],
     }
 

@@ -11,6 +11,7 @@ from tenacity import (
 )
 from langchain_ollama import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from ..config import (
@@ -18,6 +19,7 @@ from ..config import (
     BRAIN_MODEL,
     BRAIN_TEMPERATURE,
     GEMINI_API_KEY,
+    DEEPSEEK_API_KEY,
     OLLAMA_BASE_URL,
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
@@ -131,6 +133,15 @@ class Brain:
                 temperature=BRAIN_TEMPERATURE,
             )
             log.system(f"Brain initialized: {BRAIN_MODEL} (Ollama, dual-instance)")
+        elif BRAIN_PROVIDER.lower() == "deepseek":
+            self._router_llm = ChatOpenAI(
+                model=BRAIN_MODEL,
+                api_key=DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com",
+                temperature=BRAIN_TEMPERATURE,
+            )
+            self._reflect_llm = self._router_llm
+            log.system(f"Brain initialized: {BRAIN_MODEL} (DeepSeek)")
         else:
             self._router_llm = ChatGoogleGenerativeAI(
                 model=BRAIN_MODEL,

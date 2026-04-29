@@ -1,94 +1,42 @@
 """llm_connector.py — Bridge between Ciel's core and the Brain-Worker agent system.
 
 Architecture:
-  User Input → Brain (routing/planning) → decides:
+  User Input → Router (Brain) → decides:
     - "chat" → Worker generates natural response
-    - "tool" → Ciel's existing ToolManager executes tools, Brain reflects
+    - "tool" → Ciel's ToolManager executes, Worker formats (if needed)
     - "code" → Worker generates code, buffer writes to disk
-
-The Brain does ALL thinking. The Worker does ALL generating.
-Ciel's tools (email, trading, shell, file ops) are executed by ToolManager directly.
+    - "multi_tool" → Executes sequentially, Worker synthesizes
 """
 import os
 import json
-import httpx
 import traceback
 from pathlib import Path
 from dotenv import load_dotenv
-from colorama import Fore, Style
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
 
-from .memory_manager import MemoryManager
 from .tool_manager import ToolManager
+from .router import Router
+from .recovery_manager import RecoveryManager
 
-# Import Brain and Worker from agent_system
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent_system.models.brain import Brain, TRANSIENT_ERRORS
+from agent_system.models.brain import Brain
 from agent_system.models.worker import Worker
 from agent_system.utils.logger import log
-from agent_system.config import RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT
 
 load_dotenv()
 
 
 # ==========================================================
-# BRAIN ROUTING PROMPT — tells the Brain about Ciel's tools
+# MAIN ORCHESTRATOR
 # ==========================================================
-CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
-
-You MUST output valid JSON with this schema:
-
-CASE 1 — Normal conversation (no tools needed):
-{{
-  "action": "chat",
-  "task": "Rephrase what the user wants so the Worker can answer it naturally"
-}}
-
-CASE 2 — User wants to use a Ciel tool (email, file ops, trading, shell):
-{{
-  "action": "tool",
-  "tool_name": "exact_tool_name",
-  "tool_args": {{"arg1": "value1", "arg2": "value2"}},
-  "response_hint": "Short hint for how to present the result to the user"
-}}
-
-CASE 3 — User wants NEW code/program generated and saved:
-{{
-  "action": "code",
-  "task": "Detailed description of what to generate",
-  "filename": "agent_output/filename.py"
-}}
-
-AVAILABLE TOOLS:
-{tool_list}
-
-RULES:
-- Output ONLY valid JSON. No prose, no markdown.
-- For tool calls, match the exact tool name and argument names from the list above.
-- If unsure, default to "chat".
-- Never generate code yourself — that's the Worker's job.
-- Use "chat" for greetings, questions, explanations, casual conversation.
-- The "task" field must ALWAYS be a verb-led instruction for the Worker (e.g. "Explain what X is"). NEVER write the answer itself in the task field.
-- ROUTING PRIORITY: If the user says "write X to a file" or "save X to a file" in the workspace, use "tool" with write_file. Only use "code" when the user wants you to GENERATE a new program/script and save it to agent_output/.
-- For search_gmail: always include {{"resource": "messages"}} in tool_args unless the user specifically asks for threads.
-"""
-
-
 class CielCore:
     def __init__(self):
         self.tool_manager = ToolManager()
         self._tools = self.tool_manager.get_tools()
 
-        # Build tool name -> schema map for the Brain
+        # Build tool name -> schema map
         self._tool_map = {t.name: t for t in self._tools}
         self._tool_list_str = self._build_tool_list()
 
@@ -96,14 +44,17 @@ class CielCore:
         self.brain = Brain()
         self.worker = Worker()
 
-        log.system("CielCore initialized with Brain-Worker architecture")
+        # Modular Components
+        self.router = Router(self.brain, self._log_thought)
+        self.recovery = RecoveryManager(self.worker, self._log_thought)
+
+        log.system("CielCore initialized with Modular Brain-Worker architecture")
 
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
         self.base_dir = Path(__file__).resolve().parent.parent
         self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
 
-        self.memory_manager = MemoryManager()
         self._load_chat_memory()
 
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
@@ -134,14 +85,11 @@ class CielCore:
         lines = []
         for tool in self._tools:
             name = tool.name
-
-            # Use hardcoded hint if available, otherwise auto-generate
             if name in self._TOOL_HINTS:
                 lines.append(f"- {name}: {self._TOOL_HINTS[name]}")
                 continue
 
             desc = tool.description[:80] if tool.description else "No description"
-            # Get arg names from the schema if available
             args_info = ""
             if hasattr(tool, 'args_schema') and tool.args_schema:
                 try:
@@ -200,64 +148,8 @@ class CielCore:
         data = [{"type": m.type, "content": m.content} for m in self.chat_history.messages]
         self.chat_memory_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    @retry(
-        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
-        wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
-        retry=retry_if_exception_type(TRANSIENT_ERRORS),
-        before_sleep=lambda rs: log.error(
-            f"Route call failed ({type(rs.outcome.exception()).__name__}). "
-            f"Retrying in {rs.next_action.sleep:.1f}s (attempt {rs.attempt_number}/{RETRY_MAX_ATTEMPTS})"
-        ),
-    )
-    def route(self, user_input: str) -> dict:
-        """Ask the Brain to decide what to do with the user's input.
-
-        Returns a dict with:
-          {"action": "chat", "task": "..."}
-          {"action": "tool", "tool_name": "...", "tool_args": {...}, "response_hint": "..."}
-          {"action": "code", "task": "...", "filename": "..."}
-        """
-        # Build the routing prompt with the tool list
-        prompt = CIEL_ROUTER_PROMPT.format(tool_list=self._tool_list_str)
-
-        # Include recent chat history as proper alternating messages
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-        
-        messages = [SystemMessage(content=prompt)]
-        
-        if self.chat_history.messages:
-            for msg in self.chat_history.messages[-6:]:
-                content = msg.content[:200]  # limit context length per message
-                if msg.type == "human":
-                    messages.append(HumanMessage(content=content))
-                else:
-                    messages.append(AIMessage(content=content))
-                    
-        messages.append(HumanMessage(content=user_input))
-
-        self._log_thought("USER", "request", user_input)
-        response = self.brain._router_llm.invoke(messages)
-        raw = response.content.strip()
-        self._log_thought("BRAIN", "route_decision", raw)
-
-        # Strip markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-            raw = raw.strip()
-
-        # No silent fallback — JSONDecodeError fails fast.
-        # Transient LLM errors (connection/timeout) are retried by tenacity above.
-        parsed = json.loads(raw)
-
-        action = parsed.get("action", "chat")
-        log.brain(f"Routed: [{action.upper()}] {parsed.get('task', parsed.get('tool_name', ''))[:60]}")
-        return parsed
-
     def execute_chat(self, task: str) -> str:
         """Worker generates a natural language response."""
-        # Inject tool list to prevent hallucinated capabilities
         capabilities_context = ""
         task_lower = task.lower()
         if any(kw in task_lower for kw in ["capabilit", "what can you do", "able to do", "list your features"]):
@@ -267,7 +159,6 @@ class CielCore:
                 f"unless explicitly covered by these tools:\n{self._tool_list_str}"
             )
 
-        # Add Ciel's persona context
         persona_task = (
             f"You are Ciel, an AI assistant. "
             f"Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
@@ -280,32 +171,85 @@ class CielCore:
         return response
 
     def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "") -> str:
-        """Execute a Ciel tool and have the Worker format the result."""
+        """Execute a Ciel tool and format the result."""
         log.tool(f"Executing: {tool_name}({tool_args})")
 
-        # Validate tool exists
         if tool_name not in self._tool_map:
             log.error(f"Tool not found: {tool_name}")
             return f"[TOOL_ERROR] Tool '{tool_name}' not found."
 
-        # Execute via ToolManager
         result = self.tool_manager.execute_tool(tool_name, tool_args)
         result_text = self.tool_manager.format_tool_result(result)
 
-        # If the tool failed, return the raw error directly — don't send
-        # it to the Worker where it gets wrapped in polite language and hidden.
-        if "EXECUTION_ERROR" in result_text or "Error" in result_text[:30]:
-            log.error(f"Tool {tool_name} failed: {result_text[:150]}")
+        # SELF-HEALING HOOK (UP TO 3 ATTEMPTS)
+        max_attempts = 3
+        attempt = 1
+        current_args = tool_args
+
+        while attempt <= max_attempts and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script")):
+            self._log_thought("HEALING", f"attempt_{attempt}", f"Starting heal attempt {attempt}/{max_attempts}")
+            
+            previous_code = ""
+            if tool_name == "run_python_script" and "filename" in current_args:
+                try:
+                    from skills.internal.system_ops import _is_safe_path
+                    safe_path = _is_safe_path(current_args["filename"])
+                    if os.path.exists(safe_path):
+                        with open(safe_path, "r", encoding="utf-8") as f:
+                            previous_code = f.read()
+                except Exception:
+                    pass
+
+            success, action, data = self.recovery.heal_tool_error(tool_name, current_args, result_text, attempt, previous_code)
+            
+            if not success:
+                result_text += f"\n\n[Self-Healing Failed] {data.get('error', 'Unknown error')}"
+                break
+                
+            if action == "code_fix":
+                try:
+                    from skills.internal.system_ops import _is_safe_path
+                    safe_path = _is_safe_path(data["filename"])
+                    
+                    # Validate syntax before saving!
+                    syntax_valid, syntax_error = self.recovery.check_syntax(data["code"])
+                    if not syntax_valid:
+                        self._log_thought("HEALING", "syntax_error", syntax_error)
+                        result_text = f"[Syntax Error Validation Failed]\n{syntax_error}"
+                        attempt += 1
+                        continue
+                    
+                    with open(safe_path, "w", encoding="utf-8") as f:
+                        f.write(data["code"])
+                    self._log_thought("HEALING", "apply_fix", f"Code updated for {data['filename']}. Re-running script.")
+                    
+                    # Retry tool
+                    result = self.tool_manager.execute_tool(tool_name, current_args)
+                    retry_text = self.tool_manager.format_tool_result(result)
+                    result_text = f"[Self-Healing Activated] Analyzed code error, fixed it, and re-ran.\n\nNew Output:\n{retry_text}"
+                    
+                except Exception as e:
+                    result_text = f"[Self-Healing Error] {e}"
+                    
+            elif action == "retry_tool":
+                self._log_thought("HEALING", "retry_tool_args", str(data))
+                current_args = data  # Update arguments for the next attempt if it fails
+                result = self.tool_manager.execute_tool(tool_name, current_args)
+                retry_text = self.tool_manager.format_tool_result(result)
+                result_text = f"[Self-Healing Activated] Analyzed parameter error, corrected args, and re-ran.\n\nNew Output:\n{retry_text}"
+                
+            attempt += 1
+            
+        if "EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script"):
+            log.error(f"Tool {tool_name} failed after {attempt-1} self-healing attempts.")
             self._log_thought("TOOL", "error", f"{tool_name}: {result_text}")
             return f"[TOOL_ERROR] {tool_name}: {result_text}"
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
-        # Skip formatting if the tool returns readable text natively
         if tool_name not in self._TOOLS_NEEDING_FORMAT:
             return result_text
 
-        # Have Worker format SUCCESSFUL results into a nice response
         format_task = (
             f"You are Ciel. Format this tool output into the absolute shortest, clearest response possible.\n"
             f"Tool: {tool_name}\n"
@@ -322,7 +266,7 @@ class CielCore:
         """Worker generates code and writes it to disk."""
         from agent_system.tools.buffer_writer import buffer_writer
 
-        buffer_writer.clear()  # Safety reset for dirty state
+        buffer_writer.clear()
         self._log_thought("WORKER", "code_task", task)
         code = self.worker.generate(task)
         self._log_thought("WORKER", "code_response", code)
@@ -331,22 +275,44 @@ class CielCore:
         log.tool(result)
         return f"Code written to {filename}"
 
-    # ==========================================================
-    # MAIN INTERFACE — called by agent_loop.py
-    # ==========================================================
-    def process(self, user_input: str) -> str:
-        """Full pipeline: route → execute → respond.
+    def execute_multi_tool(self, tools: list, response_hint: str) -> str:
+        """Execute multiple tools sequentially and synthesize the result."""
+        results = []
+        for t in tools:
+            name = t.get("tool_name", "")
+            args = t.get("tool_args", {})
+            log.tool(f"Executing step: {name}({args})")
+            
+            if name not in self._tool_map:
+                res = f"[TOOL_ERROR] {name} not found."
+            else:
+                raw_res = self.tool_manager.execute_tool(name, args)
+                res = self.tool_manager.format_tool_result(raw_res)
+                
+            self._log_thought("TOOL", f"result_{name}", res)
+            results.append(f"--- Output from {name} ---\n{res}")
+            
+        combined_results = "\n\n".join(results)
+        
+        format_task = (
+            f"You are Ciel. Synthesize the following data from multiple tools into a cohesive report.\n"
+            f"{combined_results}\n\n"
+            f"Hint: {response_hint}\n"
+            f"CRITICAL: Be concise. Deliver a unified report without conversational filler."
+        )
+        self._log_thought("WORKER", "multi_tool_format_task", format_task)
+        formatted = self.worker.generate(format_task)
+        self._log_thought("WORKER", "multi_tool_format_response", formatted)
+        return formatted
 
-        This replaces the old chat_with_tools() flow.
-        """
+    def process(self, user_input: str) -> str:
+        """Full pipeline: route → execute → respond."""
         self.chat_history.add_user_message(user_input)
 
         try:
-            # Step 1: Brain routes
-            decision = self.route(user_input)
+            decision = self.router.route(user_input, self._tool_list_str, self.chat_history)
             action = decision.get("action", "chat")
 
-            # Step 2: Execute based on routing
             if action == "tool":
                 tool_name = decision.get("tool_name", "")
                 tool_args = decision.get("tool_args", {})
@@ -358,11 +324,15 @@ class CielCore:
                 filename = decision.get("filename", "agent_output/output.py")
                 response = self.execute_code(task, filename)
 
-            else:  # "chat" or fallback
+            elif action == "multi_tool":
+                tools = decision.get("tools", [])
+                hint = decision.get("response_hint", "")
+                response = self.execute_multi_tool(tools, hint)
+
+            else:
                 task = decision.get("task", user_input)
                 response = self.execute_chat(task)
 
-            # Step 3: Save to history
             self.chat_history.add_ai_message(response)
             self._save_chat_memory()
 
@@ -374,16 +344,12 @@ class CielCore:
             return f"An error occurred: {str(e)[:200]}"
 
     # ==========================================================
-    # LEGACY COMPATIBILITY — old agent_loop.py calls this
+    # LEGACY COMPATIBILITY
     # ==========================================================
     def chat_with_tools(self, user_input: str, use_coder: bool = False):
-        """Legacy interface. Wraps process() in a fake AI message object."""
         response = self.process(user_input)
-
-        # Return a simple object that agent_loop.py can extract content from
         class FakeAIMessage:
             def __init__(self, content):
                 self.content = content
-                self.tool_calls = []  # No native tool calls — Brain handles routing
-
+                self.tool_calls = []
         return FakeAIMessage(f"<RESPONSE>{response}</RESPONSE>")

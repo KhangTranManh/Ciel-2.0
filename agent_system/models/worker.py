@@ -9,9 +9,12 @@ from tenacity import (
     retry_if_exception_type,
 )
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from ..config import (
+    WORKER_PROVIDER,
+    DEEPSEEK_API_KEY,
     OLLAMA_BASE_URL,
     WORKER_MODEL,
     WORKER_TEMPERATURE,
@@ -96,13 +99,22 @@ class Worker:
     """Local Ollama model for content/code generation. No tools attached."""
 
     def __init__(self):
-        self._llm = ChatOllama(
-            model=WORKER_MODEL,
-            base_url=OLLAMA_BASE_URL,
-            temperature=WORKER_TEMPERATURE,
-            num_ctx=WORKER_NUM_CTX,
-        )
-        log.system(f"Worker initialized: {WORKER_MODEL} @ {OLLAMA_BASE_URL}")
+        if WORKER_PROVIDER.lower() == "deepseek":
+            self._llm = ChatOpenAI(
+                model=WORKER_MODEL,
+                api_key=DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com",
+                temperature=WORKER_TEMPERATURE,
+            )
+            log.system(f"Worker initialized: {WORKER_MODEL} (DeepSeek)")
+        else:
+            self._llm = ChatOllama(
+                model=WORKER_MODEL,
+                base_url=OLLAMA_BASE_URL,
+                temperature=WORKER_TEMPERATURE,
+                num_ctx=WORKER_NUM_CTX,
+            )
+            log.system(f"Worker initialized: {WORKER_MODEL} @ {OLLAMA_BASE_URL}")
 
     # Bonus: Worker gets retry protection for GPU timeouts and connection drops
     @retry(
