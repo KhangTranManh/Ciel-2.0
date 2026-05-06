@@ -69,7 +69,7 @@ MULTIPLE FILE OUTPUT (each file gets its own worker+buffer+flush cycle):
   "plan": [
     {"step": 1, "task": "Generate config.py with a Config class containing base_url, timeout, headers", "assign": "worker"},
     {"step": 2, "task": "Save to file", "assign": "tool", "tool_name": "buffer_write", "flush_to": "agent_output/config.py"},
-    {"step": 3, "task": "Generate scraper.py with a Scraper class that takes a Config instance", "assign": "worker", "shared_context": "Config() is in config.py with attributes: base_url, timeout, headers."},
+    {"step": 3, "task": "Generate scraper.py with a Scraper class that takes a Config instance", "assign": "worker", "shared_context": "Config has: base_url (str), timeout (int), headers (dict). Import with: from config import Config"},
     {"step": 4, "task": "Save to file", "assign": "tool", "tool_name": "buffer_write", "flush_to": "agent_output/scraper.py"},
     {"step": 5, "task": "Generate main.py runner script", "assign": "worker", "shared_context": "Config() is in config.py. Scraper(config) is in scraper.py and takes a Config instance. Import with: from scraper import Scraper"},
     {"step": 6, "task": "Save to file", "assign": "tool", "tool_name": "buffer_write", "flush_to": "agent_output/main.py"}

@@ -10,16 +10,16 @@ _env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_env_path)
 
 # --- Brain ---
-BRAIN_PROVIDER = os.getenv("BRAIN_PROVIDER", "deepseek")
-BRAIN_MODEL = os.getenv("BRAIN_MODEL", "deepseek-v4-pro")
+BRAIN_PROVIDER = os.getenv("BRAIN_PROVIDER", "gemini")
+BRAIN_MODEL = os.getenv("BRAIN_MODEL", "gemini-2.5-pro")
 BRAIN_TEMPERATURE = 0.1
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 # --- Worker ---
-WORKER_PROVIDER = os.getenv("WORKER_PROVIDER", "ollama")
+WORKER_PROVIDER = os.getenv("WORKER_PROVIDER", "gemini")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-WORKER_MODEL = os.getenv("CODER_MODEL", "qwen2.5-coder:14b")
+WORKER_MODEL = os.getenv("CODER_MODEL", "gemini-2.5-flash")
 WORKER_TEMPERATURE = 0.2
 WORKER_NUM_CTX = 8192
 

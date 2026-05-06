@@ -107,6 +107,15 @@ class Worker:
                 temperature=WORKER_TEMPERATURE,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (DeepSeek)")
+        elif WORKER_PROVIDER.lower() == "gemini":
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            from ..config import GEMINI_API_KEY
+            self._llm = ChatGoogleGenerativeAI(
+                model=WORKER_MODEL,
+                google_api_key=GEMINI_API_KEY,
+                temperature=WORKER_TEMPERATURE,
+            )
+            log.system(f"Worker initialized: {WORKER_MODEL} (Gemini)")
         else:
             self._llm = ChatOllama(
                 model=WORKER_MODEL,

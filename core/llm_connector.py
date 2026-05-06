@@ -8,6 +8,7 @@ Architecture:
     - "multi_tool" → Executes sequentially, Worker synthesizes
 """
 import os
+import re
 import json
 import traceback
 from pathlib import Path
@@ -64,6 +65,7 @@ class CielCore:
 
     # Only call the Worker to format these tools. Others are already readable.
     _TOOLS_NEEDING_FORMAT = {
+        "search_gmail",
         "get_market_price",
         "analyze_crypto_technical",
         "get_gmail_message",
@@ -243,17 +245,32 @@ class CielCore:
         if "EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script"):
             log.error(f"Tool {tool_name} failed after {attempt-1} self-healing attempts.")
             self._log_thought("TOOL", "error", f"{tool_name}: {result_text}")
-            return f"[TOOL_ERROR] {tool_name}: {result_text}"
+            # STRUCTURED ERROR: Rephrase raw error for the user
+            try:
+                friendly = self.worker.generate(
+                    f"Rephrase this error for the user in one plain, helpful sentence. "
+                    f"Do NOT include technical stack traces.\n\nError: {result_text[:500]}"
+                )
+                self._log_thought("WORKER", "error_rephrase", friendly)
+                return f"Sorry, {friendly}"
+            except Exception:
+                return f"[TOOL_ERROR] {tool_name}: {result_text}"
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
         if tool_name not in self._TOOLS_NEEDING_FORMAT:
             return result_text
 
+        # GMAIL: Smart truncation — keep all emails visible, trim each body
+        if "gmail" in tool_name.lower():
+            clean_text = self._compact_email_result(result_text)
+        else:
+            clean_text = result_text[:2000]
+
         format_task = (
             f"You are Ciel. Format this tool output into the absolute shortest, clearest response possible.\n"
             f"Tool: {tool_name}\n"
-            f"Raw result:\n{result_text[:2000]}\n\n"
+            f"Raw result:\n{clean_text}\n\n"
             f"Hint: {response_hint}\n"
             f"CRITICAL: Be extremely concise. Give just the requested data. No conversational filler."
         )
@@ -261,6 +278,40 @@ class CielCore:
         formatted = self.worker.generate(format_task)
         self._log_thought("WORKER", "format_response", formatted)
         return formatted
+
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        """Strip HTML tags, zero-width chars, and collapse whitespace."""
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'[\u200b\u200c\u200d\ufeff\xa0]', '', text)  # zero-width + nbsp
+        text = re.sub(r'&nbsp;', ' ', text, flags=re.IGNORECASE)
+        text = re.sub(r'&amp;', '&', text)
+        text = re.sub(r'&lt;', '<', text)
+        text = re.sub(r'&gt;', '>', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def _compact_email_result(self, text: str) -> str:
+        """Parse email JSON, strip HTML bodies, truncate each to 150 chars."""
+        try:
+            emails = json.loads(text)
+            if not isinstance(emails, list):
+                return self._strip_html(text)[:2000]
+            
+            compact = []
+            for em in emails:
+                body_raw = em.get("body", "")
+                body_clean = self._strip_html(body_raw)[:150]
+                compact.append({
+                    "sender": em.get("sender", ""),
+                    "subject": em.get("subject", ""),
+                    "body": body_clean,
+                })
+            return json.dumps(compact, ensure_ascii=False, indent=1)
+        except (json.JSONDecodeError, TypeError):
+            return self._strip_html(text)[:2000]
 
     def execute_code(self, task: str, filename: str) -> str:
         """Worker generates code and writes it to disk."""

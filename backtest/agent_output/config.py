@@ -1,7 +1,7 @@
 class Config:
     base_url = "https://api.example.com"
-    timeout = 30
+    timeout = 10  # seconds
     headers = {
-        "User-Agent": "MyApp/1.0",
+        "Content-Type": "application/json",
         "Accept": "application/json"
     }

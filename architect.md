@@ -7,27 +7,50 @@ Tài liệu này là bản đồ đầy đủ của dự án: kiến trúc file,
 
 ## 1) High-Level Architecture | Kiến trúc tổng thể
 
+Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are cleanly separated:
+
 - **Entry point | Điểm vào:** `main.py` starts CLI loop and delegates each command to `AgentLoop`.
-- **Core orchestration | Điều phối lõi:** `core/agent_loop.py` routes command intent (`CHAT` vs `CODE`), executes tools, then reflects on tool output.
-- **LLM bridge | Cầu nối LLM:** `core/llm_connector.py` initializes local Router/Coder models (Ollama), optional Gemini fallback, prompt assembly, and chat memory.
+- **Thin agent loop | Vòng lặp agent:** `core/agent_loop.py` is a thin wrapper that passes user input to `CielCore.process()`.
+- **Main orchestrator | Bộ điều phối chính:** `core/llm_connector.py` (`CielCore`) is the central pipeline. It initializes Brain, Worker, Router, RecoveryManager, and ToolManager, then coordinates the full `route → execute → respond` flow.
+- **Router | Bộ định tuyến:** `core/router.py` uses the Brain LLM to classify user intent into `chat`, `tool`, `code`, or `multi_tool` actions. Includes WINDOWS SYSTEM ARCHITECT and anti-hallucination guardrails.
+- **Self-healing engine | Hệ thống tự sửa lỗi:** `core/recovery_manager.py` implements multi-attempt (up to 3) autonomous error correction with a ROBUST OS DEVELOPER prompt, syntax validation, and escalating fix strategies.
 - **Tool registry/execution | Kho công cụ & thực thi:** `core/tool_manager.py` loads internal + external tool packs, stitches tool manuals, executes by tool name.
-- **Memory layer | Tầng bộ nhớ:** `core/memory_manager.py` stores/retrieves fact vault (`facts.json`) and provides context string for prompts.
+- **Agent system | Hệ thống agent:** `agent_system/` contains the Brain and Worker LLM models, provider config, LangGraph pipeline, and buffer writer tool.
 - **Tool packs | Các gói kỹ năng:**
-  - Internal: workspace/file ops (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py`)
+  - Internal: workspace/file ops (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py` — standalone, no external dependency)
   - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`)
-- **Testing scripts | Script kiểm thử:** `backtest/` and `test.py` validate APIs and end-to-end tool behavior.
+- **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17-test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests).
 - **Workspace sandbox | Vùng workspace:** `ciel_workspace/` contains files created/tested by tools.
 
 ---
 
 ## 2) Runtime Flow | Luồng chạy
 
-1. User enters command in `main.py`.
-2. `AgentLoop.run_step()` stores user message, asks `_is_coding_task()` router.
-3. `CielCore.chat_with_tools(..., use_coder=...)` invokes selected LLM with bound tools.
-4. If tool calls exist (native or extracted from text), `ToolManager.execute_tool()` runs them.
-5. Tool outputs are injected into a reflection prompt for final answer generation.
-6. Final response is parsed from `<RESPONSE>...</RESPONSE>`, logged (if DEBUG), and returned.
+### Primary Pipeline (CielCore — used by main.py)
+
+```
+User Input → CielCore.process()
+  → Router (Brain LLM) classifies intent → JSON decision
+  → Based on action:
+      "chat"       → Worker generates natural response
+      "tool"       → ToolManager executes → Worker formats result (if needed)
+      "code"       → Worker generates code → buffer_writer flushes to disk
+      "multi_tool" → Sequential tool execution → Worker synthesizes combined report
+  → Self-Healing Loop (if error detected):
+      Attempt 1: Fix obvious cause (syntax/import)
+      Attempt 2: Rewrite logic with alternative approach
+      Attempt 3: Full rewrite using only standard libraries
+      Each attempt: Syntax validation before saving → Re-execute tool
+  → Response saved to chat memory → returned to user
+```
+
+### Agent System Pipeline (LangGraph — used by agent_system/main.py)
+
+```
+User Input → Brain Node (plan) → Worker Node (execute steps) → File Write Node (buffer → disk)
+  → Steps loop until all plan items are complete
+  → Each Worker step is ISOLATED — shared_context provides cross-step info
+```
 
 ---
 
@@ -35,42 +58,68 @@ Tài liệu này là bản đồ đầy đủ của dự án: kiến trúc file,
 
 ```text
 Ciel 2.0/
+├── .env                          # API keys, model names, provider config
 ├── .gitignore
-├── architect.md
-├── credentials.json
-├── main.py
-├── requirements.txt
-├── test.py
-├── core/
-│   ├── agent_loop.py
-│   ├── llm_connector.py
-│   ├── memory_manager.py
-│   └── tool_manager.py
-├── skills/
-│   ├── external/
-│   │   ├── gmail_ops.py
-│   │   └── trading_ops.py
-│   └── internal/
-│       ├── memory_ops.py
-│       ├── os_ops.py
-│       └── system_ops.py
-├── persona/
+├── architect.md                  # This file — full project map
+├── credentials.json              # Google OAuth credentials
+├── main.py                       # CLI entry point
+├── requirements.txt              # Python dependencies
+│
+├── core/                         # Main orchestration layer
+│   ├── agent_loop.py             # Thin wrapper → CielCore.process()
+│   ├── llm_connector.py          # CielCore: main pipeline orchestrator
+│   ├── router.py                 # Router: Brain-based intent classification
+│   ├── recovery_manager.py       # RecoveryManager: multi-attempt self-healing
+│   └── tool_manager.py           # ToolManager: tool registry & execution
+│
+├── agent_system/                 # Brain-Worker LLM subsystem
+│   ├── __init__.py
+│   ├── config.py                 # Provider/model/retry configuration
+│   ├── main.py                   # Standalone LangGraph runner
+│   ├── requirements.txt
+│   ├── models/
+│   │   ├── brain.py              # Brain LLM (Router + Planner)
+│   │   └── worker.py             # Worker LLM (Code/Text generator)
+│   ├── graph/
+│   │   ├── state.py              # AgentState TypedDict
+│   │   ├── nodes.py              # brain_node, worker_node, file_write_node
+│   │   ├── edges.py              # Conditional routing edges
+│   │   └── builder.py            # LangGraph compilation
+│   ├── tools/
+│   │   └── buffer_writer.py      # In-memory code buffer with flush-to-disk
+│   └── utils/
+│       └── logger.py             # Colored console logger
+│
+├── skills/                       # Tool packs
+│   ├── internal/
+│   │   ├── memory_ops.py         # Fact vault tools (standalone JSON-based)
+│   │   ├── os_ops.py             # Shell, screenshot, app launcher
+│   │   └── system_ops.py         # Workspace file CRUD + Python runner
+│   └── external/
+│       ├── gmail_ops.py          # Gmail toolkit + custom ops
+│       └── trading_ops.py        # Crypto price, TA, MEXC portfolio
+│
+├── persona/                      # Personality fragments
 │   ├── directives.txt
 │   ├── format.txt
 │   └── identity.txt
-├── backtest/
-│   ├── test_google.py
-│   ├── test_indicators.py
-│   ├── test_os_ops_integration.py
-│   ├── test_trading_api.py
-│   └── testapi.py
-└── ciel_workspace/
-    ├── calculate_sum.py
-    ├── chào.txt
-    ├── code.txt
-    ├── loop_test.py
-    ├── sum_1_to_100.py
-    └── test_hermes.txt
+│
+├── backtest/                     # Test suites
+│   ├── test_integration.py       # 17-test full pipeline validation
+│   ├── test_brain_worker.py      # Brain-Worker multi-file workflow tests
+│   └── logs/                     # Test output logs (.txt + .json)
+│
+├── ciel_data/                    # Runtime data
+│   ├── facts.json                # Fact vault
+│   ├── memory_bank.json          # Chat history persistence
+│   └── logs/
+│       └── thoughts.log          # Brain/Worker thought process audit trail
+│
+├── ciel_workspace/               # Sandbox for user scripts
+│   ├── test_healing.py
+│   └── loop_test.py
+│
+└── agent_output/                 # Generated code output directory
 ```
 
 ---
@@ -85,13 +134,12 @@ Ciel 2.0/
   - `langchain-core>=0.1.10`
   - `langchain-ollama`
   - `langchain-google-genai`
+  - `langchain-openai`
   - `langgraph`
+  - `tenacity`
 - **Data / TA**
   - `pandas`
   - `pandas-ta`
-- **Memory / Vector**
-  - `chromadb`
-  - `sentence-transformers`
 - **Google integrations**
   - `langchain-google-community`
   - `google-api-python-client`
@@ -105,27 +153,96 @@ Ciel 2.0/
   - `psutil`
   - `pillow`
 
-### 4.2 Key runtime services / credentials
+### 4.2 Multi-Provider Support
 
-- **Local models via Ollama:** `LOCAL_MODEL`, `CODER_MODEL`
-- **Gemini fallback:** `GEMINI_API_KEY`, `GEMINI_MODEL`
+Ciel supports **three LLM providers**, configurable independently for Brain and Worker:
+
+| Provider   | Brain Model (Router) | Worker Model (Generator) | Config Key        |
+|------------|----------------------|--------------------------|-------------------|
+| **Gemini** (default) | `gemini-1.5-pro`     | `gemini-1.5-flash`       | `GEMINI_API_KEY`  |
+| **DeepSeek** | `deepseek-v4-pro`    | `deepseek-v4-pro`        | `DEEPSEEK_API_KEY`|
+| **Ollama** (local) | `qwen2.5:14b`       | `qwen2.5-coder:14b`     | `OLLAMA_BASE_URL` |
+
+Provider is set via `BRAIN_PROVIDER` and `WORKER_PROVIDER` in `.env` or `agent_system/config.py`.
+
+### 4.3 Key runtime services / credentials
+
+- **Gemini API:** `GEMINI_API_KEY` (prepaid credits, monthly spend cap)
+- **DeepSeek API:** `DEEPSEEK_API_KEY`
+- **Local models via Ollama:** `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
 - **Trading (MEXC):** `MEXC_API_KEY`, `MEXC_API_SECRET`
 - **Google OAuth:** `credentials.json`, token files under `ciel_data/`
 
-### 4.3 Internal dependency graph
+### 4.4 Internal dependency graph
 
-- `main.py` -> `core.agent_loop.AgentLoop`
-- `core.agent_loop` -> `core.llm_connector.CielCore`
-- `core.llm_connector` -> `core.memory_manager.MemoryManager`, `core.tool_manager.ToolManager`
-- `core.tool_manager` -> internal/external skill modules
-- `skills.internal.memory_ops` -> `core.memory_manager.MemoryManager`
+```
+main.py → core.agent_loop.AgentLoop
+core.agent_loop → core.llm_connector.CielCore
+
+CielCore initializes:
+  ├── agent_system.models.brain.Brain        (Router LLM)
+  ├── agent_system.models.worker.Worker      (Generator LLM)
+  ├── core.router.Router                     (Intent classification)
+  ├── core.recovery_manager.RecoveryManager  (Self-healing)
+  └── core.tool_manager.ToolManager          (Tool registry)
+       └── skills.internal.* + skills.external.*
+
+skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json directly)
+```
 
 ---
 
-## 5) Complete Function Inventory | Danh mục toàn bộ hàm
+## 5) Key Modules Deep Dive | Chi tiết các module chính
 
-> Includes top-level functions, class methods, and nested tool functions.
-> Bao gồm hàm top-level, method trong class, và hàm tool lồng bên trong.
+### 5.1 Router (`core/router.py`)
+
+The Router uses the Brain LLM to classify user input into one of four action types:
+
+- `chat` — Conversation, questions, explanations
+- `tool` — Single tool execution (email, file ops, trading, shell)
+- `code` — Code generation + save to `agent_output/`
+- `multi_tool` — Sequential multi-tool workflow with synthesized report
+
+**Prompt Roles Embedded:**
+- **WINDOWS SYSTEM ARCHITECT:** Forces absolute paths in double quotes, `python -m` prefix, and `taskkill` suggestions for locked files.
+- **Anti-hallucination:** Explicit rule: `NEVER output "action": "shell_command"` — must use `"tool"` with `"execute_shell_command"`.
+
+### 5.2 Recovery Manager (`core/recovery_manager.py`)
+
+Multi-attempt self-healing system with two strategies:
+
+**Strategy A — Code Fix** (for `run_python_script` errors):
+1. Reads the failed source code from disk
+2. Sends to Worker with ROBUST OS DEVELOPER prompt
+3. Validates syntax via `check_syntax()` before saving
+4. Escalates strategy on each attempt (syntax fix → rewrite → stdlib-only rewrite)
+
+**Strategy B — Parameter Fix** (for other tool errors):
+1. Sends failed tool name + args + error to Worker
+2. Worker returns corrected JSON args
+3. Re-executes tool with corrected arguments
+
+**Prompt Roles Embedded:**
+- **ROBUST OS DEVELOPER:** Implements `FileNotFoundError`/`PermissionError` handling, `os.path.normpath` for Windows, and `--user` flag suggestions for pip.
+
+### 5.3 Brain (`agent_system/models/brain.py`)
+
+The Brain has two specialized prompts:
+- **BRAIN_SYSTEM_PROMPT:** For the LangGraph pipeline — multi-step planner with `shared_context` for isolated Worker steps.
+- **CIEL_ROUTER_PROMPT (in router.py):** For the main CielCore pipeline — intent classifier.
+
+Supports three providers: Gemini (`ChatGoogleGenerativeAI`), DeepSeek (`ChatOpenAI`), Ollama (`ChatOllama`).
+
+### 5.4 Worker (`agent_system/models/worker.py`)
+
+Pure text/code generator. No tools, no routing. Features:
+- Robust markdown fence stripping (`_strip_markdown_fences`)
+- Retry protection via `tenacity` for transient errors
+- Supports three providers: Gemini, DeepSeek, Ollama
+
+---
+
+## 6) Complete Function Inventory | Danh mục toàn bộ hàm
 
 ### `main.py`
 
@@ -133,49 +250,81 @@ Ciel 2.0/
 
 ### `core/agent_loop.py` (`class AgentLoop`)
 
-- `__init__(self)` - Init core connector, debug flag, thought log path.
-- `_log_interaction(self, user_input, thought, response, tool_used=None)` - Write debug interaction log.
-- `_is_coding_task(self, user_input)` - Intent router (`CODE` vs `CHAT`) using router model + heuristic fallback.
-- `_extract_tool_calls_from_text(self, raw_content, available_tools)` - Parse fallback tool calls from `<ACTION>` or `Action:`.
-- `_safe_parse_tool_args(self, args_str, target_tool)` - Safely parse tool args via `ast`, JSON, scalar mapping.
-- `_looks_like_tool_intent(self, user_input)` - Heuristic keyword detector for likely tool requests.
-- `_contains_refusal_phrase(self, text)` - Detect refusal patterns.
-- `run_step(self, user_input)` - Full cycle: route model, tool execution loop, reflection prompt, response parse, memory save.
+- `__init__(self)` - Init CielCore.
+- `run_step(self, user_input)` - Delegates to `CielCore.process()`, returns response.
 
 ### `core/llm_connector.py` (`class CielCore`)
 
-- `__init__(self)` - Build tool manager, initialize Router/Coder LLMs, optional Gemini fallback, prompt and memory.
+- `__init__(self)` - Initialize ToolManager, Brain, Worker, Router, RecoveryManager, chat memory.
+- `_log_thought(self, actor, action, content)` - Append audit entry to `thoughts.log`.
+- `_build_tool_list(self)` - Build compact tool schema string for the Router prompt.
 - `_trim_history(self)` - Keep chat history within max length.
-- `_build_prompt(self)` - Compose system prompt from persona fragments + tool manuals + fact vault.
-- `load_fragment(filename, default_text="")` *(nested)* - Read persona fragment file.
-- `_load_chat_memory(self)` - Load saved messages, filter toxic/refusal patterns.
+- `_load_chat_memory(self)` - Load persisted messages, filter toxic/refusal patterns.
 - `_save_chat_memory(self)` - Persist chat history JSON.
-- `chat_with_tools(self, user_input, use_coder=False)` - Invoke selected LLM chain with memory + facts.
+- `execute_chat(self, task)` - Worker generates natural language response.
+- `execute_tool(self, tool_name, tool_args, response_hint)` - Execute tool with self-healing loop (up to 3 attempts) and optional Worker formatting.
+- `execute_code(self, task, filename)` - Worker generates code → buffer_writer → flush to disk.
+- `execute_multi_tool(self, tools, response_hint)` - Sequential tool execution → Worker synthesizes combined report.
+- `process(self, user_input)` - Full pipeline: route → execute → respond → save memory.
+- `chat_with_tools(self, user_input, use_coder)` - Legacy compatibility wrapper.
 
-### `core/memory_manager.py` (`class MemoryManager`)
+### `core/router.py` (`class Router`)
 
-- `__init__(self)` - Init memory directory and fact file path.
-- `_init_vault(self)` - Create empty `facts.json` when missing.
-- `save_fact(self, key, value)` - Upsert fact.
-- `get_fact(self, key)` - Return fact or `NOT_FOUND`.
-- `delete_fact(self, key)` - Remove fact key.
-- `get_all_facts_context(self)` - Build formatted fact context string for prompts.
-- `ingest_file(self, file_path)` - Placeholder for future RAG ingestion.
-- `query_file_knowledge(self, query)` - Placeholder for future RAG query.
+- `__init__(self, brain, log_thought_fn)` - Init with Brain LLM and thought logger.
+- `route(self, user_input, tool_list_str, chat_history)` - Classify intent via Brain LLM → return parsed JSON decision. Has tenacity retry protection.
+
+### `core/recovery_manager.py` (`class RecoveryManager`)
+
+- `__init__(self, worker, log_thought_fn)` - Init with Worker LLM and thought logger.
+- `heal_tool_error(self, tool_name, tool_args, result_text, attempt, previous_code)` - Multi-strategy error correction. Returns `(success, action_type, action_data)`.
+- `check_syntax(self, fixed_code)` - Fast LLM pass to validate Python syntax before saving.
 
 ### `core/tool_manager.py` (`class ToolManager`)
 
 - `__init__(self)` - Initialize tool registries and load tool zones.
 - `_load_internal_tools(self)` - Load memory/system/os internal tool packs and prompts.
 - `_load_external_tools(self)` - Load Gmail + trading tool packs and prompts.
-- `get_tools(self)` - Return tool list and refresh name->tool map.
+- `get_tools(self)` - Return tool list and refresh name→tool map.
 - `get_dynamic_prompt(self)` - Concatenate all tool manuals for system prompt.
 - `execute_tool(self, name, args)` - Invoke tool by name with error handling.
+- `format_tool_result(self, result)` - Format raw tool result to string.
+
+### `agent_system/config.py`
+
+- Central configuration: provider selection, model names, API keys, retry profiles, allowed tools.
+
+### `agent_system/models/brain.py` (`class Brain`)
+
+- `__init__(self)` - Initialize dual LLM instances (router + reflect) based on provider.
+- `plan(self, user_request)` - Generate multi-step JSON plan from user request. Has tenacity retry.
+- `reflect(self, user_request, work_done)` - Optional reflection on completed work.
+
+### `agent_system/models/worker.py` (`class Worker`)
+
+- `__init__(self)` - Initialize LLM based on provider (Gemini/DeepSeek/Ollama).
+- `generate(self, task, context)` - Generate content for a single task. Strips markdown fences. Has tenacity retry.
+- `_strip_markdown_fences(content)` *(module-level)* - Robust markdown fence removal.
+
+### `agent_system/graph/` (LangGraph pipeline)
+
+- `state.py` - `AgentState` TypedDict definition.
+- `nodes.py` - `brain_node()`, `worker_node()`, `file_write_node()` — graph node functions.
+- `edges.py` - `should_continue()` — conditional routing logic.
+- `builder.py` - `build_graph()` — compile LangGraph StateGraph.
+
+### `agent_system/tools/buffer_writer.py` (`class BufferWriter`)
+
+- `append(self, content)` - Add content to in-memory buffer.
+- `flush(self, filepath)` - Write buffer to disk and clear.
+- `clear(self)` - Clear buffer without writing.
 
 ### `skills/internal/memory_ops.py`
 
-- `save_fact(key, value)` - Tool wrapper for saving facts.
-- `delete_fact(key)` - Tool wrapper for deleting facts.
+- `_load_facts()` - Load facts from `ciel_data/facts.json`.
+- `_save_facts(data)` - Write facts to `ciel_data/facts.json`.
+- `save_fact(key, value)` - Tool: save a fact to the vault.
+- `get_fact(key)` - Tool: retrieve a fact by key.
+- `delete_fact(key)` - Tool: delete a fact by key.
 
 ### `skills/internal/system_ops.py`
 
@@ -213,50 +362,77 @@ Ciel 2.0/
 - `analyze_technical_indicators(symbol, interval="1h")` *(nested)* - RSI + SMA trend analysis with pandas-ta.
 - `get_mexc_portfolio()` *(nested)* - Query MEXC spot/futures balances and open positions with computed PnL.
 
-### `test.py`
+### `backtest/test_integration.py`
 
-- `run_backtest()` - Execute scripted end-to-end prompts across memory/system/gmail/trading toolsets and log results.
+- `run_test(core, name, prompt, ilog, ...)` - Execute a single test case against CielCore.
+- `main()` - Run all 17 integration tests across categories: Chat, Workspace, Memory, OS/Shell, Code Gen, Trading, Gmail, Edge Cases, Self-Healing, Cleanup.
 
-### `backtest/test_google.py`
+### `backtest/test_brain_worker.py`
 
-- `test_google_connection()` - OAuth + Calendar API connectivity smoke test.
-
-### `backtest/test_indicators.py`
-
-- `run_technical_backtest(symbol="SOLUSDT", interval="1h", limit=100)` - Pull klines and compute RSI/EMA diagnostics.
-
-### `backtest/test_os_ops_integration.py`
-
-- `main()` - Verify OS tools load + smoke test shell and screenshot operations.
-
-### `backtest/test_trading_api.py`
-
-- `get_contract_info(symbol)` - Fetch MEXC contract size/fair price.
-- `test_mexc_full_portfolio()` - Spot/futures scan and PnL breakdown from MEXC APIs.
-
-### `backtest/testapi.py`
-
-- `test_ciel_connection()` - Direct Gemini API connection test (non-LangChain).
-
-### Script-only files in `ciel_workspace/`
-
-- `calculate_sum.py` - arithmetic print script (no function).
-- `loop_test.py` - loop print script (no function).
-- `sum_1_to_100.py` - aggregate sum script (no function).
+- `run_test(name, prompt, ilog)` - Execute a single Brain-Worker workflow test.
+- `test_retry(ilog)` - Test retry resilience on transient errors.
+- `main()` - Run 4 tests: simple chat, single file, multi-file (3-file project), retry.
 
 ---
 
-## 6) Roadmap Suggestions | Gợi ý roadmap nâng cấp
+## 7) Integration Test Coverage | Phạm vi kiểm thử tích hợp
 
-- **Unify duplicated logic | Gộp logic trùng:** `get_contract_info()` appears in both trading module and test module.
-- **Strengthen security | Tăng bảo mật:** avoid storing secrets in plain files; add secret scanning and stricter command allowlist.
-- **Stabilize tool contracts | Ổn định contract tool:** define typed schemas for nested tool functions and central error model.
-- **Finish RAG layer | Hoàn thiện RAG:** implement `ingest_file()` and `query_file_knowledge()`.
+The `backtest/test_integration.py` suite covers 17 test cases:
+
+| # | Test | Category |
+|---|------|----------|
+| 1 | Simple greeting | Chat |
+| 2 | Knowledge question | Chat |
+| 3 | List workspace | Workspace |
+| 4 | Write file | Workspace |
+| 5 | Read file | Workspace |
+| 6 | Save fact | Memory |
+| 7 | Get fact | Memory |
+| 8 | Shell command | OS/Shell |
+| 9 | Code generation | Code Gen |
+| 10 | Crypto price | Trading |
+| 11 | Gmail search | Gmail |
+| 12 | Ambiguous intent | Edge Cases |
+| 13 | Unknown tool | Edge Cases |
+| 14 | Delete fact (cleanup) | Cleanup |
+| 15 | Delete file (cleanup) | Cleanup |
+| 16 | Self-healing: code rewrite (syntax + module error) | Self-Healing |
+| 17 | Self-healing: parameter correction | Self-Healing |
+
+---
+
+## 8) Changelog | Nhật ký thay đổi
+
+### Migration: Monolith → Brain-Worker Architecture
+
+- **Removed:** `core/memory_manager.py` — memory logic inlined into `skills/internal/memory_ops.py` (standalone JSON read/write).
+- **Removed:** Old monolith routing in `agent_loop.py` — replaced by thin wrapper to `CielCore.process()`.
+- **Added:** `core/router.py` — dedicated Router module with CIEL_ROUTER_PROMPT.
+- **Added:** `core/recovery_manager.py` — multi-attempt self-healing with syntax validation.
+- **Refactored:** `core/llm_connector.py` — from monolith to modular orchestrator using Router + RecoveryManager.
+- **Added:** Multi-provider support (Gemini, DeepSeek, Ollama) in both Brain and Worker.
+- **Added:** `langchain-openai` dependency for DeepSeek support.
+- **Added:** WINDOWS SYSTEM ARCHITECT prompt in Router for OS-aware path handling.
+- **Added:** ROBUST OS DEVELOPER prompt in RecoveryManager for Windows-aware code fixing.
+- **Added:** `shared_context` with typed attribute signatures in Brain's multi-file planning prompt to prevent Worker hallucination of wrong attribute names.
+- **Added:** `backtest/test_integration.py` — 17-test full pipeline validation.
+- **Added:** `backtest/test_brain_worker.py` — multi-step workflow stress tests.
+
+---
+
+## 9) Roadmap Suggestions | Gợi ý roadmap nâng cấp
+
+- **Finish RAG layer | Hoàn thiện RAG:** implement document ingestion and vector search for knowledge queries.
 - **Add automated tests | Bổ sung test tự động:** convert smoke scripts to pytest with mocks for API/network calls.
+- **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
+- **Tool confirmation | Xác nhận tool:** add user confirmation step before executing destructive tools (delete, shell).
+- **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
 
 ---
 
-## 7) Notes | Ghi chú
+## 10) Notes | Ghi chú
 
-- This map reflects the current repository contents at scan time.
-- Bản đồ này phản ánh trạng thái hiện tại của repository tại thời điểm quét.
+- This map reflects the current repository contents as of May 2026.
+- Bản đồ này phản ánh trạng thái hiện tại của repository tại tháng 5/2026.
+- Default provider is Gemini (prepaid credits with monthly spend cap).
+- The system supports hot-swapping providers via `.env` without code changes.
