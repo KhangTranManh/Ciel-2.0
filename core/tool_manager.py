@@ -60,6 +60,26 @@ class ToolManager:
             "take_screenshot": {
                 "required": {},
                 "optional": {}
+            },
+            "git_list_repos": {
+                "required": {"search_path": str},
+                "optional": {}
+            },
+            "git_status": {
+                "required": {"repo_path": str},
+                "optional": {}
+            },
+            "git_diff": {
+                "required": {"repo_path": str},
+                "optional": {}
+            },
+            "git_commit_and_push": {
+                "required": {"repo_path": str, "message": str},
+                "optional": {}
+            },
+            "git_confirm_push": {
+                "required": {"repo_path": str, "message": str},
+                "optional": {}
             }
         }
         
@@ -155,6 +175,27 @@ class ToolManager:
         except Exception as e:
             print(Fore.RED + f"[Ciel Warning] Trading tool corruption detected. Error: {e}" + Style.RESET_ALL)
             print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
+
+        # ==========================================
+        # 3. GIT VERSION CONTROL ARMORY
+        # ==========================================
+        try:
+            from skills.external.github_ops import get_github_tools
+            github_data = get_github_tools()
+
+            github_tools = github_data.get("tools", [])
+            github_prompt = github_data.get("prompt", "")
+
+            if github_tools:
+                self.tools.extend(github_tools)
+                if github_prompt:
+                    self.system_prompts.append(github_prompt)
+                print(Fore.GREEN + "[Ciel System] Git armory fully loaded and operational." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No Git tools loaded." + Style.RESET_ALL)
+
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Warning] Git tool corruption detected. Error: {e}" + Style.RESET_ALL)
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
