@@ -1,0 +1,150 @@
+================================================================================
+  CIEL 2.0 — DEVELOPER NOTES (Next Features to Build)
+  Last Updated: 2026-05-11
+================================================================================
+
+These are features that have been discussed, analyzed (pros/cons), and agreed
+upon for future development. They are listed in priority order.
+
+Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
+
+================================================================================
+  PRIORITY 1: GitHub Manager (Dev Tool Pack)
+================================================================================
+
+  STATUS: Agreed, not yet started.
+  FILE:   skills/external/github_ops.py (to be created)
+
+  WHAT:
+    Give Ciel the ability to manage Git repositories directly. This turns her
+    from a "chat advisor" into a "Junior Developer" who can execute version
+    control operations on the Master's behalf.
+
+  TOOLS TO BUILD:
+    1. git_status()     — Show changed/staged/untracked files.
+    2. git_diff()       — Show the actual code changes before committing.
+    3. git_commit_and_push(message) — Stage all, commit, and push.
+
+  CRITICAL SAFETY RULES:
+    - MUST require explicit "Y/N" user approval before executing push.
+    - MUST never commit .env or files listed in .gitignore.
+    - MUST show a preview of what will be committed before asking approval.
+    - Consider adding a "dry run" mode that shows what WOULD happen.
+
+  WHY THIS WAS CHOSEN:
+    The Master's goal is to make Ciel a virtual assistant for work. The biggest
+    friction right now is that Ciel can write/fix code but cannot commit it.
+    This feature eliminates that friction and makes Ciel a true collaborator.
+
+  RISKS DISCUSSED:
+    - Ciel could accidentally overwrite a branch or discard uncommitted changes.
+    - Ciel could commit sensitive files (.env, API keys).
+    - Solution: strict safety rails + mandatory user confirmation.
+
+================================================================================
+  PRIORITY 2: 11:00 PM "Brain Cleanse" (Scheduled Task)
+================================================================================
+
+  STATUS: Agreed, not yet started.
+  FILE:   core/scheduler.py (add new task to existing file)
+
+  WHAT:
+    A nightly scheduled task that flushes ALL remaining short-term memory
+    (memory_bank.json) into the RAG vector database (ChromaDB), then generates
+    a "Daily Summary" entry in RAG so Ciel can recall what happened each day.
+
+  HOW:
+    1. At 23:00, read all messages from memory_bank.json.
+    2. Archive every message into ChromaDB via rag_manager.add_memory().
+    3. Use Worker (1 API call) to generate a concise "Daily Summary" of all
+       the day's interactions.
+    4. Save the summary into RAG as a special "daily_summary" entry.
+    5. Clear memory_bank.json to start fresh the next morning.
+    6. Optionally notify Master via Telegram: "Brain cleanse complete."
+
+  WHY:
+    Prevents context bleed across days. Every morning starts clean and fast.
+    The Daily Summary in RAG means the Master can ask "What did we do last
+    Tuesday?" and Ciel will find it via semantic search.
+
+  RISKS DISCUSSED:
+    - If Master is working late (past 11 PM) on a complex task, the cleanse
+      could wipe the active conversation context mid-flow.
+    - Solution: Add a "grace period" check — if the last message was within
+      the past 30 minutes, skip the cleanse and retry at midnight.
+
+================================================================================
+  PRIORITY 3: RAG Re-ranking (Advanced Memory Optimization)
+================================================================================
+
+  STATUS: Discussed, DEFERRED until needed.
+  FILE:   core/rag_manager.py (modify search_similar)
+
+  WHAT:
+    Add a local cross-encoder model (e.g., bge-reranker-base) that runs on the
+    RTX 3060 to re-score RAG search results. Currently, search_similar returns
+    results based on pure cosine similarity. A re-ranker would use deeper
+    semantic understanding to filter out "similar but irrelevant" memories.
+
+  HOW:
+    1. search_similar() fetches top 10 results from ChromaDB (instead of 3).
+    2. Pass all 10 results + the query through the cross-encoder.
+    3. Re-rank by semantic relevance score.
+    4. Return only the top 3 highest-scoring results to the Brain.
+
+  WHY IT WAS DEFERRED:
+    The current RAG system passed a 45-prompt stress test with 100% accuracy
+    on the critical recall test. The noise filters (MIN_QUERY_LENGTH=15,
+    MIN_RELEVANCE_SCORE=0.65) are already doing a good job. Adding a
+    cross-encoder would:
+    - Consume 1-2 GB extra VRAM on the RTX 3060.
+    - Add latency to every single user message.
+    - Add architectural complexity to a system that is currently healthy.
+
+  WHEN TO REVISIT:
+    - When the RAG database grows beyond 10,000+ memories.
+    - When the Master notices Ciel recalling irrelevant or confusing context.
+    - When upgrading to a GPU with more VRAM (e.g., RTX 4090).
+
+================================================================================
+  CURRENT SYSTEM STATUS (as of 2026-05-11)
+================================================================================
+
+  OPERATIONAL FEATURES:
+    [x] Brain-Worker architecture (Gemini 2.5 Pro)
+    [x] Router with anti-hallucination guardrails
+    [x] Self-healing engine (3-attempt auto-fix)
+    [x] Hybrid Memory: short-term JSON (20 msg) + long-term ChromaDB RAG
+    [x] RAG noise filters (MIN_QUERY_LENGTH=15, MIN_RELEVANCE_SCORE=0.65)
+    [x] Gmail integration (search, read, reply, trash, mark read)
+    [x] Trading tools (Binance crypto stats, TwelveData forex/metals)
+    [x] OS tools (shell, screenshot, app launcher)
+    [x] Workspace tools (file CRUD, Python runner)
+    [x] Memory/Fact vault (save/get/delete facts)
+    [x] Proactive Scheduler (Morning Digest at 08:00 → Telegram)
+    [x] Telegram notification channel
+    [x] 45-prompt amnesia stress test (all passing)
+    [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
+
+  PENDING FEATURES:
+    [ ] GitHub Manager (Priority 1 — next to build)
+    [ ] 11 PM Brain Cleanse (Priority 2)
+    [ ] RAG Re-ranking (Priority 3 — deferred)
+
+  KEY FILES TO READ FIRST:
+    - architect.md          → Full project map, all functions, changelog
+    - core/llm_connector.py → Main orchestration pipeline (CielCore)
+    - core/rag_manager.py   → Hybrid memory system
+    - core/scheduler.py     → Proactive background tasks
+    - core/router.py        → Brain routing logic + RECALLED CONTEXT rule
+    - .env                  → API keys (NEVER auto-edit this file)
+
+  IMPORTANT RULES:
+    1. NEVER touch .env programmatically. Master manages it manually.
+    2. All scheduled tasks must use "Zero-Token Standby" — Python watches
+       the clock, LLM sleeps until needed. Direct API calls, bypass Brain.
+    3. All scheduled tasks run in "Ghost Mode" — no pollution to
+       memory_bank.json or RAG. Results go to files/Telegram only.
+    4. thoughts.log is the single source of truth for debugging.
+
+================================================================================
