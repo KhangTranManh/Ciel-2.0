@@ -12,8 +12,8 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   PRIORITY 1: GitHub Manager (Dev Tool Pack)
 ================================================================================
 
-  STATUS: Agreed, not yet started.
-  FILE:   skills/external/github_ops.py (to be created)
+  STATUS: ✅ DONE (2026-05-11)
+  FILE:   skills/external/github_ops.py
 
   WHAT:
     Give Ciel the ability to manage Git repositories directly. This turns her
@@ -127,7 +127,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
 
   PENDING FEATURES:
-    [ ] GitHub Manager (Priority 1 — next to build)
+    [x] GitHub Manager (Priority 1 — done 2026-05-11)
     [ ] 11 PM Brain Cleanse (Priority 2)
     [ ] RAG Re-ranking (Priority 3 — deferred)
 

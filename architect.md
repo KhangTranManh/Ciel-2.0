@@ -104,6 +104,7 @@ Ciel 2.0/
 │   │   ├── os_ops.py             # Shell, screenshot, app launcher
 │   │   └── system_ops.py         # Workspace file CRUD + Python runner
 │   └── external/
+│       ├── github_ops.py         # Git repo manager (status, diff, commit, push)
 │       ├── gmail_ops.py          # Gmail toolkit + custom ops
 │       ├── telegram_ops.py       # Telegram Bot API notifications
 │       └── trading_ops.py        # Crypto price, TA, Forex/Metals
@@ -451,6 +452,12 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### GitHub Manager (May 2026)
+
+- **Added:** `skills/external/github_ops.py` — Git version control tool pack with 5 tools: `git_list_repos`, `git_status`, `git_diff`, `git_commit_and_push` (preview), `git_confirm_push` (execute after confirmation).
+- **Modified:** `core/tool_manager.py` — Registered git tools with arg schemas.
+- **Safety:** Auto-excludes sensitive files (.env, credentials, tokens) from commits. Push requires explicit Master confirmation via 2-step flow.
+
 ### Hybrid Memory & Proactive Features (May 2026)
 
 - **Added:** `core/rag_manager.py` — ChromaDB + `all-MiniLM-L6-v2` long-term vector memory with lazy-loading.
@@ -489,7 +496,7 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Tool confirmation | Xác nhận tool:** add user confirmation step before executing destructive tools (delete, shell).
 - **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
 - **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem.
-- **GitHub Manager | Quản lý GitHub:** Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.
+- **GitHub Manager | Quản lý GitHub:** ~~Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.~~ ✅ **DONE** — 5 tools with 2-step commit safety and deep repo scanner.
 - **11 PM Brain Cleanse | Dọn não 23h:** Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.
 
 ---
