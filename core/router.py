@@ -69,6 +69,7 @@ RULES:
 - ROUTING PRIORITY: If the user says "write X to a file" or "save X to a file" in the workspace, use "tool" with write_file. Only use "code" when the user wants you to GENERATE a new program/script and save it to agent_output/.
 - For search_gmail: always include {{"resource": "messages"}} in tool_args unless the user specifically asks for threads.
 - For multi-step tasks ONLY, use "multi_tool" to sequentially gather data from multiple sources before responding.
+- RECALLED CONTEXT: If a [RECALLED PAST CONTEXT] block is provided and already contains the answer to the user's question, use "chat" and include the relevant information in the task. Do NOT call get_fact or save_fact if the recalled context already has the data.
 """
 
 class Router:

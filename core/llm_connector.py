@@ -19,6 +19,7 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from .tool_manager import ToolManager
 from .router import Router
 from .recovery_manager import RecoveryManager
+from . import rag_manager
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -110,8 +111,30 @@ class CielCore:
         return "\n".join(lines)
 
     def _trim_history(self):
+        """Trim chat history to max_history. Archived messages go to long-term RAG memory."""
         if len(self.chat_history.messages) > self.max_history:
+            # Archive the messages that are about to be trimmed
+            overflow = self.chat_history.messages[:-self.max_history]
+            self._archive_to_rag(overflow)
             self.chat_history.messages = self.chat_history.messages[-self.max_history:]
+
+    def _archive_to_rag(self, messages: list):
+        """Send trimmed messages to long-term RAG memory as user+assistant pairs."""
+        pairs = []
+        current_pair = []
+        for msg in messages:
+            current_pair.append(f"{msg.type.capitalize()}: {msg.content[:300]}")
+            if msg.type == "ai":
+                pairs.append(" | ".join(current_pair))
+                current_pair = []
+        # Save any leftover (unpaired user message)
+        if current_pair:
+            pairs.append(" | ".join(current_pair))
+
+        for pair_text in pairs:
+            saved = rag_manager.embed_and_save(pair_text)
+            if saved:
+                self._log_thought("RAG", "archived", pair_text[:100])
 
     def _load_chat_memory(self):
         if self.chat_memory_file.exists():
@@ -357,11 +380,24 @@ class CielCore:
         return formatted
 
     def process(self, user_input: str) -> str:
-        """Full pipeline: route → execute → respond."""
+        """Full pipeline: recall → route → execute → respond."""
         self.chat_history.add_user_message(user_input)
 
+        # RAG RECALL: Search long-term memory for relevant past context
+        recalled = rag_manager.search_similar(user_input)
+        if recalled:
+            self._log_thought("RAG", "recalled", recalled[:300])
+
         try:
-            decision = self.router.route(user_input, self._tool_list_str, self.chat_history)
+            # Inject recalled context into the user input for the Router
+            enriched_input = user_input
+            if recalled:
+                enriched_input = (
+                    f"[RECALLED PAST CONTEXT (from previous conversations)]:\n"
+                    f"{recalled}\n\n"
+                    f"[CURRENT USER REQUEST]:\n{user_input}"
+                )
+            decision = self.router.route(enriched_input, self._tool_list_str, self.chat_history)
             action = decision.get("action", "chat")
 
             if action == "tool":

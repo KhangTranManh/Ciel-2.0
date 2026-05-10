@@ -3,6 +3,7 @@ import langchain
 from langchain_core.globals import set_verbose, set_debug
 from colorama import Fore, Style
 from core.agent_loop import AgentLoop
+from core.scheduler import CielScheduler
 
 langchain.debug = False
 langchain.verbose = False
@@ -13,6 +14,9 @@ set_verbose(False)
 def main():
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
     try:
+        scheduler = CielScheduler()
+        scheduler.start_background()
+        
         ciel = AgentLoop()
         print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
     except Exception as e:
