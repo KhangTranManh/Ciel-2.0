@@ -12,14 +12,16 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 - **Entry point | Điểm vào:** `main.py` starts CLI loop and delegates each command to `AgentLoop`.
 - **Thin agent loop | Vòng lặp agent:** `core/agent_loop.py` is a thin wrapper that passes user input to `CielCore.process()`.
 - **Main orchestrator | Bộ điều phối chính:** `core/llm_connector.py` (`CielCore`) is the central pipeline. It initializes Brain, Worker, Router, RecoveryManager, and ToolManager, then coordinates the full `route → execute → respond` flow.
-- **Router | Bộ định tuyến:** `core/router.py` uses the Brain LLM to classify user intent into `chat`, `tool`, `code`, or `multi_tool` actions. Includes WINDOWS SYSTEM ARCHITECT and anti-hallucination guardrails.
+- **Router | Bộ định tuyến:** `core/router.py` uses the Brain LLM to classify user intent into `chat`, `tool`, `code`, or `multi_tool` actions. Includes WINDOWS SYSTEM ARCHITECT and anti-hallucination guardrails. Contains RECALLED CONTEXT rule to prefer RAG data over redundant `get_fact` calls.
 - **Self-healing engine | Hệ thống tự sửa lỗi:** `core/recovery_manager.py` implements multi-attempt (up to 3) autonomous error correction with a ROBUST OS DEVELOPER prompt, syntax validation, and escalating fix strategies.
+- **Hybrid Memory (RAG) | Bộ nhớ lai:** `core/rag_manager.py` provides long-term semantic memory via ChromaDB + `all-MiniLM-L6-v2` embeddings. Short-term: `memory_bank.json` (max 20 messages). Long-term: `ciel_data/vector_memory/` (ChromaDB). Overflow messages are automatically archived into vector storage via `_trim_history()`. Recall is filtered by `MIN_QUERY_LENGTH=15` and `MIN_RELEVANCE_SCORE=0.65` to eliminate noise.
+- **Proactive Scheduler | Lịch trình chủ động:** `core/scheduler.py` runs background tasks on a timer using zero-token standby. Tools are called directly (bypassing Brain) to save API costs. Currently schedules a Morning Digest at 08:00 daily (Gmail + Forex/Metals → Worker summary → Telegram notification).
 - **Tool registry/execution | Kho công cụ & thực thi:** `core/tool_manager.py` loads internal + external tool packs, stitches tool manuals, executes by tool name.
 - **Agent system | Hệ thống agent:** `agent_system/` contains the Brain and Worker LLM models, provider config, LangGraph pipeline, and buffer writer tool.
 - **Tool packs | Các gói kỹ năng:**
   - Internal: workspace/file ops (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py` — standalone, no external dependency)
-  - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`)
-- **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17-test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests).
+  - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`), Telegram notifications (`skills/external/telegram_ops.py`)
+- **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17-test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests), `backtest/test_rag_memory.py` (45-prompt amnesia stress test for hybrid memory).
 - **Workspace sandbox | Vùng workspace:** `ciel_workspace/` contains files created/tested by tools.
 
 ---
@@ -30,6 +32,9 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 
 ```
 User Input → CielCore.process()
+  → RAG Recall: search ChromaDB for semantically similar past context
+    (skipped if query < 15 chars or relevance < 0.65)
+  → Inject recalled context into user prompt (if any)
   → Router (Brain LLM) classifies intent → JSON decision
   → Based on action:
       "chat"       → Worker generates natural response
@@ -41,6 +46,7 @@ User Input → CielCore.process()
       Attempt 2: Rewrite logic with alternative approach
       Attempt 3: Full rewrite using only standard libraries
       Each attempt: Syntax validation before saving → Re-execute tool
+  → _trim_history(): if messages > 20, overflow → archived into ChromaDB
   → Response saved to chat memory → returned to user
 ```
 
@@ -68,8 +74,10 @@ Ciel 2.0/
 ├── core/                         # Main orchestration layer
 │   ├── agent_loop.py             # Thin wrapper → CielCore.process()
 │   ├── llm_connector.py          # CielCore: main pipeline orchestrator
+│   ├── rag_manager.py            # RAG: ChromaDB vector memory (long-term)
 │   ├── router.py                 # Router: Brain-based intent classification
 │   ├── recovery_manager.py       # RecoveryManager: multi-attempt self-healing
+│   ├── scheduler.py              # Proactive background task scheduler
 │   └── tool_manager.py           # ToolManager: tool registry & execution
 │
 ├── agent_system/                 # Brain-Worker LLM subsystem
@@ -97,7 +105,8 @@ Ciel 2.0/
 │   │   └── system_ops.py         # Workspace file CRUD + Python runner
 │   └── external/
 │       ├── gmail_ops.py          # Gmail toolkit + custom ops
-│       └── trading_ops.py        # Crypto price, TA, MEXC portfolio
+│       ├── telegram_ops.py       # Telegram Bot API notifications
+│       └── trading_ops.py        # Crypto price, TA, Forex/Metals
 │
 ├── persona/                      # Personality fragments
 │   ├── directives.txt
@@ -107,11 +116,14 @@ Ciel 2.0/
 ├── backtest/                     # Test suites
 │   ├── test_integration.py       # 17-test full pipeline validation
 │   ├── test_brain_worker.py      # Brain-Worker multi-file workflow tests
+│   ├── test_rag_memory.py        # 45-prompt amnesia stress test (hybrid memory)
 │   └── logs/                     # Test output logs (.txt + .json)
 │
 ├── ciel_data/                    # Runtime data
 │   ├── facts.json                # Fact vault
-│   ├── memory_bank.json          # Chat history persistence
+│   ├── gmail_token.json          # Google OAuth token (auto-generated)
+│   ├── memory_bank.json          # Chat history persistence (short-term, max 20)
+│   ├── vector_memory/            # ChromaDB persistent storage (long-term RAG)
 │   └── logs/
 │       └── thoughts.log          # Brain/Worker thought process audit trail
 │
@@ -152,6 +164,11 @@ Ciel 2.0/
   - `colorama`
   - `psutil`
   - `pillow`
+- **RAG / Vector Memory**
+  - `chromadb`
+  - `sentence-transformers` (model: `all-MiniLM-L6-v2`)
+- **Scheduling**
+  - `schedule`
 
 ### 4.2 Multi-Provider Support
 
@@ -170,8 +187,9 @@ Provider is set via `BRAIN_PROVIDER` and `WORKER_PROVIDER` in `.env` or `agent_s
 - **Gemini API:** `GEMINI_API_KEY` (prepaid credits, monthly spend cap)
 - **DeepSeek API:** `DEEPSEEK_API_KEY`
 - **Local models via Ollama:** `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- **Trading (MEXC):** `MEXC_API_KEY`, `MEXC_API_SECRET`
+- **Trading (TwelveData):** `TWELVEDATA_API_KEY` (free tier for Forex/Metals/Stocks)
 - **Google OAuth:** `credentials.json`, token files under `ciel_data/`
+- **Telegram Notifications:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
 ### 4.4 Internal dependency graph
 
@@ -184,8 +202,13 @@ CielCore initializes:
   ├── agent_system.models.worker.Worker      (Generator LLM)
   ├── core.router.Router                     (Intent classification)
   ├── core.recovery_manager.RecoveryManager  (Self-healing)
+  ├── core.rag_manager                       (Hybrid memory: ChromaDB + embeddings)
   └── core.tool_manager.ToolManager          (Tool registry)
        └── skills.internal.* + skills.external.*
+
+main.py also initializes:
+  └── core.scheduler.CielScheduler           (Background task manager)
+       └── Directly calls Gmail API + TwelveData API + Telegram API
 
 skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json directly)
 ```
@@ -258,14 +281,15 @@ Pure text/code generator. No tools, no routing. Features:
 - `__init__(self)` - Initialize ToolManager, Brain, Worker, Router, RecoveryManager, chat memory.
 - `_log_thought(self, actor, action, content)` - Append audit entry to `thoughts.log`.
 - `_build_tool_list(self)` - Build compact tool schema string for the Router prompt.
-- `_trim_history(self)` - Keep chat history within max length.
+- `_trim_history(self)` - Keep chat history within max length. **Overflow messages are automatically archived into ChromaDB via `rag_manager.add_memory()`.**
 - `_load_chat_memory(self)` - Load persisted messages, filter toxic/refusal patterns.
 - `_save_chat_memory(self)` - Persist chat history JSON.
+- `_compact_email_result(self, text)` - Strip HTML from raw Gmail output to reduce token waste.
 - `execute_chat(self, task)` - Worker generates natural language response.
 - `execute_tool(self, tool_name, tool_args, response_hint)` - Execute tool with self-healing loop (up to 3 attempts) and optional Worker formatting.
 - `execute_code(self, task, filename)` - Worker generates code → buffer_writer → flush to disk.
 - `execute_multi_tool(self, tools, response_hint)` - Sequential tool execution → Worker synthesizes combined report.
-- `process(self, user_input)` - Full pipeline: route → execute → respond → save memory.
+- `process(self, user_input)` - Full pipeline: **RAG recall → inject context →** route → execute → respond → save memory.
 - `chat_with_tools(self, user_input, use_coder)` - Legacy compatibility wrapper.
 
 ### `core/router.py` (`class Router`)
@@ -355,14 +379,38 @@ Pure text/code generator. No tools, no routing. Features:
 
 ### `skills/external/trading_ops.py`
 
-- `get_contract_info(symbol)` - Fetch MEXC contract size + fair price.
 - `get_trading_tools()` - Build trading tools and return with system prompt.
-- `get_crypto_price(symbol)` *(nested)* - Binance realtime symbol price.
-- `get_24h_stats(symbol)` *(nested)* - Binance 24h stats.
-- `analyze_technical_indicators(symbol, interval="1h")` *(nested)* - RSI + SMA trend analysis with pandas-ta.
-- `get_mexc_portfolio()` *(nested)* - Query MEXC spot/futures balances and open positions with computed PnL.
+- `get_market_price(symbol)` *(nested)* - TwelveData real-time price for Forex (EUR/USD), Metals (XAU/USD), Stocks (AAPL). Falls back to Binance for crypto.
+- `get_crypto_stats(symbol)` *(nested)* - Binance 24h stats (price, change%, high, low).
+- `analyze_crypto_technical(symbol, interval="1h")` *(nested)* - RSI + SMA trend analysis with pandas-ta.
 
-### `backtest/test_integration.py`
+### `skills/external/telegram_ops.py`
+
+- `send_telegram_message(message)` - Send a message via Telegram Bot API. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from `.env`. Returns `True`/`False`.
+
+### `core/rag_manager.py`
+
+- `_get_collection()` - Lazy-load ChromaDB client and `all-MiniLM-L6-v2` embedding model. Persistent storage at `ciel_data/vector_memory/`.
+- `add_memory(text)` - Archive a conversation snippet into ChromaDB with timestamp metadata.
+- `search_similar(query, n_results=3)` - Semantic search. Returns empty list if query < `MIN_QUERY_LENGTH` (15) or all results below `MIN_RELEVANCE_SCORE` (0.65).
+- `count_memories()` - Return total number of stored memories.
+
+### `core/scheduler.py` (`class CielScheduler`)
+
+- `__init__(self)` - Lazy-import `schedule` library.
+- `start_background(self)` - Register daily tasks and start daemon thread.
+- `_run_loop(self)` - Check for pending tasks every 60 seconds.
+- `run_now(self, task_name)` - Manually trigger a task for testing.
+- `_morning_digest()` *(module-level)* - Gather unread emails (Gmail API) + market prices (TwelveData API) → format with Worker (1 API call) → save to `daily_brief.md` → send via Telegram.
+- `_fetch_unread_emails(max_results)` *(module-level)* - Direct Gmail API call using existing OAuth credentials.
+- `_fetch_market_price(symbol)` *(module-level)* - Direct TwelveData API call for Forex/Metals.
+- `_send_telegram(message)` *(module-level)* - Direct Telegram Bot API call.
+- `_get_worker()` *(module-level)* - Lazy-load Worker LLM instance.
+
+### `backtest/test_rag_memory.py`
+
+- `step(n, title)` - Print formatted test step header.
+- `main()` - Run the 45-prompt "Amnesia Test": plant a secret fact → flood with 45 diverse prompts (tech chat, weird questions, OS tools, trading tools, memory ops, workspace ops, Gmail ops) → verify the secret fact is recalled from RAG after short-term memory overflow.
 
 - `run_test(core, name, prompt, ilog, ...)` - Execute a single test case against CielCore.
 - `main()` - Run all 17 integration tests across categories: Chat, Workspace, Memory, OS/Shell, Code Gen, Trading, Gmail, Edge Cases, Self-Healing, Cleanup.
@@ -403,6 +451,19 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### Hybrid Memory & Proactive Features (May 2026)
+
+- **Added:** `core/rag_manager.py` — ChromaDB + `all-MiniLM-L6-v2` long-term vector memory with lazy-loading.
+- **Added:** `core/scheduler.py` — Proactive background task manager with zero-token standby design. Morning Digest at 08:00 (Gmail + Forex/Metals → Worker → Telegram).
+- **Added:** `skills/external/telegram_ops.py` — Telegram Bot API notification channel.
+- **Added:** `backtest/test_rag_memory.py` — 45-prompt amnesia stress test covering all tool types.
+- **Modified:** `core/llm_connector.py` — Integrated RAG archival into `_trim_history()`, RAG recall into `process()`, and Gmail HTML stripping via `_compact_email_result()`.
+- **Modified:** `core/router.py` — Added RECALLED CONTEXT rule so Brain prefers existing RAG data over redundant `get_fact` calls.
+- **Modified:** `main.py` — Now imports and starts `CielScheduler` on boot.
+- **Added:** Dependencies: `chromadb`, `sentence-transformers`, `schedule`.
+- **Config:** `MIN_QUERY_LENGTH=15`, `MIN_RELEVANCE_SCORE=0.65` to filter noisy RAG recalls.
+- **All RAG events logged in `thoughts.log`** with `[RAG] [ARCHIVED]` and `[RAG] [RECALLED]` tags.
+
 ### Migration: Monolith → Brain-Worker Architecture
 
 - **Removed:** `core/memory_manager.py` — memory logic inlined into `skills/internal/memory_ops.py` (standalone JSON read/write).
@@ -422,11 +483,14 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 
 ## 9) Roadmap Suggestions | Gợi ý roadmap nâng cấp
 
-- **Finish RAG layer | Hoàn thiện RAG:** implement document ingestion and vector search for knowledge queries.
+- **Finish RAG layer | Hoàn thiện RAG:** ~~implement document ingestion and vector search for knowledge queries.~~ ✅ **DONE** — ChromaDB hybrid memory with automatic archival and semantic recall.
 - **Add automated tests | Bổ sung test tự động:** convert smoke scripts to pytest with mocks for API/network calls.
 - **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
 - **Tool confirmation | Xác nhận tool:** add user confirmation step before executing destructive tools (delete, shell).
 - **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
+- **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem.
+- **GitHub Manager | Quản lý GitHub:** Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.
+- **11 PM Brain Cleanse | Dọn não 23h:** Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.
 
 ---
 
