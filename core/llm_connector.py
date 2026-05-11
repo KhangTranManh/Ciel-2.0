@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from .tool_manager import ToolManager
 from .router import Router
@@ -28,6 +29,30 @@ from agent_system.models.worker import Worker
 from agent_system.utils.logger import log
 
 load_dotenv()
+
+
+# ==========================================================
+# SELF-CORRECTION PROMPT — Brain evaluates tool results
+# ==========================================================
+SELF_CORRECTION_PROMPT = """You are evaluating whether a tool's result adequately answers the user's original request.
+
+Respond ONLY with valid JSON (no markdown, no prose):
+
+If the result answers the user's request adequately:
+{{"satisfied": true}}
+
+If the result is empty, incomplete, or wrong AND you know a better approach:
+{{"satisfied": false, "reasoning": "1-sentence explanation", "action": "tool", "tool_name": "alternative_tool", "tool_args": {{"key": "value"}}, "response_hint": "how to present"}}
+
+If the result is insufficient and no tool can help, explain to user:
+{{"satisfied": false, "reasoning": "1-sentence explanation", "action": "chat", "task": "instruction for Worker to explain the situation"}}
+
+RULES:
+- Return satisfied=true if the result reasonably answers the request, even partially.
+- Only return satisfied=false if you have a CONCRETE better alternative.
+- NEVER suggest the same tool with identical arguments.
+- Keep reasoning to 1 sentence.
+"""
 
 
 # ==========================================================
@@ -379,6 +404,83 @@ class CielCore:
         self._log_thought("WORKER", "multi_tool_format_response", formatted)
         return formatted
 
+    def _self_correct(self, user_input: str, tool_name: str, tool_args: dict, result: str, max_attempts: int = 2) -> str:
+        """Brain evaluates tool result and tries alternative approach if unsatisfactory."""
+        for attempt in range(max_attempts):
+            evaluation = self._evaluate_result(user_input, tool_name, tool_args, result)
+            if evaluation.get("satisfied", True):
+                if attempt > 0:
+                    log.system(f"Self-Correction satisfied after {attempt} correction(s)")
+                return result
+
+            reasoning = evaluation.get("reasoning", "Result was insufficient")
+            new_action = evaluation.get("action", "chat")
+            self._log_thought("BRAIN", "self_correction",
+                f"Attempt {attempt+1}/{max_attempts}: {reasoning}\n"
+                f"Previous: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n"
+                f"Next: {new_action} → {evaluation.get('tool_name', evaluation.get('task', 'N/A'))}")
+            log.brain(f"Self-Correction [{attempt+1}]: {reasoning[:80]}")
+
+            if new_action == "tool":
+                new_tool = evaluation.get("tool_name", "")
+                new_args = evaluation.get("tool_args", {})
+                new_hint = evaluation.get("response_hint", "")
+
+                # Prevent infinite loop — don't retry same tool with same args
+                if new_tool == tool_name and new_args == tool_args:
+                    self._log_thought("BRAIN", "self_correction", "Aborted: same tool+args, would loop.")
+                    return result
+
+                new_result = self.execute_tool(new_tool, new_args, new_hint)
+                result = f"{result}\n\n[Self-Correction: {reasoning}]\n{new_result}"
+                # Update for next evaluation iteration
+                tool_name = new_tool
+                tool_args = new_args
+
+            elif new_action == "chat":
+                task = evaluation.get("task", user_input)
+                chat_response = self.execute_chat(task)
+                return f"{result}\n\n[Self-Correction: {reasoning}]\n{chat_response}"
+            else:
+                return result
+
+        return result
+
+    def _evaluate_result(self, user_input: str, tool_name: str, tool_args: dict, result: str) -> dict:
+        """Ask Brain to evaluate if a tool result satisfies the user's request."""
+        # Ensure result is never empty (Gemini rejects empty content)
+        safe_result = (result or "No output returned.").strip()
+        if not safe_result:
+            safe_result = "No output returned."
+
+        eval_request = (
+            f"User's request: {user_input}\n"
+            f"Tool used: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n"
+            f"Tool result:\n{safe_result[:1500]}\n\n"
+            f"Available tools: {self._tool_list_str[:500]}\n\n"
+            f"Does this result adequately answer the user's request? Respond with JSON only."
+        )
+        try:
+            messages = [
+                SystemMessage(content=SELF_CORRECTION_PROMPT),
+                HumanMessage(content=eval_request)
+            ]
+            response = self.brain._router_llm.invoke(messages)
+            raw = response.content.strip()
+            self._log_thought("BRAIN", "evaluate_result", raw)
+
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1]
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+                raw = raw.strip()
+
+            return json.loads(raw)
+        except (json.JSONDecodeError, Exception) as e:
+            self._log_thought("BRAIN", "evaluate_result_error", str(e))
+            return {"satisfied": True}  # Fail-safe: assume satisfied if evaluation fails
+
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""
         self.chat_history.add_user_message(user_input)
@@ -405,6 +507,9 @@ class CielCore:
                 tool_args = decision.get("tool_args", {})
                 hint = decision.get("response_hint", "")
                 response = self.execute_tool(tool_name, tool_args, hint)
+
+                # SELF-CORRECTION: Brain evaluates if result is satisfactory
+                response = self._self_correct(user_input, tool_name, tool_args, response)
 
             elif action == "code":
                 task = decision.get("task", user_input)

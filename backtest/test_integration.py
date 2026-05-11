@@ -453,6 +453,63 @@ def main():
     )
 
     # ======================================================
+    # TEST 18: Self-Correction — Brain re-evaluates result
+    # ======================================================
+    # Tests _self_correct() directly (bypasses RAG to avoid contamination
+    # from previous test runs where notes.txt was also requested).
+    # Setup: write "project_notes.txt", call read_file("notes.txt") → fails
+    # Then _self_correct() should evaluate and try alternative (list_workspace → read correct file).
+    header("TEST: Self-Correction — Brain re-evaluates result")
+    core.tool_manager.execute_tool("write_file", {"filename": "project_notes.txt", "content": "Secret data: self-correction works!"})
+    print(Fore.GREEN + '  Step 1: execute_tool("read_file", "notes.txt") → expect error' + Style.RESET_ALL)
+    ilog.add("TEST", "start", "Self-Correction", "read_file(notes.txt) → _self_correct()")
+
+    try:
+        # Step 1: Execute the "wrong" tool call directly
+        raw_result = core.execute_tool("read_file", {"filename": "notes.txt"}, "Reading notes.txt...")
+        show_result("Raw tool result", raw_result, Fore.YELLOW)
+        ilog.add("TOOL", "raw_result", "read_file(notes.txt)", raw_result)
+
+        # Step 2: Call _self_correct() to test the evaluation loop
+        print(Fore.GREEN + '  Step 2: _self_correct() evaluating result...' + Style.RESET_ALL)
+        corrected = core._self_correct(
+            "Read the file notes.txt from my workspace",
+            "read_file", {"filename": "notes.txt"}, raw_result
+        )
+        show_result("Self-Correction Result", corrected, Fore.CYAN)
+        ilog.add("RESULT", "self_correction", "Read notes.txt", corrected)
+
+        # PASS if: self-correction tag appears OR Brain found the right file
+        sc_pass = (
+            "Self-Correction" in corrected
+            or "project_notes" in corrected.lower()
+            or "secret data" in corrected.lower()
+            or "self-correction works" in corrected.lower()
+        )
+
+        results["18_self_correction"] = sc_pass
+        status = Fore.GREEN + "[PASS]" if sc_pass else Fore.RED + "[FAIL]"
+        print(f"\n  {status} Self-Correction{Style.RESET_ALL}")
+    except Exception as e:
+        print(Fore.RED + f"  [ERROR] {type(e).__name__}: {e}" + Style.RESET_ALL)
+        ilog.add("ERROR", type(e).__name__, "self_correction", str(e)[:500])
+        results["18_self_correction"] = False
+
+    ilog.add("TEST", "end", "Self-Correction", "PASS" if results.get("18_self_correction") else "FAIL")
+
+    # ======================================================
+    # TEST 19: Cleanup — delete self-correction test file
+    # ======================================================
+    results["19_sc_cleanup"] = run_test(
+        core,
+        "Cleanup — delete self-correction test file",
+        "Delete the file project_notes.txt from my workspace.",
+        ilog,
+        expect_action="tool",
+        validate_fn=lambda d, r: d.get("tool_name") == "delete_file" or "delet" in r.lower(),
+    )
+
+    # ======================================================
     # SAVE LOGS
     # ======================================================
     header("SAVING INTERACTION LOG")
@@ -479,7 +536,8 @@ def main():
         "Gmail":     ["11_gmail_search"],
         "Edge Cases": ["12_edge_ambiguous", "13_edge_unknown"],
         "Self-Healing": ["16_self_healing_module", "17_self_healing_parameter"],
-        "Cleanup":   ["14_memory_cleanup", "15_workspace_cleanup"],
+        "Self-Correction": ["18_self_correction"],
+        "Cleanup":   ["14_memory_cleanup", "15_workspace_cleanup", "19_sc_cleanup"],
     }
 
     for cat_name, test_keys in categories.items():
