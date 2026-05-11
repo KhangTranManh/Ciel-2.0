@@ -105,7 +105,53 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     - When the RAG database grows beyond 10,000+ memories.
     - When the Master notices Ciel recalling irrelevant or confusing context.
     - When upgrading to a GPU with more VRAM (e.g., RTX 4090).
+================================================================================
+  PRIORITY 4: Stealth Web Search & Autonomous Navigation (Jarvis Vision)
+================================================================================
 
+  STATUS: ✅ DONE (2026-05-11)
+  FILE:   skills/external/web_agent_ops.py
+
+  WHAT:
+    Give Ciel "eyes" on the internet. Instead of relying on static APIs, Ciel 
+    will autonomously search, browse, and scrape real-time web data to provide 
+    the most up-to-date answers (Crypto news, Tech trends, Documentation).
+
+  TOOLS TO BUILD:
+    1. stealth_search(query)  — Use Serper/Google Search to find high-quality URLs.
+    2. smart_scrape(url)      — Use Jina Reader (r.jina.ai) to get clean Markdown.
+    3. browse_with_stealth()  — Playwright + Stealth Plugin for interactive tasks.
+
+  STEALTH & SAFETY RULES:
+    - MUST use Jina Reader/Firecrawl as a proxy to mask Master's local IP.
+    - MUST implement "Human-like Delay" (3-5s) between clicks/scrolls.
+    - MUST NEVER provide credentials (login) without Master's real-time approval.
+    - MUST strip JS/CSS to feed only pure Markdown to the Brain to save tokens.
+
+  WHY THIS WAS CHOSEN:
+    Jarvis isn't Jarvis if he's stuck in 2024. Web search allows Ciel to bypass
+    API limitations and access the entire internet's live knowledge base while
+    remaining undetectable by anti-bot systems (Cloudflare, etc.).
+
+================================================================================
+  PRIORITY 5: Vision & UI Interaction (The Hands of Ciel)
+================================================================================
+
+  STATUS: ❌ UNDONE (Research Phase)
+  FILE:   skills/internal/os_ops.py (Upgrade)
+
+  WHAT:
+    Upgrade the existing screenshot tool to a full UI Interaction system. 
+    Ciel won't just see the screen; she will understand the "UI Tree" and 
+    interact with buttons, menus, and windows.
+
+  HOW:
+    1. Capture UI Metadata (coordinates of buttons/inputs) using pywinauto.
+    2. Send Screenshot + Metadata to Gemini 2.5 Pro (Vision).
+    3. Execute mouse_click(x, y) or type_text(string) based on Brain's decision.
+
+  WHY:
+    Enables true Jarvis-like interaction: "Ciel, open Chrome and buy 100$ BTC".
 ================================================================================
   CURRENT SYSTEM STATUS (as of 2026-05-11)
 ================================================================================
@@ -128,11 +174,13 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] 45-prompt amnesia stress test (all passing)
     [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
 
-  PENDING FEATURES:
+PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
     [x] Chain-of-Thought Audit & Self-Correction (done 2026-05-11)
-    [ ] 11 PM Brain Cleanse (Priority 2)
-    [ ] RAG Re-ranking (Priority 3 — deferred)
+    [x] 11 PM Brain Cleanse & Boot-up Date Check (Priority 2 - done 2026-05-11)
+    [ ] RAG Re-ranking (Priority 3 — deferred) - UNDONE
+    [x] Stealth Web Search Engine (Priority 4 - done 2026-05-11)
+    [ ] Vision & UI Interaction (Priority 5) - UNDONE
 
   KEY FILES TO READ FIRST:
     - architect.md          → Full project map, all functions, changelog

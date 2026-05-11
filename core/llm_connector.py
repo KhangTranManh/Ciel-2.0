@@ -83,6 +83,7 @@ class CielCore:
         self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
 
         self._load_chat_memory()
+        self._check_bootup_cleanse()
 
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
     _TOOL_HINTS = {
@@ -95,7 +96,9 @@ class CielCore:
         "get_market_price",
         "analyze_crypto_technical",
         "get_gmail_message",
-        "get_gmail_thread"
+        "get_gmail_thread",
+        "stealth_search",
+        "smart_scrape"
     }
 
     def _log_thought(self, actor: str, action: str, content: str):
@@ -197,6 +200,58 @@ class CielCore:
         self._trim_history()
         data = [{"type": m.type, "content": m.content} for m in self.chat_history.messages]
         self.chat_memory_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _check_bootup_cleanse(self):
+        import datetime
+        import os
+        if self.chat_memory_file.exists() and self.chat_history.messages:
+            mtime = os.path.getmtime(self.chat_memory_file)
+            last_date = datetime.datetime.fromtimestamp(mtime).date()
+            today = datetime.datetime.now().date()
+            if last_date < today:
+                self._brain_cleanse(reason="boot-up date mismatch")
+
+    def _brain_cleanse(self, reason="nightly"):
+        if not self.chat_history.messages:
+            return
+
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"\n[{ts}] [System] Initiating Brain Cleanse ({reason})...")
+
+        transcript = []
+        for msg in self.chat_history.messages:
+            transcript.append(f"{msg.type.capitalize()}: {msg.content}")
+        transcript_text = "\n".join(transcript)
+
+        prompt = (
+            "You are Ciel. Write a very concise Daily Summary of the following conversation.\n"
+            "Focus only on key facts, decisions, and outcomes. Make it 2-3 paragraphs max.\n"
+            "Transcript:\n" + transcript_text[:50000]
+        )
+        try:
+            summary = self.worker.generate(prompt)
+            date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            summary_entry = f"Daily Summary ({date_str}):\n{summary}"
+
+            # 1. Archive everything
+            self._archive_to_rag(self.chat_history.messages)
+            rag_manager.embed_and_save(summary_entry)
+            self._log_thought("RAG", "archived_daily_summary", summary_entry[:100])
+
+            # 2. Clear memory and save
+            self.chat_history.messages = []
+            self._save_chat_memory()
+
+            # 3. Notify
+            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [System] Brain Cleanse complete.")
+            try:
+                from core.scheduler import _send_telegram
+                _send_telegram(f"🧠 Brain Cleanse complete ({reason}). Memory archived successfully.")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Brain Cleanse Error] {e}")
 
     def execute_chat(self, task: str) -> str:
         """Worker generates a natural language response."""
@@ -312,6 +367,9 @@ class CielCore:
         # GMAIL: Smart truncation — keep all emails visible, trim each body
         if "gmail" in tool_name.lower():
             clean_text = self._compact_email_result(result_text)
+        elif tool_name == "smart_scrape":
+            # Let the Worker read up to 40,000 characters of the scraped website
+            clean_text = result_text[:40000]
         else:
             clean_text = result_text[:2000]
 
@@ -456,8 +514,8 @@ class CielCore:
         eval_request = (
             f"User's request: {user_input}\n"
             f"Tool used: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n"
-            f"Tool result:\n{safe_result[:1500]}\n\n"
-            f"Available tools: {self._tool_list_str[:500]}\n\n"
+            f"Tool result:\n{safe_result[:3000]}\n\n"
+            f"Available tools: {self._tool_list_str}\n\n"
             f"Does this result adequately answer the user's request? Respond with JSON only."
         )
         try:

@@ -15,9 +15,10 @@ def main():
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
     try:
         scheduler = CielScheduler()
-        scheduler.start_background()
         
         ciel = AgentLoop()
+        scheduler.cleanse_callback = ciel.core._brain_cleanse
+        scheduler.start_background()
         print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
     except Exception as e:
         print(Fore.RED + f"Ciel [Fatal]: {e}" + Style.RESET_ALL)

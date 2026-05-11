@@ -166,6 +166,7 @@ class CielScheduler:
     """Lightweight background scheduler using the `schedule` library."""
 
     def __init__(self):
+        self.cleanse_callback = None
         try:
             import schedule
             self._schedule = schedule
@@ -181,6 +182,7 @@ class CielScheduler:
 
         # Register daily tasks
         self._schedule.every().day.at("08:00").do(_morning_digest)
+        self._schedule.every().day.at("23:00").do(self._trigger_cleanse)
 
         # Start daemon thread (dies when main process exits)
         thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -192,6 +194,10 @@ class CielScheduler:
         while True:
             self._schedule.run_pending()
             time.sleep(60)
+
+    def _trigger_cleanse(self):
+        if self.cleanse_callback:
+            self.cleanse_callback(reason="nightly")
 
     def run_now(self, task_name: str = "morning_digest"):
         """Manually trigger a task for testing."""

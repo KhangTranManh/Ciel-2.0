@@ -80,6 +80,14 @@ class ToolManager:
             "git_confirm_push": {
                 "required": {"repo_path": str, "message": str},
                 "optional": {}
+            },
+            "stealth_search": {
+                "required": {"query": str},
+                "optional": {"max_results": int}
+            },
+            "smart_scrape": {
+                "required": {"url": str},
+                "optional": {}
             }
         }
         
@@ -196,6 +204,27 @@ class ToolManager:
 
         except Exception as e:
             print(Fore.RED + f"[Ciel Warning] Git tool corruption detected. Error: {e}" + Style.RESET_ALL)
+
+        # ==========================================
+        # 4. WEB AGENT ARMORY (Jarvis Vision)
+        # ==========================================
+        try:
+            from skills.external.web_agent_ops import get_web_tools
+            web_data = get_web_tools()
+
+            web_tools = web_data.get("tools", [])
+            web_prompt = web_data.get("prompt", "")
+
+            if web_tools:
+                self.tools.extend(web_tools)
+                if web_prompt:
+                    self.system_prompts.append(web_prompt)
+                print(Fore.GREEN + "[Ciel System] Web Agent armory fully loaded and operational." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No Web Agent tools loaded." + Style.RESET_ALL)
+
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Warning] Web Agent tool corruption detected. Error: {e}" + Style.RESET_ALL)
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
