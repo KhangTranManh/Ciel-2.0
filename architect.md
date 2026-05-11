@@ -39,6 +39,7 @@ User Input → CielCore.process()
   → Based on action:
       "chat"       → Worker generates natural response
       "tool"       → ToolManager executes → Worker formats result (if needed)
+                     ↳ Brain Self-Correction: evaluates result. If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
       "code"       → Worker generates code → buffer_writer flushes to disk
       "multi_tool" → Sequential tool execution → Worker synthesizes combined report
   → Self-Healing Loop (if error detected):
@@ -228,6 +229,7 @@ The Router uses the Brain LLM to classify user input into one of four action typ
 - `multi_tool` — Sequential multi-tool workflow with synthesized report
 
 **Prompt Roles Embedded:**
+- **Chain-of-Thought (CoT) Audit:** Enforces output of `hidden_thought` (observation, reasoning, risk) before `action` to ensure debuggability and logical routing.
 - **WINDOWS SYSTEM ARCHITECT:** Forces absolute paths in double quotes, `python -m` prefix, and `taskkill` suggestions for locked files.
 - **Anti-hallucination:** Explicit rule: `NEVER output "action": "shell_command"` — must use `"tool"` with `"execute_shell_command"`.
 
@@ -457,6 +459,13 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Added:** `skills/external/github_ops.py` — Git version control tool pack with 5 tools: `git_list_repos`, `git_status`, `git_diff`, `git_commit_and_push` (preview), `git_confirm_push` (execute after confirmation).
 - **Modified:** `core/tool_manager.py` — Registered git tools with arg schemas.
 - **Safety:** Auto-excludes sensitive files (.env, credentials, tokens) from commits. Push requires explicit Master confirmation via 2-step flow.
+
+### CoT Audit & Self-Correction (May 2026)
+
+- **Added:** Chain-of-Thought (CoT) audit trail. The Brain must output a `hidden_thought` (observation, reasoning, risk) before making any routing decision, stored purely in `thoughts.log` to keep `memory_bank.json` clean.
+- **Added:** Autonomous Self-Correction Loop. `CielCore.process()` now evaluates tool outputs via `_self_correct()`. If the result is unsatisfactory (e.g. file not found), Brain autonomously corrects its approach and retries (max 2 attempts) without bothering the user.
+- **Modified:** `core/router.py` to strictly enforce the `hidden_thought` JSON structure.
+- **Modified:** `core/llm_connector.py` to inject `_evaluate_result()` and `_self_correct()` logic after tool execution. Tests added to verify isolation from RAG memory.
 
 ### Hybrid Memory & Proactive Features (May 2026)
 

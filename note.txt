@@ -113,6 +113,8 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   OPERATIONAL FEATURES:
     [x] Brain-Worker architecture (Gemini 2.5 Pro)
     [x] Router with anti-hallucination guardrails
+    [x] Chain-of-Thought (CoT) audit trail (hidden_thought: observation, reasoning, risk)
+    [x] Autonomous Self-Correction Loop (Brain evaluates tool results and retries if unsatisfied)
     [x] Self-healing engine (3-attempt auto-fix)
     [x] Hybrid Memory: short-term JSON (20 msg) + long-term ChromaDB RAG
     [x] RAG noise filters (MIN_QUERY_LENGTH=15, MIN_RELEVANCE_SCORE=0.65)
@@ -128,6 +130,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
 
   PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
+    [x] Chain-of-Thought Audit & Self-Correction (done 2026-05-11)
     [ ] 11 PM Brain Cleanse (Priority 2)
     [ ] RAG Re-ranking (Priority 3 — deferred)
 
