@@ -50,9 +50,10 @@ RULES:
 class Router:
     """Handles parsing and routing decisions with tenacity retry protection."""
     
-    def __init__(self, brain: Brain, log_thought_fn):
+    def __init__(self, brain: Brain, log_thought_fn, persona: str = ""):
         self.brain = brain
         self.log_thought = log_thought_fn
+        self.persona = persona
 
     @retry(
         stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
@@ -64,7 +65,8 @@ class Router:
         ),
     )
     def route(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
-        prompt = CIEL_ROUTER_PROMPT.format(tool_list=tool_list_str)
+        base_prompt = f"{self.persona}\n\n{CIEL_ROUTER_PROMPT}" if self.persona else CIEL_ROUTER_PROMPT
+        prompt = base_prompt.format(tool_list=tool_list_str)
         messages = [SystemMessage(content=prompt)]
         
         if chat_history.messages:

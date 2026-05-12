@@ -1,6 +1,6 @@
 ================================================================================
   CIEL 2.0 — DEVELOPER NOTES (Next Features to Build)
-  Last Updated: 2026-05-11
+  Last Updated: 2026-05-12
 ================================================================================
 
 These are features that have been discussed, analyzed (pros/cons), and agreed
@@ -152,8 +152,46 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
 
   WHY:
     Enables true Jarvis-like interaction: "Ciel, open Chrome and buy 100$ BTC".
+
 ================================================================================
-  CURRENT SYSTEM STATUS (as of 2026-05-11)
+  PRIORITY 6: Multi-modal Artifact Rendering (Flutter HUD)
+================================================================================
+
+  STATUS: ✅ DONE
+  FILE:   ciel_flutter_ui/lib/ui/widgets/matrix_chat.dart (New/Upgrade)
+
+  WHAT:
+    Move beyond plain text logs in the Matrix Chat window. Implement a 
+    WebView or specialized card system in Flutter to render rich content like
+    scraped web pages (HTML/Images), Markdown tables, or trading charts directly.
+
+  HOW:
+    1. Update FastAPI backend to send structured JSON artifacts via WebSocket.
+    2. Implement Flutter widgets capable of rendering HTML, Markdown, and Images.
+
+  WHY:
+    Enhances the user experience by providing visual context, especially when 
+    using the Stealth Web Search or Trading tools, making the HUD feel premium.
+
+================================================================================
+  PRIORITY 7: UI/UX Polish for Neon Terminal
+================================================================================
+
+  STATUS: ✅ DONE
+  FILE:   ciel_flutter_ui/lib/ui/widgets/neon_terminal.dart
+
+  WHAT:
+    Enhance the "Neon Terminal" with more distinct color coding and formatting 
+    for different activity logs to improve readability.
+
+  HOW:
+    1. Apply distinct colors for `[TOOL]`, `[BRAIN]`, `[WORKER]`, `[RAG]`.
+    2. Add subtle micro-animations for terminal text entry.
+
+  WHY:
+    To maintain a dynamic, aesthetically pleasing "hacker" UI that WOWs the user.
+================================================================================
+  CURRENT SYSTEM STATUS (as of 2026-05-12)
 ================================================================================
 
   OPERATIONAL FEATURES:
@@ -173,6 +211,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] Telegram notification channel
     [x] 45-prompt amnesia stress test (all passing)
     [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
+    [x] FastAPI WebSocket Bridge for Real-time Flutter UI Stream
 
 PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
@@ -181,6 +220,9 @@ PENDING FEATURES:
     [ ] RAG Re-ranking (Priority 3 — deferred) - UNDONE
     [x] Stealth Web Search Engine (Priority 4 - done 2026-05-11)
     [ ] Vision & UI Interaction (Priority 5) - UNDONE
+    [x] Multi-modal Artifact Rendering (Priority 6) - DONE
+    [x] Neon Terminal UI/UX Polish (Priority 7) - DONE
+    [x] Modular "Ultimate Sage" Persona System & Language Auto-Adaptation (Priority 8 - done 2026-05-12)
 
   KEY FILES TO READ FIRST:
     - architect.md          → Full project map, all functions, changelog

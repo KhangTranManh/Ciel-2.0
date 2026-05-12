@@ -454,6 +454,14 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### HUD Polish & Persona Integration (May 2026)
+
+- **Added:** `persona/official_ciel_personality.txt` — dedicated modular persona configuration enforcing the "Ultimate Sage" identity.
+- **Added:** Multi-modal Artifact Rendering in Flutter HUD via `flutter_markdown` for rich text, tables, and code blocks.
+- **Added:** Neon Terminal UI/UX Polish with `TypewriterText` and distinct colors for `[TOOL]`, `[BRAIN]`, `[WORKER]`, `[RAG]`.
+- **Modified:** `core/llm_connector.py` — Self-correction loop now hides raw errors from the UI output, only showing the successful fixed result to the user.
+- **Modified:** `core/llm_connector.py` — Integrated strict "Language Auto-Adaptation", forwarding `user_input` to formatting tasks so Ciel dynamically responds natively in the user's exact language (e.g. Vietnamese) without defaulting back to English.
+
 ### GitHub Manager (May 2026)
 
 - **Added:** `skills/external/github_ops.py` — Git version control tool pack with 5 tools: `git_list_repos`, `git_status`, `git_diff`, `git_commit_and_push` (preview), `git_confirm_push` (execute after confirmation).
@@ -506,7 +514,11 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
 - **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem.
 - **GitHub Manager | Quản lý GitHub:** ~~Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.~~ ✅ **DONE** — 5 tools with 2-step commit safety and deep repo scanner.
-- **11 PM Brain Cleanse | Dọn não 23h:** Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.
+- **11 PM Brain Cleanse | Dọn não 23h:** ~~Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.~~ ✅ **DONE**
+- **Flutter Desktop HUD | Giao diện HUD Desktop:** ~~Implement WebSockets in FastAPI to stream logs and vitals to a dynamic Flutter desktop UI.~~ ✅ **DONE**
+- **Multi-modal Artifact Rendering | Hiển thị đa phương tiện:** ~~Upgrade Flutter Matrix Chat to render rich content (HTML/images/charts) instead of plain text.~~ ✅ **DONE**
+- **Vision & UI Interaction | Tương tác giao diện & Tầm nhìn:** Implement PyWinAuto / OpenCV to allow Ciel to autonomously click, type, and control desktop applications.
+- **HUD UI/UX Polish | Đánh bóng giao diện HUD:** ~~Enhance Neon Terminal with distinct color coding for `[TOOL]`, `[BRAIN]`, and `[WORKER]` logs and add micro-animations.~~ ✅ **DONE**
 
 ---
 

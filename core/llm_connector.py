@@ -60,8 +60,15 @@ RULES:
 # ==========================================================
 class CielCore:
     def __init__(self):
+        self.base_dir = Path(__file__).resolve().parent.parent
         self.tool_manager = ToolManager()
         self._tools = self.tool_manager.get_tools()
+
+        # Load Official Personality
+        self.persona_file = self.base_dir / "persona" / "official_ciel_personality.txt"
+        self.ciel_persona = "You are Ciel, an AI assistant."
+        if self.persona_file.exists():
+            self.ciel_persona = self.persona_file.read_text(encoding="utf-8")
 
         # Build tool name -> schema map
         self._tool_map = {t.name: t for t in self._tools}
@@ -72,14 +79,13 @@ class CielCore:
         self.worker = Worker()
 
         # Modular Components
-        self.router = Router(self.brain, self._log_thought)
+        self.router = Router(self.brain, self._log_thought, persona=self.ciel_persona)
         self.recovery = RecoveryManager(self.worker, self._log_thought)
 
         log.system("CielCore initialized with Modular Brain-Worker architecture")
 
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
-        self.base_dir = Path(__file__).resolve().parent.parent
         self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
 
         self._load_chat_memory()
@@ -265,7 +271,7 @@ class CielCore:
             )
 
         persona_task = (
-            f"You are Ciel, an AI assistant. "
+            f"{self.ciel_persona}\n\n"
             f"Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
             f"No filler, no pleasantries.{capabilities_context}\n\n"
             f"User's request: {task}"
@@ -275,7 +281,7 @@ class CielCore:
         self._log_thought("WORKER", "chat_response", response)
         return response
 
-    def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "") -> str:
+    def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "") -> str:
         """Execute a Ciel tool and format the result."""
         log.tool(f"Executing: {tool_name}({tool_args})")
 
@@ -374,7 +380,9 @@ class CielCore:
             clean_text = result_text[:2000]
 
         format_task = (
-            f"You are Ciel. Format this tool output into the absolute shortest, clearest response possible.\n"
+            f"{self.ciel_persona}\n\n"
+            f"Format this tool output into the absolute shortest, clearest response possible.\n"
+            f"User's request: {user_input}\n"
             f"Tool: {tool_name}\n"
             f"Raw result:\n{clean_text}\n\n"
             f"Hint: {response_hint}\n"
@@ -432,7 +440,7 @@ class CielCore:
         log.tool(result)
         return f"Code written to {filename}"
 
-    def execute_multi_tool(self, tools: list, response_hint: str) -> str:
+    def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "") -> str:
         """Execute multiple tools sequentially and synthesize the result."""
         results = []
         for t in tools:
@@ -452,7 +460,9 @@ class CielCore:
         combined_results = "\n\n".join(results)
         
         format_task = (
-            f"You are Ciel. Synthesize the following data from multiple tools into a cohesive report.\n"
+            f"{self.ciel_persona}\n\n"
+            f"Synthesize the following data from multiple tools into a cohesive report.\n"
+            f"User's request: {user_input}\n"
             f"{combined_results}\n\n"
             f"Hint: {response_hint}\n"
             f"CRITICAL: Be concise. Deliver a unified report without conversational filler."
@@ -489,8 +499,8 @@ class CielCore:
                     self._log_thought("BRAIN", "self_correction", "Aborted: same tool+args, would loop.")
                     return result
 
-                new_result = self.execute_tool(new_tool, new_args, new_hint)
-                result = f"{result}\n\n[Self-Correction: {reasoning}]\n{new_result}"
+                new_result = self.execute_tool(new_tool, new_args, new_hint, user_input)
+                result = new_result  # HIDE ERROR: Only return the new successful result to the user
                 # Update for next evaluation iteration
                 tool_name = new_tool
                 tool_args = new_args
@@ -498,7 +508,7 @@ class CielCore:
             elif new_action == "chat":
                 task = evaluation.get("task", user_input)
                 chat_response = self.execute_chat(task)
-                return f"{result}\n\n[Self-Correction: {reasoning}]\n{chat_response}"
+                return chat_response  # HIDE ERROR: Only return the new chat response to the user
             else:
                 return result
 
@@ -564,7 +574,7 @@ class CielCore:
                 tool_name = decision.get("tool_name", "")
                 tool_args = decision.get("tool_args", {})
                 hint = decision.get("response_hint", "")
-                response = self.execute_tool(tool_name, tool_args, hint)
+                response = self.execute_tool(tool_name, tool_args, hint, user_input)
 
                 # SELF-CORRECTION: Brain evaluates if result is satisfactory
                 response = self._self_correct(user_input, tool_name, tool_args, response)
@@ -577,7 +587,7 @@ class CielCore:
             elif action == "multi_tool":
                 tools = decision.get("tools", [])
                 hint = decision.get("response_hint", "")
-                response = self.execute_multi_tool(tools, hint)
+                response = self.execute_multi_tool(tools, hint, user_input)
 
             else:
                 task = decision.get("task", user_input)
