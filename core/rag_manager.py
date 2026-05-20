@@ -18,6 +18,8 @@ Design Decisions:
 """
 
 import datetime
+import html
+import re
 from pathlib import Path
 
 # Lazy imports — these are heavy libraries, only load when actually used
@@ -37,6 +39,17 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_TOP_K = 3              # How many past conversations to retrieve
 MIN_RELEVANCE_SCORE = 0.65     # Ignore results below this similarity threshold
 MIN_QUERY_LENGTH = 15          # Skip RAG for very short/trivial inputs
+MAX_MEMORY_SNIPPET_CHARS = 1800
+
+NOISY_TOOL_NAMES = (
+    "smart_scrape",
+    "git_diff",
+    "git_diff_raw",
+    "browse_with_stealth",
+)
+
+CORE_ACTORS = {"USER", "HUMAN", "WORKER", "AI", "ASSISTANT", "CIEL"}
+CORE_ACTIONS = {"REQUEST", "CHAT_RESPONSE", "FORMAT_RESPONSE", "MULTI_TOOL_FORMAT_RESPONSE"}
 
 
 # ==========================================================
@@ -176,7 +189,7 @@ def search_similar(query: str, top_k: int = DEFAULT_TOP_K) -> str:
         if not relevant:
             return ""
 
-        return "\n".join(relevant)
+        return compress_context(relevant)
 
     except Exception as e:
         print(f"[Ciel Warning] Long-term memory search failed: {e}")
@@ -191,3 +204,164 @@ def get_memory_count() -> int:
         return _collection.count()
     except Exception:
         return 0
+
+
+def compress_context(raw_contexts) -> str:
+    """Compress recalled memories with zero-token structural filtering.
+
+    This removes large raw tool artifacts before the Router sees recalled
+    context. It keeps the core interaction shape whenever possible:
+    [YYYY-MM-DD] Human: ... | Ai: ...
+    """
+    if not raw_contexts:
+        return ""
+
+    if isinstance(raw_contexts, str):
+        contexts = [raw_contexts]
+    else:
+        contexts = list(raw_contexts)
+
+    compressed = []
+    for raw in contexts:
+        if not raw:
+            continue
+
+        text = str(raw)
+        text = _remove_noisy_tool_sections(text)
+
+        core = _extract_human_ai_pair(text)
+        if core:
+            compressed.append(core)
+            continue
+
+        core = _extract_tagged_core_blocks(text)
+        if core:
+            compressed.append(core)
+            continue
+
+        cleaned = _clean_memory_text(text)
+        if cleaned:
+            compressed.append(_clip(cleaned, MAX_MEMORY_SNIPPET_CHARS))
+
+    return "\n".join(item for item in compressed if item).strip()
+
+
+def _remove_noisy_tool_sections(text: str) -> str:
+    """Drop raw scrape/diff/browser artifacts that tend to poison recall."""
+    noisy = "|".join(re.escape(name) for name in NOISY_TOOL_NAMES)
+
+    patterns = [
+        # Multi-tool output blocks.
+        rf"(?is)---\s*Output from\s+(?:{noisy})\s*---.*?(?=\n---\s*Output from|\n\[\d{{4}}-\d{{2}}-\d{{2}}|\Z)",
+        # Thought-log style tool results.
+        rf"(?is)^\[\d{{4}}-\d{{2}}-\d{{2}}[^\]]*\]\s+\[TOOL\]\s+\[[^\]]*\]\s*.*?(?:{noisy}).*?(?=^-{{20,}}\s*$|\Z)",
+        # Inline action/result fragments from old memories.
+        rf"(?is)(?:Action|Tool|Output|Result)\s*:\s*(?:{noisy})\b.*?(?=\s+\|\s*(?:Human|User|Ai|Assistant|Ciel):|\n\[\d{{4}}-\d{{2}}-\d{{2}}|\Z)",
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, " ", text, flags=re.MULTILINE)
+
+    # Remove very large fenced blocks, especially HTML/diff/code payloads.
+    text = re.sub(
+        r"(?is)```(?:html|diff|patch|json|javascript|js|python|py)?\s*\n.{1500,}?```",
+        " ",
+        text,
+    )
+
+    # Remove obvious raw HTML bodies before generic cleanup.
+    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+    return text
+
+
+def _extract_human_ai_pair(text: str) -> str:
+    """Extract archived Human/Ai memory pairs and discard attached payloads."""
+    date = _extract_date(text)
+
+    human = _extract_labeled_value(text, ("Human", "User"))
+    ai = _extract_labeled_value(text, ("Ai", "AI", "Assistant", "Ciel", "Worker"))
+
+    if not human and not ai:
+        return ""
+
+    human = _clip(_clean_memory_text(human), 600)
+    ai = _clip(_clean_memory_text(ai), 900)
+
+    parts = []
+    if human:
+        parts.append(f"Human: {human}")
+    if ai:
+        parts.append(f"Ai: {ai}")
+
+    return f"[{date}] " + " | ".join(parts)
+
+
+def _extract_tagged_core_blocks(text: str) -> str:
+    """Keep only core [USER]/[WORKER] log blocks from structured logs."""
+    date = _extract_date(text)
+    kept = []
+
+    block_re = re.compile(
+        r"(?ms)^\[(?P<ts>\d{4}-\d{2}-\d{2}[^\]]*)\]\s+"
+        r"\[(?P<actor>[^\]]+)\]\s+\[(?P<action>[^\]]+)\]\s*"
+        r"(?P<body>.*?)(?=^-{20,}\s*$|^\[\d{4}-\d{2}-\d{2}|\Z)"
+    )
+
+    for match in block_re.finditer(text):
+        actor = match.group("actor").strip().upper()
+        action = match.group("action").strip().upper()
+        if actor not in CORE_ACTORS and action not in CORE_ACTIONS:
+            continue
+
+        body = _clip(_clean_memory_text(match.group("body")), 900)
+        if not body:
+            continue
+
+        if actor in {"USER", "HUMAN"} or action == "REQUEST":
+            kept.append(f"Human: {body}")
+        elif actor in {"WORKER", "AI", "ASSISTANT", "CIEL"}:
+            kept.append(f"Ai: {body}")
+
+    if not kept:
+        return ""
+
+    return f"[{date}] " + " | ".join(kept[:2])
+
+
+def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    boundary_labels = (
+        "Human|User|Ai|AI|Assistant|Ciel|Worker|Tool|Action|Result|Output"
+    )
+    pattern = (
+        rf"(?is)(?:^|[\|\n])\s*(?:\[\d{{4}}-\d{{2}}-\d{{2}}[^\]]*\]\s*)?"
+        rf"(?:{label_pattern})\s*:\s*"
+        rf"(.*?)(?=\s*(?:\||\n)\s*(?:\[\d{{4}}-\d{{2}}-\d{{2}}[^\]]*\]\s*)?(?:{boundary_labels})\s*:|\s*\n\[\d{{4}}-\d{{2}}-\d{{2}}|\Z)"
+    )
+    match = re.search(pattern, text)
+    return match.group(1) if match else ""
+
+
+def _extract_date(text: str) -> str:
+    match = re.search(r"\[(\d{4}-\d{2}-\d{2})", text)
+    if match:
+        return match.group(1)
+    return "unknown"
+
+
+def _clean_memory_text(text: str) -> str:
+    text = html.unescape(text or "")
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = re.sub(r"\[[^\]]{0,80}\]\((?:data:|https?://)[^)]+\)", " ", text)
+    text = re.sub(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", " ", text)
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff\xa0]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _clip(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."

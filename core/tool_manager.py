@@ -88,6 +88,14 @@ class ToolManager:
             "smart_scrape": {
                 "required": {"url": str},
                 "optional": {}
+            },
+            "vision_act": {
+                "required": {"task": str},
+                "optional": {}
+            },
+            "vision_describe": {
+                "required": {},
+                "optional": {}
             }
         }
         
@@ -145,6 +153,27 @@ class ToolManager:
 
         except Exception as e:
             print(Fore.RED + f"[Ciel Warning] Failed to load OS Direct Control tools: {e}" + Style.RESET_ALL)
+
+        # ==========================================
+        # 4. VISION & UI INTERACTION ARMORY
+        # ==========================================
+        try:
+            from skills.internal.vision_ops import get_vision_tools
+            vision_data = get_vision_tools()
+
+            vision_tools = vision_data.get("tools", [])
+            vision_prompt = vision_data.get("prompt", "")
+
+            if vision_tools:
+                self.tools.extend(vision_tools)
+                if vision_prompt:
+                    self.system_prompts.append(vision_prompt)
+                print(Fore.GREEN + "[Ciel System] Vision & UI Interaction Armory loaded." + Style.RESET_ALL)
+            else:
+                print(Fore.CYAN + "[Ciel System] No Vision tools loaded." + Style.RESET_ALL)
+
+        except Exception as e:
+            print(Fore.RED + f"[Ciel Warning] Failed to load Vision tools: {e}" + Style.RESET_ALL)
 
     def _load_external_tools(self):
         try:

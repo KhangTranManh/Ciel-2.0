@@ -4,7 +4,9 @@ langchain-community
 langchain-core>=0.1.10
 langchain-ollama
 langchain-google-genai
+langchain-openai
 langgraph
+tenacity
 pandas
 pandas-ta
 
@@ -17,11 +19,25 @@ langchain-google-community
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+google-genai
 beautifulsoup4
 
-# --- System & Utilities ---
+# --- Web Server & Communication ---
+fastapi>=0.115.2
+uvicorn
+websockets
+
+# --- Web Search & Scraping ---
+ddgs
 requests
+
+# --- Vision & UI Interaction ---
+pyautogui
+pyperclip
+pillow
+
+# --- Scheduler & Utilities ---
+schedule
 python-dotenv
 colorama
 psutil
-pillow

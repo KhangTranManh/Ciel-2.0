@@ -6,3 +6,5 @@ __pycache__/
 .vscode/
 .idea/
 ciel_data/gmail_token.json
+ciel_data/logs/thoughts_view.md
+ciel_data/logs/thoughts_view.jsonl

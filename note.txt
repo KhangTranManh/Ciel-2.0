@@ -137,21 +137,33 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   PRIORITY 5: Vision & UI Interaction (The Hands of Ciel)
 ================================================================================
 
-  STATUS: ❌ UNDONE (Research Phase)
-  FILE:   skills/internal/os_ops.py (Upgrade)
+  STATUS: ✅ DONE
+  FILE:   skills/internal/vision_ops.py (NEW)
 
   WHAT:
-    Upgrade the existing screenshot tool to a full UI Interaction system. 
-    Ciel won't just see the screen; she will understand the "UI Tree" and 
-    interact with buttons, menus, and windows.
+    Two-tier autonomous Vision & UI Interaction system. Ciel plans the optimal
+    approach: CLI shortcuts for navigation (0 vision tokens), then visual 
+    interaction only for UI elements that require seeing the screen.
 
   HOW:
-    1. Capture UI Metadata (coordinates of buttons/inputs) using pywinauto.
-    2. Send Screenshot + Metadata to Gemini 2.5 Pro (Vision).
-    3. Execute mouse_click(x, y) or type_text(string) based on Brain's decision.
+    TIER 1 — Pre-flight Planner (text-only Gemini, near-zero cost):
+      1. Analyze task → determine if CLI/URL shortcut is possible.
+      2. For YouTube: open youtube.com/results?search_query=... directly.
+      3. For apps: launch via subprocess (e.g. notepad.exe).
+      4. If CLI handles 100% of task → return immediately (0 screenshots).
+    TIER 2 — Vision Loop (only for remaining UI interaction):
+      5. Capture screenshot + draw 10×8 labeled grid overlay (A1-J8).
+      6. Send gridded screenshot to Gemini 2.5 Flash Vision.
+      7. Execute PyAutoGUI actions (click, type, hotkey, scroll).
+      8. Loop until task complete (max 10 steps).
+    SAFETY:
+      - Loop-break detector: auto-stops after 3 identical actions.
+      - Auto Ctrl+A before typing to prevent text appending.
+      - pyautogui.FAILSAFE=True (mouse to corner aborts).
 
   WHY:
-    Enables true Jarvis-like interaction: "Ciel, open Chrome and buy 100$ BTC".
+    Enables true Jarvis-like interaction: "Ciel, play lofi on YouTube".
+    Old approach: 10+ vision steps just to navigate. New: 1 CLI + 1-2 vision steps.
 
 ================================================================================
   PRIORITY 6: Multi-modal Artifact Rendering (Flutter HUD)
@@ -212,6 +224,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] 45-prompt amnesia stress test (all passing)
     [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
     [x] FastAPI WebSocket Bridge for Real-time Flutter UI Stream
+    [x] Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
 
 PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
@@ -219,7 +232,7 @@ PENDING FEATURES:
     [x] 11 PM Brain Cleanse & Boot-up Date Check (Priority 2 - done 2026-05-11)
     [ ] RAG Re-ranking (Priority 3 — deferred) - UNDONE
     [x] Stealth Web Search Engine (Priority 4 - done 2026-05-11)
-    [ ] Vision & UI Interaction (Priority 5) - UNDONE
+    [x] Vision & UI Interaction (Priority 5 - done 2026-05-12)
     [x] Multi-modal Artifact Rendering (Priority 6) - DONE
     [x] Neon Terminal UI/UX Polish (Priority 7) - DONE
     [x] Modular "Ultimate Sage" Persona System & Language Auto-Adaptation (Priority 8 - done 2026-05-12)

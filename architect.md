@@ -103,7 +103,8 @@ Ciel 2.0/
 │   ├── internal/
 │   │   ├── memory_ops.py         # Fact vault tools (standalone JSON-based)
 │   │   ├── os_ops.py             # Shell, screenshot, app launcher
-│   │   └── system_ops.py         # Workspace file CRUD + Python runner
+│   │   ├── system_ops.py         # Workspace file CRUD + Python runner
+│   │   └── vision_ops.py         # Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
 │   └── external/
 │       ├── github_ops.py         # Git repo manager (status, diff, commit, push)
 │       ├── gmail_ops.py          # Gmail toolkit + custom ops
@@ -454,6 +455,25 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### Vision & UI Interaction — "The Hands of Ciel" (May 2026)
+
+- **Added:** `skills/internal/vision_ops.py` — Two-tier autonomous Vision engine:
+  - **Tier 1 — Pre-flight Planner:** Text-only Gemini call analyzes the task and generates CLI/URL shortcuts (e.g. `start youtube.com/results?search_query=lofi+chill`). Handles navigation at near-zero token cost. If the task is 100% CLI-solvable (e.g. "open Notepad"), returns immediately with 0 vision steps.
+  - **Tier 2 — Vision Loop:** Only runs for the *remaining* UI interaction after CLI pre-flight. Screenshot → 10×8 grid overlay (A1-J8) → Gemini 2.5 Flash Vision analysis → PyAutoGUI action → repeat (max 10 steps).
+- **Tools:** `vision_act` (autonomous task execution) and `vision_describe` (screenshot + AI description).
+- **Modified:** `core/tool_manager.py` — Registered `vision_act` and `vision_describe` tools with arg schemas.
+- **Modified:** `main_api.py` — Added `Vision (Eyes)` armory status detection to vitals broadcast.
+- **Modified:** `core/llm_connector.py` — Fixed self-correction chat fallback: now injects actual tool result data into Worker's chat task to prevent hallucination (e.g. fake repo names like "Project_Chimera").
+- **Bug Fixes:**
+  - Fixed `Single '}' in format string` crash caused by broken Python `.format()` escaping in vision prompt.
+  - Added auto `Ctrl+A` before typing in any field to prevent URL/text appending (e.g. `faceboyoutube.comok.com`).
+  - Added loop-break detector: auto-stops after 3 identical `action@grid` attempts.
+  - Added Navigation Tips to vision prompt (use `Ctrl+L` for address bar, `Ctrl+Tab` for tabs instead of clicking).
+  - Added strict "done-state detection" rule so Ciel stops immediately when the goal is already visible.
+  - Forced JSON-only output from Gemini Vision to prevent `parse_error` crashes.
+- **Dependencies:** `pyautogui`, `google-genai`, `Pillow`, `pyperclip`.
+- **Safety:** `pyautogui.FAILSAFE=True` (move mouse to corner to abort). Max 10 steps. All steps saved as debug PNGs.
+
 ### HUD Polish & Persona Integration (May 2026)
 
 - **Added:** `persona/official_ciel_personality.txt` — dedicated modular persona configuration enforcing the "Ultimate Sage" identity.
@@ -517,7 +537,7 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **11 PM Brain Cleanse | Dọn não 23h:** ~~Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.~~ ✅ **DONE**
 - **Flutter Desktop HUD | Giao diện HUD Desktop:** ~~Implement WebSockets in FastAPI to stream logs and vitals to a dynamic Flutter desktop UI.~~ ✅ **DONE**
 - **Multi-modal Artifact Rendering | Hiển thị đa phương tiện:** ~~Upgrade Flutter Matrix Chat to render rich content (HTML/images/charts) instead of plain text.~~ ✅ **DONE**
-- **Vision & UI Interaction | Tương tác giao diện & Tầm nhìn:** Implement PyWinAuto / OpenCV to allow Ciel to autonomously click, type, and control desktop applications.
+- **Vision & UI Interaction | Tương tác giao diện & Tầm nhìn:** ~~Implement PyAutoGUI + Gemini Vision to allow Ciel to autonomously click, type, and control desktop applications via a grid overlay system.~~ ✅ **DONE** — 2 tools (`vision_act`, `vision_describe`) with 10×8 grid coordinate mapping.
 - **HUD UI/UX Polish | Đánh bóng giao diện HUD:** ~~Enhance Neon Terminal with distinct color coding for `[TOOL]`, `[BRAIN]`, and `[WORKER]` logs and add micro-animations.~~ ✅ **DONE**
 
 ---

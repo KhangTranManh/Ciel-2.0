@@ -115,6 +115,7 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
             web_active = False
             git_active = False
             trade_active = False
+            vision_active = False
             
             try:
                 if thoughts_log_path.exists():
@@ -130,6 +131,8 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
                             git_active = True
                         if "get_market_price" in text_block or "crypto" in text_block:
                             trade_active = True
+                        if "vision_act" in text_block or "vision_describe" in text_block:
+                            vision_active = True
             except Exception:
                 pass
                 
@@ -151,7 +154,8 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
                     "Worker (Synth)": True,
                     "Web Agent": web_active,
                     "Git Ops": git_active,
-                    "Trading Desk": trade_active
+                    "Trading Desk": trade_active,
+                    "Vision (Eyes)": vision_active
                 }
             }
             

@@ -55,6 +55,11 @@ RULES:
 """
 
 
+RAG_LLM_COMPRESS_CHAR_THRESHOLD = 4000  # Roughly 1000 tokens.
+RAG_LLM_COMPRESS_INPUT_LIMIT = 20000
+RAG_LLM_COMPRESS_OUTPUT_LIMIT = 5000
+
+
 # ==========================================================
 # MAIN ORCHESTRATOR
 # ==========================================================
@@ -367,6 +372,9 @@ class CielCore:
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
+        if tool_name in {"get_fact", "save_fact", "delete_fact"}:
+            return self._format_fact_result(tool_name, result_text)
+
         if tool_name not in self._TOOLS_NEEDING_FORMAT:
             return result_text
 
@@ -426,6 +434,68 @@ class CielCore:
             return json.dumps(compact, ensure_ascii=False, indent=1)
         except (json.JSONDecodeError, TypeError):
             return self._strip_html(text)[:2000]
+
+    def _format_fact_result(self, tool_name: str, result_text: str) -> str:
+        """Convert memory vault tool output into clean user-facing text."""
+        if tool_name == "get_fact":
+            match = re.match(r"Fact '([^']+)':\s*(.*)", result_text, flags=re.DOTALL)
+            if match:
+                key = match.group(1).replace("_", " ")
+                value = match.group(2).strip()
+                return f"Master, your {key} is {value}."
+            match = re.match(r"No fact found for key '([^']+)'", result_text)
+            if match:
+                key = match.group(1).replace("_", " ")
+                return f"Master, I do not have a saved {key}."
+            return result_text
+
+        if tool_name == "save_fact":
+            match = re.match(r"Fact saved successfully:\s*([^.]+)\.", result_text)
+            if match:
+                key = match.group(1).replace("_", " ")
+                return f"Master, I saved your {key}."
+            return result_text
+
+        if tool_name == "delete_fact":
+            match = re.match(r"Fact deleted successfully:\s*([^.]+)\.", result_text)
+            if match:
+                key = match.group(1).replace("_", " ")
+                return f"Master, I deleted your {key}."
+            return result_text
+
+        return result_text
+
+    def _refine_recalled_context(self, recalled: str) -> str:
+        """Second-stage RAG compression using the Worker only when needed."""
+        if not recalled or len(recalled) <= RAG_LLM_COMPRESS_CHAR_THRESHOLD:
+            return recalled
+
+        prompt = (
+            "You are a context compressor for Ciel's long-term memory.\n"
+            "Read the recalled memory logs below and compress them into factual core interactions.\n"
+            "Strip raw HTML, scraped webpage text, long code blocks, raw diffs, stack traces, and redundant chatter.\n"
+            "Keep only facts that could help answer the current user request.\n"
+            "Use this exact format, one interaction per line:\n"
+            "[YYYY-MM-DD] Human: ... | Ai: ...\n\n"
+            "Rules:\n"
+            "- Do not invent facts.\n"
+            "- Keep dates when present; use [unknown] only if no date exists.\n"
+            "- Keep file names, decisions, preferences, and final outcomes.\n"
+            "- Output only the compressed context lines.\n\n"
+            f"RECALLED MEMORY LOGS:\n{recalled[:RAG_LLM_COMPRESS_INPUT_LIMIT]}"
+        )
+
+        try:
+            self._log_thought("RAG", "compress_task", recalled[:1000])
+            compressed = self.worker.generate(prompt).strip()
+            if not compressed:
+                return recalled
+            compressed = compressed[:RAG_LLM_COMPRESS_OUTPUT_LIMIT].strip()
+            self._log_thought("RAG", "compressed", compressed[:1000])
+            return compressed
+        except Exception as e:
+            self._log_thought("RAG", "compress_error", str(e))
+            return recalled
 
     def execute_code(self, task: str, filename: str) -> str:
         """Worker generates code and writes it to disk."""
@@ -507,7 +577,13 @@ class CielCore:
 
             elif new_action == "chat":
                 task = evaluation.get("task", user_input)
-                chat_response = self.execute_chat(task)
+                # Inject the actual tool result so Worker doesn't hallucinate
+                enriched_task = (
+                    f"{task}\n\n"
+                    f"[ACTUAL DATA from previous tool '{tool_name}']:\n"
+                    f"{result[:3000]}"
+                )
+                chat_response = self.execute_chat(enriched_task)
                 return chat_response  # HIDE ERROR: Only return the new chat response to the user
             else:
                 return result
@@ -556,6 +632,7 @@ class CielCore:
         # RAG RECALL: Search long-term memory for relevant past context
         recalled = rag_manager.search_similar(user_input)
         if recalled:
+            recalled = self._refine_recalled_context(recalled)
             self._log_thought("RAG", "recalled", recalled[:300])
 
         try:
