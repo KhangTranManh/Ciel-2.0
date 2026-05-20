@@ -1,12 +1,51 @@
 ================================================================================
   CIEL 2.0 — DEVELOPER NOTES (Next Features to Build)
-  Last Updated: 2026-05-12
+  Last Updated: 2026-05-21
 ================================================================================
 
 These are features that have been discussed, analyzed (pros/cons), and agreed
 upon for future development. They are listed in priority order.
 
 Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
+
+================================================================================
+  RECENT FIXES: RAG CONTEXT HYGIENE & DEBUG LOG VIEW (2026-05-21)
+================================================================================
+
+  STATUS: DONE
+  FILES:
+    - core/rag_manager.py
+    - core/llm_connector.py
+    - scripts/format_thoughts_log.py
+    - .gitignore
+
+  WHAT CHANGED:
+    1. RAG recall now has two-tier compression before context reaches Router.
+       - Tier 1: zero-token regex/structural filtering in compress_context().
+       - Tier 2: Worker compression only if recalled context remains > ~1000 tokens.
+
+    2. Tier 1 removes common old-memory poison:
+       - raw smart_scrape blocks
+       - raw git_diff payloads
+       - HTML/script/style noise
+       - large fenced code/diff/JSON blocks
+       - base64/data URL junk
+
+    3. Fact vault tool outputs are now user-clean but log-raw:
+       - thoughts.log keeps: get_fact: Fact 'preferred_chat_language': English
+       - UI shows: Master, your preferred chat language is English.
+
+    4. thoughts.log is not rearranged directly. A generated view is created:
+       - ciel_data/logs/thoughts_view.md    -> readable grouped Markdown timeline
+       - ciel_data/logs/thoughts_view.jsonl -> structured records for future tools
+
+  HOW TO RUN:
+    python scripts/format_thoughts_log.py --limit 30
+
+  IMPORTANT:
+    - thoughts.log remains the raw chronological source of truth.
+    - thoughts_view.md and thoughts_view.jsonl are generated local debug files.
+    - Generated log views are ignored by git.
 
 ================================================================================
   PRIORITY 1: GitHub Manager (Dev Tool Pack)
@@ -45,7 +84,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   PRIORITY 2: 11:00 PM "Brain Cleanse" (Scheduled Task)
 ================================================================================
 
-  STATUS: Agreed, not yet started.
+  STATUS: DONE (2026-05-11)
   FILE:   core/scheduler.py (add new task to existing file)
 
   WHAT:
@@ -95,7 +134,8 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   WHY IT WAS DEFERRED:
     The current RAG system passed a 45-prompt stress test with 100% accuracy
     on the critical recall test. The noise filters (MIN_QUERY_LENGTH=15,
-    MIN_RELEVANCE_SCORE=0.65) are already doing a good job. Adding a
+    MIN_RELEVANCE_SCORE=0.65) plus the 2026-05-21 recall compressor are already
+    doing a good job. Adding a
     cross-encoder would:
     - Consume 1-2 GB extra VRAM on the RTX 3060.
     - Add latency to every single user message.
@@ -203,7 +243,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
   WHY:
     To maintain a dynamic, aesthetically pleasing "hacker" UI that WOWs the user.
 ================================================================================
-  CURRENT SYSTEM STATUS (as of 2026-05-12)
+  CURRENT SYSTEM STATUS (as of 2026-05-21)
 ================================================================================
 
   OPERATIONAL FEATURES:
@@ -214,6 +254,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] Self-healing engine (3-attempt auto-fix)
     [x] Hybrid Memory: short-term JSON (20 msg) + long-term ChromaDB RAG
     [x] RAG noise filters (MIN_QUERY_LENGTH=15, MIN_RELEVANCE_SCORE=0.65)
+    [x] RAG recall compression (Tier 1 regex cleanup + Tier 2 Worker compression for long context)
     [x] Gmail integration (search, read, reply, trash, mark read)
     [x] Trading tools (Binance crypto stats, TwelveData forex/metals)
     [x] OS tools (shell, screenshot, app launcher)
@@ -223,6 +264,8 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] Telegram notification channel
     [x] 45-prompt amnesia stress test (all passing)
     [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
+    [x] thoughts.log generated views (thoughts_view.md + thoughts_view.jsonl)
+    [x] Clean user-facing fact vault responses while preserving raw tool logs
     [x] FastAPI WebSocket Bridge for Real-time Flutter UI Stream
     [x] Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
 
@@ -230,6 +273,7 @@ PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
     [x] Chain-of-Thought Audit & Self-Correction (done 2026-05-11)
     [x] 11 PM Brain Cleanse & Boot-up Date Check (Priority 2 - done 2026-05-11)
+    [x] RAG Context Hygiene & Debug Log View (done 2026-05-21)
     [ ] RAG Re-ranking (Priority 3 — deferred) - UNDONE
     [x] Stealth Web Search Engine (Priority 4 - done 2026-05-11)
     [x] Vision & UI Interaction (Priority 5 - done 2026-05-12)
@@ -241,6 +285,7 @@ PENDING FEATURES:
     - architect.md          → Full project map, all functions, changelog
     - core/llm_connector.py → Main orchestration pipeline (CielCore)
     - core/rag_manager.py   → Hybrid memory system
+    - scripts/format_thoughts_log.py -> Generate readable Markdown/JSONL views from thoughts.log
     - core/scheduler.py     → Proactive background tasks
     - core/router.py        → Brain routing logic + RECALLED CONTEXT rule
     - .env                  → API keys (NEVER auto-edit this file)
@@ -252,5 +297,7 @@ PENDING FEATURES:
     3. All scheduled tasks run in "Ghost Mode" — no pollution to
        memory_bank.json or RAG. Results go to files/Telegram only.
     4. thoughts.log is the single source of truth for debugging.
+    5. Never rearrange thoughts.log directly; generate thoughts_view.md/jsonl instead:
+       python scripts/format_thoughts_log.py --limit 30
 
 ================================================================================

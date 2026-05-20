@@ -14,7 +14,7 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 - **Main orchestrator | Bộ điều phối chính:** `core/llm_connector.py` (`CielCore`) is the central pipeline. It initializes Brain, Worker, Router, RecoveryManager, and ToolManager, then coordinates the full `route → execute → respond` flow.
 - **Router | Bộ định tuyến:** `core/router.py` uses the Brain LLM to classify user intent into `chat`, `tool`, `code`, or `multi_tool` actions. Includes WINDOWS SYSTEM ARCHITECT and anti-hallucination guardrails. Contains RECALLED CONTEXT rule to prefer RAG data over redundant `get_fact` calls.
 - **Self-healing engine | Hệ thống tự sửa lỗi:** `core/recovery_manager.py` implements multi-attempt (up to 3) autonomous error correction with a ROBUST OS DEVELOPER prompt, syntax validation, and escalating fix strategies.
-- **Hybrid Memory (RAG) | Bộ nhớ lai:** `core/rag_manager.py` provides long-term semantic memory via ChromaDB + `all-MiniLM-L6-v2` embeddings. Short-term: `memory_bank.json` (max 20 messages). Long-term: `ciel_data/vector_memory/` (ChromaDB). Overflow messages are automatically archived into vector storage via `_trim_history()`. Recall is filtered by `MIN_QUERY_LENGTH=15` and `MIN_RELEVANCE_SCORE=0.65` to eliminate noise.
+- **Hybrid Memory (RAG) | Bộ nhớ lai:** `core/rag_manager.py` provides long-term semantic memory via ChromaDB + `all-MiniLM-L6-v2` embeddings. Short-term: `memory_bank.json` (max 20 messages). Long-term: `ciel_data/vector_memory/` (ChromaDB). Overflow messages are automatically archived into vector storage via `_trim_history()`. Recall is filtered by `MIN_QUERY_LENGTH=15` and `MIN_RELEVANCE_SCORE=0.65`, then compressed by a two-tier recall cleaner: regex/structural filtering first, Worker-based compression only when recalled context remains large.
 - **Proactive Scheduler | Lịch trình chủ động:** `core/scheduler.py` runs background tasks on a timer using zero-token standby. Tools are called directly (bypassing Brain) to save API costs. Currently schedules a Morning Digest at 08:00 daily (Gmail + Forex/Metals → Worker summary → Telegram notification).
 - **Tool registry/execution | Kho công cụ & thực thi:** `core/tool_manager.py` loads internal + external tool packs, stitches tool manuals, executes by tool name.
 - **Agent system | Hệ thống agent:** `agent_system/` contains the Brain and Worker LLM models, provider config, LangGraph pipeline, and buffer writer tool.
@@ -34,6 +34,9 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 User Input → CielCore.process()
   → RAG Recall: search ChromaDB for semantically similar past context
     (skipped if query < 15 chars or relevance < 0.65)
+  → RAG Compression:
+    Tier 1: zero-token regex/structural cleanup removes old smart_scrape/git_diff/HTML noise
+    Tier 2: if still > ~1000 tokens, Worker compresses recalled logs into factual Human/Ai lines
   → Inject recalled context into user prompt (if any)
   → Router (Brain LLM) classifies intent → JSON decision
   → Based on action:
@@ -122,13 +125,18 @@ Ciel 2.0/
 │   ├── test_rag_memory.py        # 45-prompt amnesia stress test (hybrid memory)
 │   └── logs/                     # Test output logs (.txt + .json)
 │
+├── scripts/                      # Maintenance/debug helper scripts
+│   └── format_thoughts_log.py     # Generate readable Markdown + JSONL views from thoughts.log
+│
 ├── ciel_data/                    # Runtime data
 │   ├── facts.json                # Fact vault
 │   ├── gmail_token.json          # Google OAuth token (auto-generated)
 │   ├── memory_bank.json          # Chat history persistence (short-term, max 20)
 │   ├── vector_memory/            # ChromaDB persistent storage (long-term RAG)
 │   └── logs/
-│       └── thoughts.log          # Brain/Worker thought process audit trail
+│       ├── thoughts.log          # Raw chronological Brain/Worker thought audit trail
+│       ├── thoughts_view.md      # Generated readable grouped debug view (ignored by git)
+│       └── thoughts_view.jsonl   # Generated structured log view (ignored by git)
 │
 ├── ciel_workspace/               # Sandbox for user scripts
 │   ├── test_healing.py
@@ -289,8 +297,10 @@ Pure text/code generator. No tools, no routing. Features:
 - `_load_chat_memory(self)` - Load persisted messages, filter toxic/refusal patterns.
 - `_save_chat_memory(self)` - Persist chat history JSON.
 - `_compact_email_result(self, text)` - Strip HTML from raw Gmail output to reduce token waste.
+- `_format_fact_result(self, tool_name, result_text)` - Convert raw fact vault tool output into clean user-facing sentences while keeping raw data in `thoughts.log`.
+- `_refine_recalled_context(self, recalled)` - Tier-2 Worker compression for long recalled RAG context after zero-token cleanup.
 - `execute_chat(self, task)` - Worker generates natural language response.
-- `execute_tool(self, tool_name, tool_args, response_hint)` - Execute tool with self-healing loop (up to 3 attempts) and optional Worker formatting.
+- `execute_tool(self, tool_name, tool_args, response_hint)` - Execute tool with self-healing loop (up to 3 attempts), clean fact output formatting, and optional Worker formatting.
 - `execute_code(self, task, filename)` - Worker generates code → buffer_writer → flush to disk.
 - `execute_multi_tool(self, tools, response_hint)` - Sequential tool execution → Worker synthesizes combined report.
 - `process(self, user_input)` - Full pipeline: **RAG recall → inject context →** route → execute → respond → save memory.
@@ -394,10 +404,11 @@ Pure text/code generator. No tools, no routing. Features:
 
 ### `core/rag_manager.py`
 
-- `_get_collection()` - Lazy-load ChromaDB client and `all-MiniLM-L6-v2` embedding model. Persistent storage at `ciel_data/vector_memory/`.
-- `add_memory(text)` - Archive a conversation snippet into ChromaDB with timestamp metadata.
-- `search_similar(query, n_results=3)` - Semantic search. Returns empty list if query < `MIN_QUERY_LENGTH` (15) or all results below `MIN_RELEVANCE_SCORE` (0.65).
-- `count_memories()` - Return total number of stored memories.
+- `_ensure_initialized()` - Lazy-load ChromaDB client and `all-MiniLM-L6-v2` embedding model. Persistent storage at `ciel_data/vector_memory/`.
+- `embed_and_save(text, metadata=None)` - Archive a conversation snippet into ChromaDB with timestamp metadata.
+- `search_similar(query, top_k=3)` - Semantic search. Returns empty string if query < `MIN_QUERY_LENGTH` (15), results are below `MIN_RELEVANCE_SCORE` (0.65), or RAG is unavailable. Applies `compress_context()` before returning.
+- `compress_context(raw_contexts)` - Tier-1 zero-token structural filter for recalled memories. Removes old `smart_scrape`, `git_diff`, raw HTML, large fenced payloads, and extracts compact `[date] Human: ... | Ai: ...` lines.
+- `get_memory_count()` - Return total number of stored memories.
 
 ### `core/scheduler.py` (`class CielScheduler`)
 
@@ -410,6 +421,15 @@ Pure text/code generator. No tools, no routing. Features:
 - `_fetch_market_price(symbol)` *(module-level)* - Direct TwelveData API call for Forex/Metals.
 - `_send_telegram(message)` *(module-level)* - Direct Telegram Bot API call.
 - `_get_worker()` *(module-level)* - Lazy-load Worker LLM instance.
+
+### `scripts/format_thoughts_log.py`
+
+- `parse_log(text)` - Parse raw `thoughts.log` entries into structured records.
+- `group_turns(entries)` - Group log entries into user-request turns with RAG, route, tool, worker, error, and memory-write sections.
+- `render_turn(turn, include_full=False)` - Render one grouped turn to Markdown.
+- `write_jsonl(entries, output_path)` - Write parsed entries to `thoughts_view.jsonl`.
+- `write_markdown(turns, output_path, limit, include_full)` - Write readable grouped debug view to `thoughts_view.md`.
+- `main()` - CLI entry point. Example: `python scripts/format_thoughts_log.py --limit 30`.
 
 ### `backtest/test_rag_memory.py`
 
@@ -454,6 +474,15 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 ---
 
 ## 8) Changelog | Nhật ký thay đổi
+
+### Memory Recall & Debug Log Polish (May 21, 2026)
+
+- **Added:** Tier-1 RAG recall compression in `core/rag_manager.py` via `compress_context()`. It uses zero-token regex/structural filtering to remove old `smart_scrape`, `git_diff`, raw HTML, base64/data URLs, and large fenced payloads before recalled context reaches the Router.
+- **Added:** Tier-2 RAG recall refinement in `core/llm_connector.py` via `_refine_recalled_context()`. If Tier-1 output is still larger than ~1000 tokens (`RAG_LLM_COMPRESS_CHAR_THRESHOLD=4000` chars), the existing Worker model compresses it into factual `[YYYY-MM-DD] Human: ... | Ai: ...` lines.
+- **Modified:** `core/llm_connector.py` now formats fact vault results for the user via `_format_fact_result()`. Raw outputs like `get_fact: Fact 'preferred_chat_language': English` remain in `thoughts.log`, while the UI receives clean text like `Master, your preferred chat language is English.`
+- **Added:** `scripts/format_thoughts_log.py` to generate `ciel_data/logs/thoughts_view.md` and `ciel_data/logs/thoughts_view.jsonl` from raw `thoughts.log` without modifying the source audit trail.
+- **Modified:** `.gitignore` now excludes generated log views (`thoughts_view.md`, `thoughts_view.jsonl`) because they are local runtime/debug artifacts.
+- **Safety:** `thoughts.log` remains the raw chronological source of truth. Generated views are disposable and can be regenerated with `python scripts/format_thoughts_log.py --limit 30`.
 
 ### Vision & UI Interaction — "The Hands of Ciel" (May 2026)
 
@@ -532,7 +561,8 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
 - **Tool confirmation | Xác nhận tool:** add user confirmation step before executing destructive tools (delete, shell).
 - **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
-- **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem.
+- **RAG Recall Compression | Nén ngữ cảnh RAG:** ~~Add lightweight cleanup before recalled memories reach Brain.~~ ✅ **DONE** — Tier-1 regex/structural filtering + Tier-2 Worker compression only for large recalled context.
+- **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem beyond current compression filters.
 - **GitHub Manager | Quản lý GitHub:** ~~Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.~~ ✅ **DONE** — 5 tools with 2-step commit safety and deep repo scanner.
 - **11 PM Brain Cleanse | Dọn não 23h:** ~~Add nightly scheduled task to flush all short-term memory into RAG and generate a Daily Summary.~~ ✅ **DONE**
 - **Flutter Desktop HUD | Giao diện HUD Desktop:** ~~Implement WebSockets in FastAPI to stream logs and vitals to a dynamic Flutter desktop UI.~~ ✅ **DONE**
@@ -548,3 +578,4 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - Bản đồ này phản ánh trạng thái hiện tại của repository tại tháng 5/2026.
 - Default provider is Gemini (prepaid credits with monthly spend cap).
 - The system supports hot-swapping providers via `.env` without code changes.
+- Keep `thoughts.log` raw and chronological. Use `scripts/format_thoughts_log.py` to generate readable local views when debugging.
