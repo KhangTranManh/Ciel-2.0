@@ -18,6 +18,20 @@ def main():
         
         ciel = AgentLoop()
         scheduler.cleanse_callback = ciel.core._brain_cleanse
+
+        # SAFETY GATE: CLI confirmation handler for high-risk tools
+        def _cli_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
+            """Blocking CLI confirmation prompt for destructive tools."""
+            print(Fore.YELLOW + f"\n⚠️  SAFETY CHECK — {tool_name}" + Style.RESET_ALL)
+            print(Fore.WHITE + preview + Style.RESET_ALL)
+            while True:
+                answer = input(Fore.YELLOW + "Approve? (Y/N): " + Style.RESET_ALL).strip().lower()
+                if answer in ("y", "yes"):
+                    return True
+                if answer in ("n", "no"):
+                    return False
+        ciel.core.confirm_callback = _cli_confirm
+
         scheduler.start_background()
         print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
     except Exception as e:

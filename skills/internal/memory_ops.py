@@ -2,21 +2,26 @@ from langchain_core.tools import tool
 import os
 import json
 from pathlib import Path
+from threading import Lock
 
 # Setup facts file path
 FACTS_FILE = Path(__file__).resolve().parent.parent.parent / "ciel_data" / "facts.json"
 
+FACTS_LOCK = Lock()
+
 def _load_facts() -> dict:
-    if not FACTS_FILE.exists():
-        return {}
-    try:
-        return json.loads(FACTS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    with FACTS_LOCK:
+        if not FACTS_FILE.exists():
+            return {}
+        try:
+            return json.loads(FACTS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
 def _save_facts(data: dict):
-    FACTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    FACTS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    with FACTS_LOCK:
+        FACTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        FACTS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 @tool
 def save_fact(key: str, value: str) -> str:

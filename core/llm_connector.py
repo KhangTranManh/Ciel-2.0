@@ -63,6 +63,17 @@ RAG_LLM_COMPRESS_OUTPUT_LIMIT = 5000
 # ==========================================================
 # MAIN ORCHESTRATOR
 # ==========================================================
+
+# Risk descriptions for high-risk tools (shown in confirmation prompt)
+_RISK_DESCRIPTIONS = {
+    "delete_file":           "Permanently DELETE a file from your workspace",
+    "execute_shell_command": "Run an OS shell command on your machine",
+    "send_gmail_message":    "Send an email from your Gmail account",
+    "trash_email":           "Move an email to Trash in your Gmail",
+    "git_confirm_push":      "Commit and PUSH code to the remote repository",
+    "vision_act":            "Autonomously control your screen (click, type, scroll)",
+}
+
 class CielCore:
     def __init__(self):
         self.base_dir = Path(__file__).resolve().parent.parent
@@ -89,12 +100,20 @@ class CielCore:
 
         log.system("CielCore initialized with Modular Brain-Worker architecture")
 
+        # SAFETY GATE: confirmation callback for high-risk tools
+        # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
+        # Signature: confirm_callback(tool_name: str, preview: str, tool_args: dict) -> bool
+        self.confirm_callback = None
+
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
         self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
 
         self._load_chat_memory()
         self._check_bootup_cleanse()
+
+    # Tools that require Master's explicit Y/N approval before execution
+    _HIGH_RISK_TOOLS = set(_RISK_DESCRIPTIONS.keys())
 
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
     _TOOL_HINTS = {
@@ -286,6 +305,34 @@ class CielCore:
         self._log_thought("WORKER", "chat_response", response)
         return response
 
+    def _request_confirmation(self, tool_name: str, tool_args: dict) -> bool:
+        """Request Master's approval before executing a high-risk tool."""
+        risk = _RISK_DESCRIPTIONS.get(tool_name, f"Execute {tool_name}")
+        args_preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
+        preview = (
+            f"Action: {risk}\n"
+            f"Tool:   {tool_name}\n"
+            f"Args:   {args_preview}"
+        )
+        self._log_thought("SAFETY", "confirm_requested",
+                          f"{tool_name}({args_preview})")
+
+        if self.confirm_callback is None:
+            # No callback set (e.g. forgot to wire up) — auto-proceed with warning
+            self._log_thought("SAFETY", "confirm_auto_approved",
+                              "No confirm_callback set — auto-approving.")
+            return True
+
+        try:
+            approved = self.confirm_callback(tool_name, preview, tool_args)
+        except Exception as e:
+            self._log_thought("SAFETY", "confirm_error", str(e))
+            approved = False
+
+        tag = "confirm_approved" if approved else "confirm_denied"
+        self._log_thought("SAFETY", tag, tool_name)
+        return approved
+
     def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "") -> str:
         """Execute a Ciel tool and format the result."""
         log.tool(f"Executing: {tool_name}({tool_args})")
@@ -293,6 +340,11 @@ class CielCore:
         if tool_name not in self._tool_map:
             log.error(f"Tool not found: {tool_name}")
             return f"[TOOL_ERROR] Tool '{tool_name}' not found."
+
+        # SAFETY GATE: require confirmation for high-risk tools
+        if tool_name in self._HIGH_RISK_TOOLS:
+            if not self._request_confirmation(tool_name, tool_args):
+                return f"[CANCELLED] Master denied execution of {tool_name}. No action was taken."
 
         result = self.tool_manager.execute_tool(tool_name, tool_args)
         result_text = self.tool_manager.format_tool_result(result)
@@ -521,11 +573,12 @@ class CielCore:
             if name not in self._tool_map:
                 res = f"[TOOL_ERROR] {name} not found."
             else:
-                raw_res = self.tool_manager.execute_tool(name, args)
-                res = self.tool_manager.format_tool_result(raw_res)
+                res = self.execute_tool(name, args, response_hint=response_hint, user_input=user_input)
                 
             self._log_thought("TOOL", f"result_{name}", res)
             results.append(f"--- Output from {name} ---\n{res}")
+            if res.startswith("[CANCELLED]"):
+                break
             
         combined_results = "\n\n".join(results)
         

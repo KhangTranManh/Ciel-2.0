@@ -41,7 +41,9 @@ User Input → CielCore.process()
   → Router (Brain LLM) classifies intent → JSON decision
   → Based on action:
       "chat"       → Worker generates natural response
-      "tool"       → ToolManager executes → Worker formats result (if needed)
+      "tool"       → SAFETY GATE: if high-risk tool, request Master’s Y/N confirmation
+                     → if denied: return "[CANCELLED]" immediately
+                     → if approved: ToolManager executes → Worker formats result (if needed)
                      ↳ Brain Self-Correction: evaluates result. If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
       "code"       → Worker generates code → buffer_writer flushes to disk
       "multi_tool" → Sequential tool execution → Worker synthesizes combined report
@@ -299,8 +301,9 @@ Pure text/code generator. No tools, no routing. Features:
 - `_compact_email_result(self, text)` - Strip HTML from raw Gmail output to reduce token waste.
 - `_format_fact_result(self, tool_name, result_text)` - Convert raw fact vault tool output into clean user-facing sentences while keeping raw data in `thoughts.log`.
 - `_refine_recalled_context(self, recalled)` - Tier-2 Worker compression for long recalled RAG context after zero-token cleanup.
+- `_request_confirmation(self, tool_name, tool_args)` - **Safety Gate.** Build preview of high-risk tool action and call `confirm_callback`. Logs `[SAFETY]` entries to `thoughts.log`. Returns `True` (approved) or `False` (denied).
 - `execute_chat(self, task)` - Worker generates natural language response.
-- `execute_tool(self, tool_name, tool_args, response_hint)` - Execute tool with self-healing loop (up to 3 attempts), clean fact output formatting, and optional Worker formatting.
+- `execute_tool(self, tool_name, tool_args, response_hint)` - **Safety gate check → ** Execute tool with self-healing loop (up to 3 attempts), clean fact output formatting, and optional Worker formatting.
 - `execute_code(self, task, filename)` - Worker generates code → buffer_writer → flush to disk.
 - `execute_multi_tool(self, tools, response_hint)` - Sequential tool execution → Worker synthesizes combined report.
 - `process(self, user_input)` - Full pipeline: **RAG recall → inject context →** route → execute → respond → save memory.
@@ -449,7 +452,7 @@ Pure text/code generator. No tools, no routing. Features:
 
 ## 7) Integration Test Coverage | Phạm vi kiểm thử tích hợp
 
-The `backtest/test_integration.py` suite covers 17 test cases:
+The `backtest/test_integration.py` suite covers 21 test cases:
 
 | # | Test | Category |
 |---|------|----------|
@@ -470,6 +473,10 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 | 15 | Delete file (cleanup) | Cleanup |
 | 16 | Self-healing: code rewrite (syntax + module error) | Self-Healing |
 | 17 | Self-healing: parameter correction | Self-Healing |
+| 18 | Self-correction: Brain evaluates and retries | Self-Correction |
+| 19 | Cleanup: self-correction test file | Cleanup |
+| 20 | Safety Gate: denied confirmation prevents execution | Safety Gate |
+| 21 | Cleanup: safety gate test file | Cleanup |
 
 ---
 
@@ -483,6 +490,18 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Added:** `scripts/format_thoughts_log.py` to generate `ciel_data/logs/thoughts_view.md` and `ciel_data/logs/thoughts_view.jsonl` from raw `thoughts.log` without modifying the source audit trail.
 - **Modified:** `.gitignore` now excludes generated log views (`thoughts_view.md`, `thoughts_view.jsonl`) because they are local runtime/debug artifacts.
 - **Safety:** `thoughts.log` remains the raw chronological source of truth. Generated views are disposable and can be regenerated with `python scripts/format_thoughts_log.py --limit 30`.
+
+### Tool Confirmation Loop — Safety Gate (May 21, 2026)
+
+- **Added:** `_HIGH_RISK_TOOLS` set and `_RISK_DESCRIPTIONS` dict in `core/llm_connector.py`. Six tools require Master’s explicit Y/N approval before execution: `delete_file`, `execute_shell_command`, `send_gmail_message`, `trash_email`, `git_confirm_push`, `vision_act`.
+- **Added:** `CielCore._request_confirmation()` method. Builds a human-readable preview (action description, tool name, args) and calls `self.confirm_callback`. Logs `[SAFETY] [CONFIRM_REQUESTED]`, `[CONFIRM_APPROVED]`, or `[CONFIRM_DENIED]` to `thoughts.log`.
+- **Added:** `CielCore.confirm_callback` — a callback attribute set at startup by the entry point:
+  - **CLI (`main.py`):** Blocking `input("Y/N")` prompt with yellow safety banner.
+  - **WebSocket (`main_api.py`):** Sends `confirm_request` JSON to Flutter client, blocks up to 60s for `confirm_response`. Uses `threading.Event` to bridge sync/async.
+- **Modified:** `CielCore.execute_tool()` now checks `_HIGH_RISK_TOOLS` before execution. If denied, returns `[CANCELLED]` without executing.
+- **Modified:** `backtest/test_integration.py` — Sets `core.confirm_callback = lambda *_: True` after init so existing tests auto-approve. Added Test 20 (denied confirmation → file not deleted) and Test 21 (cleanup).
+- **Modified:** `backtest/test_rag_memory.py` — Sets `core.confirm_callback = lambda *_: True` after init.
+- **Safety:** If no callback is wired up, the system auto-approves with a warning log (fail-open, not fail-closed) to avoid breaking unattended pipelines.
 
 ### Vision & UI Interaction — "The Hands of Ciel" (May 2026)
 
@@ -559,7 +578,7 @@ The `backtest/test_integration.py` suite covers 17 test cases:
 - **Finish RAG layer | Hoàn thiện RAG:** ~~implement document ingestion and vector search for knowledge queries.~~ ✅ **DONE** — ChromaDB hybrid memory with automatic archival and semantic recall.
 - **Add automated tests | Bổ sung test tự động:** convert smoke scripts to pytest with mocks for API/network calls.
 - **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
-- **Tool confirmation | Xác nhận tool:** add user confirmation step before executing destructive tools (delete, shell).
+- **Tool confirmation | Xác nhận tool:** ~~add user confirmation step before executing destructive tools (delete, shell).~~ ✅ **DONE** — Callback-based Y/N safety gate for 6 high-risk tools, with CLI and WebSocket handlers.
 - **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
 - **RAG Recall Compression | Nén ngữ cảnh RAG:** ~~Add lightweight cleanup before recalled memories reach Brain.~~ ✅ **DONE** — Tier-1 regex/structural filtering + Tier-2 Worker compression only for large recalled context.
 - **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem beyond current compression filters.

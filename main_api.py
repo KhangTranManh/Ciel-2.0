@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import asyncio
+import threading
 import traceback
 from pathlib import Path
 
@@ -33,6 +34,12 @@ app.add_middleware(
 ciel_agent = None
 thoughts_log_path = Path(__file__).resolve().parent / "ciel_data" / "logs" / "thoughts.log"
 
+# SAFETY GATE: shared state for WebSocket confirmation
+_confirm_event = threading.Event()
+_confirm_result = {"approved": False}
+_confirm_ws = None       # Active WebSocket for sending confirm requests
+_confirm_lock = None     # asyncio.Lock for WebSocket sends
+
 @app.on_event("startup")
 async def startup_event():
     global ciel_agent
@@ -41,6 +48,49 @@ async def startup_event():
         scheduler = CielScheduler()
         ciel_agent = AgentLoop()
         scheduler.cleanse_callback = ciel_agent.core._brain_cleanse
+
+        # SAFETY GATE: WebSocket confirmation callback
+        def _ws_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
+            """Send confirmation request via WebSocket and block until response."""
+            global _confirm_event, _confirm_result, _confirm_ws, _confirm_lock
+            if _confirm_ws is None or _confirm_lock is None:
+                print("[API Safety] No active WebSocket — auto-approving.")
+                return True
+
+            _confirm_event.clear()
+            _confirm_result["approved"] = False
+
+            # Schedule the async send from the sync thread
+            async def _send():
+                async with _confirm_lock:
+                    try:
+                        await _confirm_ws.send_json({
+                            "type": "confirm_request",
+                            "data": {
+                                "tool_name": tool_name,
+                                "preview": preview,
+                                "tool_args": tool_args
+                            }
+                        })
+                    except Exception as e:
+                        print(f"[API Safety] Failed to send confirm request: {e}")
+
+            try:
+                loop = asyncio.get_event_loop()
+                asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
+            except Exception as e:
+                print(f"[API Safety] Error scheduling confirm send: {e}")
+                return True  # Auto-approve on send failure
+
+            # Block this thread until Flutter replies (max 60s)
+            approved = _confirm_event.wait(timeout=60)
+            if not approved:
+                print("[API Safety] Confirmation timed out — auto-cancelling.")
+                return False
+            return _confirm_result["approved"]
+
+        ciel_agent.core.confirm_callback = _ws_confirm
+
         scheduler.start_background()
         print("[API] Ciel Core initialized and ready.")
     except Exception as e:
@@ -173,12 +223,43 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
         print(f"[API Vitals Error] {e}")
 
 
+async def run_agent_in_background(user_input: str, websocket: WebSocket, send_lock: asyncio.Lock):
+    """Runs the synchronous ciel_agent.run_step in the thread pool executor and streams the response back."""
+    global ciel_agent
+    try:
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, ciel_agent.run_step, user_input)
+        
+        # Send the final response
+        async with send_lock:
+            try:
+                await websocket.send_json({
+                    "type": "response",
+                    "data": response
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        error_msg = f"Ciel crashed during processing: {str(e)}"
+        async with send_lock:
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": error_msg
+                })
+            except Exception:
+                pass
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global _confirm_ws, _confirm_lock
     await websocket.accept()
     print("[API] New client connected via WebSocket.")
     
     send_lock = asyncio.Lock()
+    _confirm_ws = websocket
+    _confirm_lock = send_lock
     
     # Start the log tailer as a background task for this connection
     tail_task = asyncio.create_task(tail_thoughts_log(websocket, send_lock))
@@ -193,6 +274,13 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 # Parse if it's JSON
                 msg_data = json.loads(data)
+
+                # Handle confirmation responses from Flutter
+                if msg_data.get("type") == "confirm_response":
+                    _confirm_result["approved"] = msg_data.get("approved", False)
+                    _confirm_event.set()
+                    continue
+
                 user_input = msg_data.get("message", "")
             except json.JSONDecodeError:
                 user_input = data
@@ -210,34 +298,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception:
                     pass
             
-            # Run Ciel Agent (wrap in thread since it's synchronous)
-            try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(None, ciel_agent.run_step, user_input)
-                
-                # Send the final response
-                async with send_lock:
-                    try:
-                        await websocket.send_json({
-                            "type": "response",
-                            "data": response
-                        })
-                    except Exception:
-                        pass
-            except Exception as e:
-                error_msg = f"Ciel crashed during processing: {str(e)}"
-                async with send_lock:
-                    try:
-                        await websocket.send_json({
-                            "type": "error",
-                            "data": error_msg
-                        })
-                    except Exception:
-                        pass
+            # Start Ciel Agent in a background task so the WebSocket loop remains responsive to read confirm answers
+            asyncio.create_task(run_agent_in_background(user_input, websocket, send_lock))
                 
     except WebSocketDisconnect:
         print("[API] Client disconnected.")
     finally:
+        if _confirm_ws == websocket:
+            _confirm_ws = None
+            _confirm_lock = None
         tail_task.cancel()
         vitals_task.cancel()
 

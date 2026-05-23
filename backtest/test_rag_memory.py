@@ -45,6 +45,7 @@ def main():
     step(0, "Initializing CielCore...")
     from core.llm_connector import CielCore
     core = CielCore()
+    core.confirm_callback = lambda *_: True  # Auto-approve for tests
     print(f"  {Fore.GREEN}CielCore ready.{Style.RESET_ALL}")
 
     # Check current RAG memory count

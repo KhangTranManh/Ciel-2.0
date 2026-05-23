@@ -230,6 +230,9 @@ def main():
         tool_names = [t.name for t in core._tools]
         print(Fore.GREEN + f"  [OK] {len(tool_names)} tools loaded: {', '.join(tool_names)}" + Style.RESET_ALL)
         ilog.add("SYSTEM", "init", "CielCore", f"Tools: {', '.join(tool_names)}")
+
+        # SAFETY GATE: auto-approve all tool confirmations in test mode
+        core.confirm_callback = lambda *_: True
     except Exception as e:
         print(Fore.RED + f"  [FATAL] Cannot initialize CielCore: {e}" + Style.RESET_ALL)
         import traceback
@@ -510,6 +513,56 @@ def main():
     )
 
     # ======================================================
+    # TEST 20: Safety Gate — denied confirmation
+    # ======================================================
+    header("TEST: Safety Gate — denied confirmation")
+    ilog.add("TEST", "start", "Safety Gate — denied confirmation",
+             "Set confirm_callback to deny, then try to delete a file.")
+    try:
+        # 1. Create a temp file to attempt deletion on
+        core.execute_tool("write_file", {"filename": "safety_test.txt", "content": "do not delete me"})
+
+        # 2. Switch callback to DENY
+        core.confirm_callback = lambda *_: False
+
+        # 3. Try to delete via execute_tool directly
+        result = core.execute_tool("delete_file", {"filename": "safety_test.txt"})
+        ilog.add("RESULT", "safety_gate", "delete_file(safety_test.txt)", result)
+
+        # 4. Verify the result is cancelled AND file still exists
+        file_still_exists = (core.base_dir / "ciel_workspace" / "safety_test.txt").exists()
+        gate_pass = "CANCELLED" in result and file_still_exists
+
+        results["20_safety_gate"] = gate_pass
+        status = Fore.GREEN + "[PASS]" if gate_pass else Fore.RED + "[FAIL]"
+        print(f"\n  {status} Safety Gate — denied confirmation{Style.RESET_ALL}")
+        if not gate_pass:
+            print(f"    Result: {result[:200]}")
+            print(f"    File exists: {file_still_exists}")
+    except Exception as e:
+        print(Fore.RED + f"  [ERROR] {type(e).__name__}: {e}" + Style.RESET_ALL)
+        ilog.add("ERROR", type(e).__name__, "safety_gate", str(e)[:500])
+        results["20_safety_gate"] = False
+    finally:
+        # Restore auto-approve for cleanup
+        core.confirm_callback = lambda *_: True
+
+    ilog.add("TEST", "end", "Safety Gate — denied confirmation",
+             "PASS" if results.get("20_safety_gate") else "FAIL")
+
+    # ======================================================
+    # TEST 21: Cleanup — delete safety gate test file
+    # ======================================================
+    results["21_safety_cleanup"] = run_test(
+        core,
+        "Cleanup — delete safety gate test file",
+        "Delete the file safety_test.txt from my workspace.",
+        ilog,
+        expect_action="tool",
+        validate_fn=lambda d, r: d.get("tool_name") == "delete_file" or "delet" in r.lower(),
+    )
+
+    # ======================================================
     # SAVE LOGS
     # ======================================================
     header("SAVING INTERACTION LOG")
@@ -537,7 +590,8 @@ def main():
         "Edge Cases": ["12_edge_ambiguous", "13_edge_unknown"],
         "Self-Healing": ["16_self_healing_module", "17_self_healing_parameter"],
         "Self-Correction": ["18_self_correction"],
-        "Cleanup":   ["14_memory_cleanup", "15_workspace_cleanup", "19_sc_cleanup"],
+        "Safety Gate": ["20_safety_gate"],
+        "Cleanup":   ["14_memory_cleanup", "15_workspace_cleanup", "19_sc_cleanup", "21_safety_cleanup"],
     }
 
     for cat_name, test_keys in categories.items():

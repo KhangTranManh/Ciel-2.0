@@ -48,6 +48,37 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     - Generated log views are ignored by git.
 
 ================================================================================
+  PLANNED FIXES: SAFETY GATE POLISH & DEADLOCK PREVENTION (2026-05-21)
+================================================================================
+
+  STATUS: ✅ DONE (2026-05-21)
+  FILES:
+    - main_api.py
+    - core/llm_connector.py
+    - skills/internal/memory_ops.py
+
+  WHAT NEEDS TO BE FIXED:
+    1. WebSocket Deadlock (main_api.py):
+       - Currently, "await loop.run_in_executor(..., ciel_agent.run_step, ...)" blocks
+         the WebSocket reader loop. Ciel cannot read the incoming "confirm_response"
+         from Flutter because it's suspended awaiting the run_step thread.
+       - Solution: Run the agent's run_step inside a background "asyncio.create_task"
+         so the main loop can immediately resume and read WebSocket responses.
+
+    2. Safety Gate Bypass in Multi-Tool (core/llm_connector.py):
+       - "CielCore.execute_multi_tool()" calls "self.tool_manager.execute_tool()"
+         directly, bypassing the safety check in "self.execute_tool()".
+       - Solution: Reroute sequential steps in execute_multi_tool through
+         "self.execute_tool" so high-risk steps trigger confirmation prompts.
+
+  OPTIONAL ENHANCEMENTS:
+    3. Fail-Closed Mode:
+       - Add a "STRICT_SAFETY" toggle in .env. If True and no callback is wired,
+         Ciel will safely deny tool execution (fail-closed) rather than auto-approving.
+    4. Telegram Alert:
+       - Send a Telegram bot notification if a WebSocket confirmation request times out.
+
+================================================================================
   PRIORITY 1: GitHub Manager (Dev Tool Pack)
 ================================================================================
 
@@ -268,6 +299,7 @@ Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
     [x] Clean user-facing fact vault responses while preserving raw tool logs
     [x] FastAPI WebSocket Bridge for Real-time Flutter UI Stream
     [x] Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
+    [x] Tool Confirmation Loop (Y/N safety gate for high-risk tools: delete, shell, gmail, git push, vision)
 
 PENDING FEATURES:
     [x] GitHub Manager (Priority 1 — done 2026-05-11)
@@ -280,6 +312,7 @@ PENDING FEATURES:
     [x] Multi-modal Artifact Rendering (Priority 6) - DONE
     [x] Neon Terminal UI/UX Polish (Priority 7) - DONE
     [x] Modular "Ultimate Sage" Persona System & Language Auto-Adaptation (Priority 8 - done 2026-05-12)
+    [/] Tool Confirmation Loop — Safety Gate (in progress - pending deadlock/multi-tool fixes)
 
   KEY FILES TO READ FIRST:
     - architect.md          → Full project map, all functions, changelog
