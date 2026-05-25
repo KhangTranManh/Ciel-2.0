@@ -1,7 +1,6 @@
 # Ciel 2.0 Project Roadmap (EN + VI)
 
 This document is a full project map for architecture, dependencies, and functions.
-Tài liệu này là bản đồ đầy đủ của dự án: kiến trúc file, phụ thuộc và toàn bộ hàm.
 
 ---
 

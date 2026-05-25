@@ -24,6 +24,8 @@ DEFAULT_INPUT = ROOT / "ciel_data" / "logs" / "thoughts.log"
 DEFAULT_MD = ROOT / "ciel_data" / "logs" / "thoughts_view.md"
 DEFAULT_JSONL = ROOT / "ciel_data" / "logs" / "thoughts_view.jsonl"
 DEFAULT_TRAIN = ROOT / "ciel_data" / "router_finetune.jsonl"
+DEFAULT_BRAIN_TRAIN = ROOT / "ciel_data" / "brain_finetune.jsonl"
+DEFAULT_WORKER_TRAIN = ROOT / "ciel_data" / "worker_finetune.jsonl"
 
 ENTRY_RE = re.compile(
     r"^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+"
@@ -50,7 +52,19 @@ FAKE_PATHS = [
     r"D:\GitRepositories\finance_dashboard",
 ]
 
+# Dynamically construct target path patterns from the active PC's ROOT folder
+# to sanitize and mask actual system directories in the fine-tuning dataset.
+ROOT_STR = str(ROOT)
+ROOT_ESCAPED = re.escape(ROOT_STR)
+ROOT_ESCAPED_DOUBLE = re.escape(ROOT_STR.replace("\\", "\\\\"))
+ROOT_ESCAPED_FORWARD = re.escape(ROOT_STR.replace("\\", "/"))
+ROOT_ESCAPED_QUAD = re.escape(ROOT_STR.replace("\\", "\\\\\\\\"))
+
 TARGET_PATH_PATTERNS = [
+    ROOT_ESCAPED,
+    ROOT_ESCAPED_DOUBLE,
+    ROOT_ESCAPED_FORWARD,
+    ROOT_ESCAPED_QUAD,
     r"D:\\Program Files\\Ciel 2\.0\\Ciel 2\.0",
     r"D:\\Ciel-2\.0",
     r"D:/Ciel-2\.0",
@@ -95,6 +109,48 @@ CIEL_SYSTEM_PROMPT = (
     "- Always reason before acting. Output 'hidden_thought' with observation, reasoning, risk.\n"
     "- Use ONLY tools from the list above. Never invent tool names.\n"
     "- Be extremely concise in final responses. No filler."
+)
+
+# ── Role-Specific System Prompts ────────────────────────────────────────────
+
+BRAIN_SYSTEM_PROMPT = (
+    "You are Ciel's Brain — the reasoning and routing engine of an autonomous AI "
+    "assistant operating on a Windows desktop.\n\n"
+    "YOUR TASK: Given a user request (which may include recalled memory context), "
+    "analyze the intent, assess risk, and output a SINGLE JSON object with:\n"
+    "- 'hidden_thought': {observation, reasoning, risk}\n"
+    "- 'action': one of 'chat', 'tool', 'code', 'multi_tool'\n"
+    "- 'tool_name' / 'tools': the tool(s) to invoke (if action is tool/multi_tool)\n"
+    "- 'tool_args': arguments for the tool\n"
+    "- 'task': description of work for the worker (if action is chat/code)\n\n"
+    "AVAILABLE TOOLS:\n"
+    "- save_fact / get_fact / delete_fact: Local fact vault\n"
+    "- list_workspace / read_file / write_file / append_file / delete_file / get_file_info: File ops\n"
+    "- run_python_script: Execute Python in sandbox\n"
+    "- execute_shell_command: Run OS commands\n"
+    "- open_application: Launch programs\n"
+    "- search_gmail / create_gmail_draft / send_gmail_message / reply_to_email / trash_email: Email\n"
+    "- get_market_price / get_crypto_stats / analyze_crypto_technical: Trading data\n"
+    "- git_status / git_diff / git_commit_and_push / git_confirm_push: Git ops\n"
+    "- stealth_search / smart_scrape: Web search and scrape\n\n"
+    "RULES:\n"
+    "- Output ONLY the JSON routing decision. No extra text.\n"
+    "- Use ONLY tools from the list above. Never invent tool names.\n"
+    "- For dangerous/out-of-scope requests, set action='chat' and decline."
+)
+
+WORKER_SYSTEM_PROMPT = (
+    "You are Ciel's Worker — the response generation engine of an autonomous AI "
+    "assistant operating on a Windows desktop.\n\n"
+    "YOUR TASK: Given a task description and/or tool execution results, generate "
+    "the final user-facing response.\n\n"
+    "RULES:\n"
+    "- Be extremely concise. No filler or repetition.\n"
+    "- Summarize tool output into clear, actionable answers.\n"
+    "- For code tasks, output clean, well-commented code.\n"
+    "- If tool returned an error, explain it clearly and suggest fixes.\n"
+    "- Address the user as 'Master' when appropriate.\n"
+    "- Never fabricate data. Only report what the tools returned."
 )
 
 
@@ -550,6 +606,10 @@ def build_training_dataset(entries: list[LogEntry]) -> tuple[list[dict], dict]:
     # ── Synthetic Dataset Augmentation ───────────────────────────────────────
     syn_samples = get_synthetic_samples()
     for sample in syn_samples:
+        # Dynamically randomize all local absolute paths in synthetic examples to mask PC-specific root
+        for msg in sample["messages"]:
+            msg["content"] = _randomize_paths_str(msg["content"])
+            
         dataset.append(sample)
         stats["kept"] += 1
         
@@ -561,6 +621,259 @@ def build_training_dataset(entries: list[LogEntry]) -> tuple[list[dict], dict]:
             stats["by_action"][action_type] = stats["by_action"].get(action_type, 0) + 1
         except Exception:
             pass
+
+    return dataset, stats
+
+
+def build_brain_dataset(entries: list[LogEntry]) -> tuple[list[dict], dict]:
+    """Build Brain-only training data: USER request → BRAIN route decision.
+
+    Each sample is a 3-message conversation:
+      [system]    BRAIN_SYSTEM_PROMPT
+      [user]      Raw user request (with RAG context if present)
+      [assistant]  Route decision JSON
+
+    This teaches the model ONLY the reasoning + routing step.
+    """
+    dataset: list[dict] = []
+    stats = {
+        "total_turns": 0, "kept": 0,
+        "dropped_invalid_json": 0, "dropped_bad_tool": 0,
+        "by_action": {},
+    }
+
+    turns: list[list[LogEntry]] = []
+    current_turn: list[LogEntry] = []
+    for entry in entries:
+        if entry.actor == "USER" and entry.action == "REQUEST":
+            if current_turn:
+                turns.append(current_turn)
+            current_turn = [entry]
+        elif current_turn:
+            current_turn.append(entry)
+    if current_turn:
+        turns.append(current_turn)
+
+    stats["total_turns"] = len(turns)
+
+    for turn_entries in turns:
+        user_entry = turn_entries[0]
+        user_request = _clean_user_request(user_entry.content)
+        if not user_request:
+            continue
+
+        route_entry = None
+        for e in turn_entries:
+            if e.actor == "BRAIN" and e.action == "ROUTE_DECISION":
+                route_entry = e
+                break
+        if not route_entry:
+            continue
+
+        decision_str = _clean_route_json(route_entry.content)
+        try:
+            decision_obj = json.loads(decision_str)
+        except json.JSONDecodeError:
+            stats["dropped_invalid_json"] += 1
+            continue
+
+        tool_names = _extract_tools_from_decision(decision_obj)
+        bad_tools = [t for t in tool_names if t not in ALLOWED_TOOLS]
+        if bad_tools:
+            stats["dropped_bad_tool"] += 1
+            continue
+
+        action_type = decision_obj.get("action", "chat")
+        stats["by_action"][action_type] = stats["by_action"].get(action_type, 0) + 1
+
+        messages = [
+            {"role": "system", "content": BRAIN_SYSTEM_PROMPT},
+            {"role": "user", "content": _randomize_paths_str(user_request)},
+            {"role": "assistant", "content": _randomize_paths_str(
+                json.dumps(decision_obj, ensure_ascii=False)
+            )},
+        ]
+        dataset.append({"messages": messages})
+        stats["kept"] += 1
+
+    # Synthetic brain-only samples
+    for sample in get_synthetic_samples():
+        msgs = sample["messages"]
+        # Extract: system, user, assistant(route) — first 3 messages only
+        if len(msgs) >= 3:
+            brain_msgs = [
+                {"role": "system", "content": BRAIN_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(msgs[1]["content"])},
+                {"role": "assistant", "content": _randomize_paths_str(msgs[2]["content"])},
+            ]
+            dataset.append({"messages": brain_msgs})
+            stats["kept"] += 1
+            try:
+                d = json.loads(msgs[2]["content"])
+                a = d.get("action", "chat")
+                stats["by_action"][a] = stats["by_action"].get(a, 0) + 1
+            except Exception:
+                pass
+
+    return dataset, stats
+
+
+def build_worker_dataset(entries: list[LogEntry]) -> tuple[list[dict], dict]:
+    """Build Worker-only training data: task/tool_result → WORKER response.
+
+    Each sample is a 3-message conversation:
+      [system]    WORKER_SYSTEM_PROMPT
+      [user]      The task description or tool result
+      [assistant]  Worker's final formatted response
+
+    This teaches the model ONLY the response generation step.
+    """
+    dataset: list[dict] = []
+    stats = {
+        "total_turns": 0, "kept": 0,
+        "dropped_no_response": 0,
+        "by_type": {},
+    }
+
+    turns: list[list[LogEntry]] = []
+    current_turn: list[LogEntry] = []
+    for entry in entries:
+        if entry.actor == "USER" and entry.action == "REQUEST":
+            if current_turn:
+                turns.append(current_turn)
+            current_turn = [entry]
+        elif current_turn:
+            current_turn.append(entry)
+    if current_turn:
+        turns.append(current_turn)
+
+    stats["total_turns"] = len(turns)
+
+    for turn_entries in turns:
+        # Determine action type from BRAIN route
+        route_entry = None
+        for e in turn_entries:
+            if e.actor == "BRAIN" and e.action == "ROUTE_DECISION":
+                route_entry = e
+                break
+        if not route_entry:
+            continue
+
+        decision_str = _clean_route_json(route_entry.content)
+        try:
+            decision_obj = json.loads(decision_str)
+        except json.JSONDecodeError:
+            continue
+
+        tool_names = _extract_tools_from_decision(decision_obj)
+        bad_tools = [t for t in tool_names if t not in ALLOWED_TOOLS]
+        if bad_tools:
+            continue
+
+        action_type = decision_obj.get("action", "chat")
+
+        if action_type == "chat":
+            # Worker receives CHAT_TASK and produces CHAT_RESPONSE
+            chat_task = None
+            chat_resp = None
+            for e in turn_entries:
+                if e.actor == "WORKER" and e.action == "CHAT_TASK":
+                    chat_task = e
+                if e.actor == "WORKER" and e.action == "CHAT_RESPONSE":
+                    chat_resp = e
+            if not chat_resp:
+                stats["dropped_no_response"] += 1
+                continue
+            task_text = chat_task.content if chat_task else decision_obj.get("task", "Respond to the user.")
+            messages = [
+                {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(_truncate_content(task_text))},
+                {"role": "assistant", "content": _truncate_content(chat_resp.content)},
+            ]
+            dataset.append({"messages": messages})
+            stats["kept"] += 1
+            stats["by_type"]["chat"] = stats["by_type"].get("chat", 0) + 1
+
+        elif action_type == "tool":
+            tool_result = None
+            worker_resp = None
+            for e in turn_entries:
+                if e.actor == "TOOL" and e.action == "RESULT":
+                    tool_result = e
+                if e.actor == "WORKER" and e.action == "FORMAT_RESPONSE":
+                    worker_resp = e
+            if not tool_result or not worker_resp:
+                stats["dropped_no_response"] += 1
+                continue
+            messages = [
+                {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(
+                    f"Tool returned:\n{_truncate_content(tool_result.content)}"
+                )},
+                {"role": "assistant", "content": _truncate_content(worker_resp.content)},
+            ]
+            dataset.append({"messages": messages})
+            stats["kept"] += 1
+            stats["by_type"]["tool"] = stats["by_type"].get("tool", 0) + 1
+
+        elif action_type == "code":
+            code_resp = None
+            for e in turn_entries:
+                if e.actor == "WORKER" and e.action == "CODE_RESPONSE":
+                    code_resp = e
+                    break
+            if not code_resp:
+                stats["dropped_no_response"] += 1
+                continue
+            code_task = decision_obj.get("task", "Generate the requested code.")
+            messages = [
+                {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(_truncate_content(code_task))},
+                {"role": "assistant", "content": _truncate_content(code_resp.content)},
+            ]
+            dataset.append({"messages": messages})
+            stats["kept"] += 1
+            stats["by_type"]["code"] = stats["by_type"].get("code", 0) + 1
+
+        elif action_type == "multi_tool":
+            tool_results = []
+            multi_resp = None
+            for e in turn_entries:
+                if e.actor == "TOOL" and e.action.startswith("RESULT"):
+                    tool_results.append(e)
+                if e.actor == "WORKER" and e.action == "MULTI_TOOL_FORMAT_RESPONSE":
+                    multi_resp = e
+            if not tool_results or not multi_resp:
+                stats["dropped_no_response"] += 1
+                continue
+            combined = "\n---\n".join(
+                f"[{e.action}] {_truncate_content(e.content, 800)}"
+                for e in tool_results
+            )
+            messages = [
+                {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(
+                    f"Tool results:\n{combined}"
+                )},
+                {"role": "assistant", "content": _truncate_content(multi_resp.content)},
+            ]
+            dataset.append({"messages": messages})
+            stats["kept"] += 1
+            stats["by_type"]["multi_tool"] = stats["by_type"].get("multi_tool", 0) + 1
+
+    # Synthetic worker-only samples
+    for sample in get_synthetic_samples():
+        msgs = sample["messages"]
+        # For tool/multi_tool: user(tool_result) + assistant(final) = msgs[3] + msgs[4]
+        # For chat/refusal: user("Now generate") + assistant(response) = msgs[3] + msgs[4]
+        if len(msgs) >= 5:
+            worker_msgs = [
+                {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+                {"role": "user", "content": _randomize_paths_str(msgs[3]["content"])},
+                {"role": "assistant", "content": msgs[4]["content"]},
+            ]
+            dataset.append({"messages": worker_msgs})
+            stats["kept"] += 1
 
     return dataset, stats
 
@@ -1562,10 +1875,14 @@ def main() -> int:
     parser.add_argument("--out-md", type=Path, default=DEFAULT_MD)
     parser.add_argument("--out-jsonl", type=Path, default=DEFAULT_JSONL)
     parser.add_argument("--out-train", type=Path, default=DEFAULT_TRAIN,
-                        help="Output path for ChatML training dataset.")
+                        help="Output path for full-pipeline ChatML training dataset.")
+    parser.add_argument("--out-brain", type=Path, default=DEFAULT_BRAIN_TRAIN,
+                        help="Output path for Brain-only (routing) training dataset.")
+    parser.add_argument("--out-worker", type=Path, default=DEFAULT_WORKER_TRAIN,
+                        help="Output path for Worker-only (response) training dataset.")
     parser.add_argument("--limit", type=int, default=40, help="Newest turns to include in Markdown. Use 0 for all.")
     parser.add_argument("--include-full", action="store_true", help="Include full entry bodies in Markdown details.")
-    parser.add_argument("--no-train", action="store_true", help="Skip generating the training dataset.")
+    parser.add_argument("--no-train", action="store_true", help="Skip generating all training datasets.")
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -1582,29 +1899,51 @@ def main() -> int:
     # ── Output 2: Debug Markdown ─────────────────────────────────────────
     write_markdown(turns, args.out_md, args.limit, args.include_full)
 
-    # ── Output 3: Full-Pipeline Training Dataset ─────────────────────────
+    # ── Output 3-5: Training Datasets (Full, Brain, Worker) ──────────────
     if not args.no_train:
-        dataset, stats = build_training_dataset(entries)
-        write_training_jsonl(dataset, args.out_train)
+        # Full pipeline (existing)
+        full_dataset, full_stats = build_training_dataset(entries)
+        write_training_jsonl(full_dataset, args.out_train)
+
+        # Brain-only (routing decisions)
+        brain_dataset, brain_stats = build_brain_dataset(entries)
+        write_training_jsonl(brain_dataset, args.out_brain)
+
+        # Worker-only (response generation)
+        worker_dataset, worker_stats = build_worker_dataset(entries)
+        write_training_jsonl(worker_dataset, args.out_worker)
 
     # ── Summary ──────────────────────────────────────────────────────────
     print(f"Parsed entries: {len(entries)}")
     print(f"Parsed turns: {len(turns)}")
     print(f"Markdown view: {args.out_md}")
     print(f"JSONL view: {args.out_jsonl}")
+
     if not args.no_train:
-        size_kb = args.out_train.stat().st_size / 1024
-        print(f"\n{'='*55}")
-        print(f"  TRAINING DATASET STATS")
-        print(f"{'='*55}")
-        print(f"  Total turns scanned:    {stats['total_turns']}")
-        print(f"  Kept (clean):           {stats['kept']}")
-        print(f"  Dropped (invalid JSON): {stats['dropped_invalid_json']}")
-        print(f"  Dropped (bad tool):     {stats['dropped_bad_tool']}")
-        print(f"  Dropped (no response):  {stats['dropped_no_response']}")
-        print(f"  Action breakdown:       {json.dumps(stats['by_action'])}")
-        print(f"  Output: {args.out_train}  ({size_kb:.1f} KB)")
-        print(f"{'='*55}")
+        def _print_dataset_stats(label: str, path: Path, stats: dict) -> None:
+            size_kb = path.stat().st_size / 1024
+            print(f"\n{'='*60}")
+            print(f"  {label}")
+            print(f"{'='*60}")
+            print(f"  Total turns scanned:    {stats.get('total_turns', '-')}")
+            print(f"  Kept (clean):           {stats['kept']}")
+            if "dropped_invalid_json" in stats:
+                print(f"  Dropped (invalid JSON): {stats['dropped_invalid_json']}")
+            if "dropped_bad_tool" in stats:
+                print(f"  Dropped (bad tool):     {stats['dropped_bad_tool']}")
+            if "dropped_no_response" in stats:
+                print(f"  Dropped (no response):  {stats['dropped_no_response']}")
+            if "by_action" in stats:
+                print(f"  Action breakdown:       {json.dumps(stats['by_action'])}")
+            if "by_type" in stats:
+                print(f"  Type breakdown:         {json.dumps(stats['by_type'])}")
+            print(f"  Output: {path}  ({size_kb:.1f} KB)")
+            print(f"{'='*60}")
+
+        _print_dataset_stats("FULL PIPELINE DATASET (router_finetune.jsonl)", args.out_train, full_stats)
+        _print_dataset_stats("BRAIN-ONLY DATASET (brain_finetune.jsonl)", args.out_brain, brain_stats)
+        _print_dataset_stats("WORKER-ONLY DATASET (worker_finetune.jsonl)", args.out_worker, worker_stats)
+
     return 0
 
 
