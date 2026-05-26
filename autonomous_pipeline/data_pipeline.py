@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import time
 import datetime
 from pathlib import Path
 import requests
@@ -205,12 +206,17 @@ def audit_batch_with_judge(batch_pairs):
     # Construct batch representation for the prompt
     batch_data = []
     for idx, pair in enumerate(batch_pairs):
+        # Truncate long worker responses (especially code scripts) to prevent
+        # DeepSeek from hitting max_tokens and truncating the JSON response mid-stream.
+        worker_resp = pair["original_response"]
+        if len(worker_resp) > 800:
+            worker_resp = worker_resp[:800] + "\n... [TRUNCATED FOR AUDIT]"
         batch_data.append({
             "index": idx,
-            "user_request": pair["user_request"],
+            "user_request": pair["user_request"][:500],
             "tool_name": pair["tool_name"],
             "raw_tool_result": pair["raw_result"][:1500],  # Truncated for safety
-            "worker_response": pair["original_response"]
+            "worker_response": worker_resp
         })
         
     batch_json = json.dumps(batch_data, indent=2, ensure_ascii=False)
@@ -256,52 +262,74 @@ Your JSON response format must be an object matching this exact schema:
 }}
 """
     
-    payload = {
-        "model": "deepseek-v4-pro",
-        "messages": [
-            {"role": "system", "content": "You are a precise data auditor. Keep your reasoning extremely brief and direct, then respond only with a valid JSON object."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2,
-        "max_tokens": 8192,
-        "response_format": {"type": "json_object"}
-    }
+    # Retry loop: attempt up to MAX_JUDGE_RETRIES times on JSON parse failures.
+    # Each retry increases temperature slightly to get a different (hopefully valid) output.
+    MAX_JUDGE_RETRIES = 2
+    last_exception = None
     
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=90)
-        if response.status_code != 200:
-            # Try a fallback without response_format if not supported by proxy
-            if response.status_code == 400:
-                payload.pop("response_format", None)
-                response = requests.post(url, headers=headers, json=payload, timeout=90)
+    for retry in range(MAX_JUDGE_RETRIES + 1):
+        temperature = 0.2 + (retry * 0.1)  # 0.2 → 0.3 → 0.4
+        
+        payload = {
+            "model": "deepseek-v4-pro",
+            "messages": [
+                {"role": "system", "content": "You are a precise data auditor. Keep your reasoning extremely brief and direct, then respond only with a valid JSON object."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": temperature,
+            "max_tokens": 16384,
+            "response_format": {"type": "json_object"}
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            if response.status_code != 200:
+                # Try a fallback without response_format if not supported by proxy
+                if response.status_code == 400:
+                    payload.pop("response_format", None)
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
+                    
+            if response.status_code == 200:
+                res_data = response.json()
+                raw_text = res_data["choices"][0]["message"]["content"].strip()
                 
-        if response.status_code == 200:
-            res_data = response.json()
-            raw_text = res_data["choices"][0]["message"]["content"].strip()
-            
-            # Strip markdown fences if present
-            if raw_text.startswith("```"):
-                raw_text = raw_text.split("\n", 1)[-1]
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3]
-                raw_text = raw_text.strip()
+                # Strip markdown fences if present
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("\n", 1)[-1]
+                    if raw_text.endswith("```"):
+                        raw_text = raw_text[:-3]
+                    raw_text = raw_text.strip()
+                    
+                log_deepseek_call("JUDGE", "BATCH_AUDIT", prompt, raw_text)
                 
-            log_deepseek_call("JUDGE", "BATCH_AUDIT", prompt, raw_text)
-            
-            parsed = json.loads(raw_text)
-            evaluations = parsed.get("evaluations", [])
-            critique = parsed.get("overall_critique", "N/A - Standard runtime performance looks stable.")
-            recommendation = parsed.get("improvement_recommendation", "N/A - Continue monitoring current training cycles.")
-            return evaluations, critique, recommendation
-        else:
-            err_msg = f"HTTP {response.status_code} - {response.text}"
-            print(f"[-] DeepSeek API call failed: {err_msg}")
-            log_deepseek_call("JUDGE", "BATCH_AUDIT_ERROR", prompt, err_msg)
-            return [], "Audit connection error.", "Verify API connection."
-    except Exception as e:
-        print(f"[-] Exception during DeepSeek audit: {e}")
-        log_deepseek_call("JUDGE", "BATCH_AUDIT_EXCEPTION", prompt, f"Exception: {e}")
-        return [], f"Audit parsing failed: {e}", "Verify JSON format."
+                parsed = json.loads(raw_text)
+                evaluations = parsed.get("evaluations", [])
+                critique = parsed.get("overall_critique", "N/A - Standard runtime performance looks stable.")
+                recommendation = parsed.get("improvement_recommendation", "N/A - Continue monitoring current training cycles.")
+                return evaluations, critique, recommendation
+            else:
+                err_msg = f"HTTP {response.status_code} - {response.text}"
+                print(f"[-] DeepSeek API call failed: {err_msg}")
+                log_deepseek_call("JUDGE", "BATCH_AUDIT_ERROR", prompt, err_msg)
+                return [], "Audit connection error.", "Verify API connection."
+        except json.JSONDecodeError as e:
+            last_exception = e
+            if retry < MAX_JUDGE_RETRIES:
+                wait = 2 ** (retry + 1)  # 2s, 4s
+                print(f"[-] Judge JSON parse failed (attempt {retry+1}/{MAX_JUDGE_RETRIES+1}): {e}. Retrying in {wait}s...")
+                log_deepseek_call("JUDGE", "BATCH_AUDIT_RETRY", prompt, f"Retry {retry+1}: JSON parse error: {e}")
+                time.sleep(wait)
+            else:
+                print(f"[-] Judge JSON parse failed after {MAX_JUDGE_RETRIES+1} attempts: {e}")
+                log_deepseek_call("JUDGE", "BATCH_AUDIT_EXCEPTION", prompt, f"Exception after {MAX_JUDGE_RETRIES+1} attempts: {e}")
+                return [], f"Audit parsing failed: {e}", "Verify JSON format."
+        except Exception as e:
+            print(f"[-] Exception during DeepSeek audit: {e}")
+            log_deepseek_call("JUDGE", "BATCH_AUDIT_EXCEPTION", prompt, f"Exception: {e}")
+            return [], f"Audit parsing failed: {e}", "Verify JSON format."
+    
+    # Should not reach here, but safety fallback
+    return [], f"Audit parsing failed: {last_exception}", "Verify JSON format."
 
 
 def format_chatml(user_req, tool_results, assistant_response):
@@ -526,8 +554,10 @@ def main():
     rejected_today = 0
     records_to_save = []
     
-    # 4. Group pairs in batches of up to 10 items
-    batch_size = 10
+    # 4. Group pairs in batches of up to 4 items.
+    # Smaller batches prevent DeepSeek from hitting max_tokens and truncating JSON mid-response.
+    # Previous batch_size=10 caused ~50% Judge parse failures with large code scripts.
+    batch_size = 4
     batches = [pairs[i:i + batch_size] for i in range(0, len(pairs), batch_size)]
     
     overall_critiques = []

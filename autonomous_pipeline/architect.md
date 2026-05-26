@@ -31,7 +31,7 @@ Three actors, three models, one loop:
 ```
 Daemon Boot → Telegram "ONLINE" notification
   │
-  ├── Every 2 Hours:
+  ├── Every 1 Hour:
   │     1. Snapshot thoughts.log file size (pre_task_seek)
   │     2. task_generator.py:
   │        → Load last 3 user prompts from thoughts.log (lookback mechanism)
@@ -45,6 +45,7 @@ Daemon Boot → Telegram "ONLINE" notification
   │        → Send batch to DeepSeek-v4-pro (The Judge)
   │        → Judge returns: evaluations + overall_critique + improvement_recommendation
   │        → Auto-correct WEAK responses, discard BAD, augment GOOD with 2 paraphrases
+  │        → Retry up to 3 attempts on JSON parse failure (exponential backoff)
   │        → Append ChatML records to worker_finetune.jsonl
   │        → Log Judge audit to autonomous_pipeline/thoughts.log
   │        → Render Pillow dashboard image
@@ -105,6 +106,10 @@ autonomous_pipeline/
 ```
 
 **Critical behavior:** Before each task cycle, the orchestrator snapshots `thoughts.log` file size and resets `last_processed_seek` to that snapshot. This guarantees the Judge reads exactly the entries Ciel just produced — not stale or already-processed content.
+
+**Judge reliability:** Batch size is capped at 4 items (previously 10). Worker responses are truncated to 800 chars in the audit payload to prevent DeepSeek from hitting `max_tokens` and truncating JSON mid-response. On JSON parse failure, the pipeline retries up to 3 attempts with progressive temperature (0.2 → 0.3 → 0.4) and exponential backoff (2s, 4s).
+
+**Worker guardrails:** All Worker prompts (`execute_tool`, `execute_code`, `execute_multi_tool`, `execute_chat`) include explicit anti-hallucination rules ("NEVER fabricate data") and persona enforcement ("Always address the user as Master").
 
 ---
 

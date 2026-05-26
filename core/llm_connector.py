@@ -297,7 +297,7 @@ class CielCore:
         persona_task = (
             f"{self.ciel_persona}\n\n"
             f"Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
-            f"No filler, no pleasantries.{capabilities_context}\n\n"
+            f"No filler, no pleasantries. Always address the user as 'Master'.{capabilities_context}\n\n"
             f"User's request: {task}"
         )
         self._log_thought("WORKER", "chat_task", persona_task)
@@ -446,7 +446,12 @@ class CielCore:
             f"Tool: {tool_name}\n"
             f"Raw result:\n{clean_text}\n\n"
             f"Hint: {response_hint}\n"
-            f"CRITICAL: Be extremely concise. Give just the requested data. No conversational filler."
+            f"RULES:\n"
+            f"1. Be extremely concise. Give just the requested data. No conversational filler.\n"
+            f"2. Always address the user as 'Master' at the beginning of your response.\n"
+            f"3. ANTI-HALLUCINATION: ONLY use facts present in the Raw result above. "
+            f"If the raw result contains an error or 'file not found', report the error honestly. "
+            f"NEVER invent, fabricate, or simulate data that is not in the raw result."
         )
         self._log_thought("WORKER", "format_task", format_task)
         formatted = self.worker.generate(format_task)
@@ -554,8 +559,17 @@ class CielCore:
         from agent_system.tools.buffer_writer import buffer_writer
 
         buffer_writer.clear()
+        # Add anti-hallucination guardrail for code generation
+        code_guardrail = (
+            "\n\nCRITICAL RULES FOR CODE GENERATION:\n"
+            "1. Output ONLY production-ready code. Do NOT include dummy/test data, "
+            "demonstration values, or example scaffolding unless explicitly asked.\n"
+            "2. If input files may not exist, add proper error handling — do NOT fabricate their contents.\n"
+            "3. Do NOT simulate script execution output or invent fake results."
+        )
+        augmented_task = task + code_guardrail
         self._log_thought("WORKER", "code_task", task)
-        code = self.worker.generate(task)
+        code = self.worker.generate(augmented_task)
         self._log_thought("WORKER", "code_response", code)
         buffer_writer.append(code)
         result = buffer_writer.flush(filename)
@@ -588,7 +602,10 @@ class CielCore:
             f"User's request: {user_input}\n"
             f"{combined_results}\n\n"
             f"Hint: {response_hint}\n"
-            f"CRITICAL: Be concise. Deliver a unified report without conversational filler."
+            f"RULES:\n"
+            f"1. Be concise. Deliver a unified report without conversational filler.\n"
+            f"2. Always address the user as 'Master'.\n"
+            f"3. ONLY use facts present in the tool outputs above. NEVER invent data."
         )
         self._log_thought("WORKER", "multi_tool_format_task", format_task)
         formatted = self.worker.generate(format_task)
