@@ -743,3 +743,14 @@ class CielCore:
                 self.content = content
                 self.tool_calls = []
         return FakeAIMessage(f"<RESPONSE>{response}</RESPONSE>")
+
+
+def build_worker_prompt(user_request: str, tool_results_string: str) -> str:
+    """Format the input for the Local Worker model based on tool results."""
+    return f"""[USER REQUEST]
+{user_request}
+
+[TOOL RESULTS]
+{tool_results_string}
+
+Task: Based ONLY on the [TOOL RESULTS] above, answer the [USER REQUEST]. Be extremely concise. Address user as 'Master'."""
