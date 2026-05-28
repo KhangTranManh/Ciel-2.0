@@ -1,7 +1,7 @@
 {
-  "last_processed_seek": 1235965,
-  "total_processed": 18,
+  "last_processed_seek": 1245799,
+  "total_processed": 19,
   "total_accepted": 17,
-  "total_rejected": 1,
+  "total_rejected": 2,
   "cumulative_dataset_size": 38
 }

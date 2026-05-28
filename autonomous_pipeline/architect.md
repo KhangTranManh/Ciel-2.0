@@ -12,7 +12,7 @@ Three actors, three models, one loop:
 
 | Actor | Model | Role |
 |---|---|---|
-| **Simulated Master** | `deepseek-v4-flash` | Generates realistic, context-aware tasks based on time-of-day schedule and recent history |
+| **Simulated Master** | `deepseek-v4-pro` | Rotates through 21 capability categories, uses 3-task lookback to avoid repetition, generates single-scope tasks with explicit output specs |
 | **Ciel (Brain + Worker)** | `gemini-2.5-pro` + `gemini-2.5-flash` | Executes the task end-to-end (routing, tool calls, code gen, response) |
 | **The Judge** | `deepseek-v4-pro` | Audits Worker responses for hallucination, conciseness, persona compliance. Produces critique + recommendations |
 
@@ -31,11 +31,14 @@ Three actors, three models, one loop:
 ```
 Daemon Boot → Telegram "ONLINE" notification
   │
-  ├── Every 1 Hour:
+  ├── Every 30 Minutes:
   │     1. Snapshot thoughts.log file size (pre_task_seek)
   │     2. task_generator.py:
-  │        → Load last 3 user prompts from thoughts.log (lookback mechanism)
-  │        → Call DeepSeek-v4-flash (Simulated Master) → generate task
+  │        → Load last 3 user prompts from memory_bank.json (lookback mechanism)
+  │        → Call DeepSeek-v4-pro (Simulated Master):
+  │           - Receives full 21-category capability map
+  │           - Inspects lookback to identify recently covered categories
+  │           - Picks an uncovered category and generates a single-scope task
   │        → Initialize AgentLoop → Ciel executes task
   │        → Task results logged to ciel_data/logs/thoughts.log
   │     3. Set state.json seek cursor = pre_task_seek
@@ -48,8 +51,7 @@ Daemon Boot → Telegram "ONLINE" notification
   │        → Retry up to 3 attempts on JSON parse failure (exponential backoff)
   │        → Append ChatML records to worker_finetune.jsonl
   │        → Log Judge audit to autonomous_pipeline/thoughts.log
-  │        → Render Pillow dashboard image
-  │        → Send Telegram alert with metrics + critique + recommendation
+  │        → Send plain-text Telegram alert with per-task breakdown + critique + recommendation
   │
   └── Daily at 23:00:
         → Full nightly audit of any remaining unprocessed log entries

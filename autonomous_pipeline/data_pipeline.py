@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import re
 import json
@@ -137,7 +137,11 @@ def extract_worker_pairs(entries):
         
         if curr["actor"] == "USER" and curr["action"] == "REQUEST":
             user_req = curr["content"].strip()
-            
+            # Strip RAG context injection so Judge evaluates only the actual task,
+            # not the [RECALLED PAST CONTEXT] prefix Ciel injects into the prompt.
+            if "[CURRENT USER REQUEST]:" in user_req:
+                user_req = user_req.split("[CURRENT USER REQUEST]:")[-1].strip()
+
             # Look forward for Ciel's final response in this session (max 15 entries look-ahead)
             response_content = None
             tool_name = "chat"
@@ -206,10 +210,11 @@ def audit_batch_with_judge(batch_pairs):
     # Construct batch representation for the prompt
     batch_data = []
     for idx, pair in enumerate(batch_pairs):
-        # Truncate long worker responses (especially code scripts) to prevent
-        # DeepSeek from hitting max_tokens and truncating the JSON response mid-stream.
+        # For code tool: do not truncate response — Judge needs full script to evaluate correctly.
+        # For non-code tools: truncate at 800 chars to prevent max_tokens overflow.
         worker_resp = pair["original_response"]
-        if len(worker_resp) > 800:
+        is_code_tool = pair["tool_name"] == "code"
+        if not is_code_tool and len(worker_resp) > 800:
             worker_resp = worker_resp[:800] + "\n... [TRUNCATED FOR AUDIT]"
         batch_data.append({
             "index": idx,
@@ -222,25 +227,48 @@ def audit_batch_with_judge(batch_pairs):
     batch_json = json.dumps(batch_data, indent=2, ensure_ascii=False)
     
     # Detailed Judge prompt - using raw multi-line f-string (no markdown)
-    prompt = f"""You are the Nightly Judge for the Ciel 2.0 AI Agent. 
+    prompt = f"""You are the Nightly Judge for the Ciel 2.0 AI Agent.
 Your task is to audit the performance of Ciel's local Worker model and generate synthetic dataset records for finetuning.
 
 We have extracted a batch of Worker transactions (pairs of User Request + Raw Tool Results, and the Worker's actual response).
-You must evaluate each item strictly against three criteria:
-1. NO HALLUCINATION: The response must ONLY contain facts present in the Raw Tool Results. If the Worker invented outside facts -> Tag [BAD].
-2. CONCISENESS: The response must be extremely concise and direct. No filler or conversational fluff. If too verbose -> Tag [WEAK].
-3. PERSONA: For standard conversational or format responses (where tool_name is 'chat' or 'format'), the response MUST address the user as 'Master'. If it fails to call them 'Master' -> Tag [WEAK].
+You must evaluate each item strictly against four criteria:
+
+1. NO HALLUCINATION: The response must ONLY contain facts present in the Raw Tool Results. If the Worker invented data, actions, or statuses not present in the tool results -> Tag [BAD].
+   CRITICAL EXCEPTION (tool_name = 'code'): If tool_name is 'code', the Worker's response is a Python script and Raw Tool Results will always be 'N/A'. DO NOT apply the hallucination check against 'N/A'. Instead, evaluate whether the script logically and correctly solves the user_request. A script that correctly addresses the task is NOT hallucination even when Raw Tool Results = 'N/A'.
+   RULE (empty or error results, non-code tools): If Raw Tool Results are empty, 'N/A', or contain an error message, the Worker MUST explicitly state that the data is unavailable. A response that invents data to compensate -> [BAD]. A response that clearly acknowledges unavailability -> passes this criterion.
+
+2. COMPLETENESS: Count the number of distinct tasks or tool calls requested in the user_request. The Worker response MUST address ALL of them. If ANY subtask is entirely missing from the response (not just brief, but completely absent) -> Tag [BAD]. If tool results for a subtask are unavailable, the Worker must explicitly state that subtask's data is unavailable — silence is not acceptable.
+
+3. CONCISENESS: The response must be extremely concise and direct. No filler or conversational fluff. If too verbose -> Tag [WEAK].
+
+4. PERSONA: For standard conversational or format responses (where tool_name is 'chat' or 'format'), the response MUST address the user as 'Master'. If it fails to call them 'Master' -> Tag [WEAK].
    CRITICAL EXCEPTION: If the tool_name is 'code' (meaning the worker's response is a raw Python script), the 'Master' persona rule does NOT apply, and the script code should NOT contain any conversational greetings. Treat pure Python script outputs as persona-compliant by default.
 
+RESPONSE TYPE RUBRIC — apply these type-specific standards consistently:
+- tool_name = 'code' (Python script output):
+  * Evaluate correctness by whether the script solves the user_request — NOT by comparing against 'N/A' tool results.
+  * NO dummy/hardcoded test data or fabricated file paths in __main__ blocks -> [WEAK]. If it fabricates results entirely unrelated to the task -> [BAD].
+  * NO excessive docstrings or multi-line comment blocks on every function. Production code only; at most one brief comment per non-obvious step -> [WEAK] if violated.
+  * Script must include proper error handling for file/path operations where relevant.
+- tool_name = 'chat' (conversational response):
+  * Must be direct and extremely concise — no pleasantries, no "Great question!", no padding.
+  * Must address user as 'Master'. Failure -> [WEAK].
+- All other tool_names (tool/format responses):
+  * Must report ONLY what is present in Raw Tool Results.
+  * If Raw Tool Results are empty, error, or 'N/A': response MUST explicitly state data is unavailable. Invented data -> [BAD].
+  * Must address user as 'Master'. Failure -> [WEAK].
+
 Based on this, classify each item:
-- Classification [GOOD]: Meets all criteria perfectly.
+- Classification [GOOD]: Meets all four criteria and rubric standards.
   Actions for [GOOD]: You must also generate exactly 2 diverse paraphrased versions of the Worker's response. The paraphrases must keep the exact same concise information and address the user as 'Master', but use synonyms or different sentence structures.
-- Classification [WEAK]: The response is too verbose, has fluff, or forgot to say 'Master' (for non-code tools), but did NOT hallucinate.
-  Actions for [WEAK]: You must rewrite the response to meet the [GOOD] standard (direct, extremely concise, addressing the user as 'Master').
-- Classification [BAD]: The response contains hallucinations, fabricated statistics, or lies not found in the raw tool results.
+- Classification [WEAK]: The response did NOT hallucinate and IS complete, but has fixable quality issues (too verbose, missing 'Master', excessive code comments, unnecessary demo __main__ block).
+  Actions for [WEAK]: You must rewrite the response to meet the [GOOD] standard (direct, extremely concise, rubric-compliant). For code: remove dummy data and trim excessive comments while keeping the logic intact.
+- Classification [BAD]: The response contains hallucinations, fabricated data/actions not in tool results, OR is missing one or more required subtasks entirely.
   Actions for [BAD]: Mark as BAD. No rewrites or paraphrases needed.
 
 You must respond with EXACTLY ONE valid JSON object. Do not include markdown fences, preambles, or explanations outside the JSON block.
+
+IMPORTANT — user_request field cleanup: Some user_request values may begin with a [RECALLED PAST CONTEXT] block followed by [CURRENT USER REQUEST]. Always evaluate the Worker response ONLY against the [CURRENT USER REQUEST] section. Completely ignore any [RECALLED PAST CONTEXT] content when assessing hallucination or completeness.
 
 BATCH TO AUDIT:
 {batch_json}
@@ -464,53 +492,41 @@ def generate_dashboard(processed, accepted, rejected, dataset_size):
     return str(dashboard_path)
 
 
-def clean_for_markdown(text):
-    """Sanitize dynamic strings to prevent breaking Telegram's strict Markdown parser."""
-    if not text:
-        return ""
-    # Strip characters that trigger Markdown syntax parsing errors in raw values
-    for char in ["*", "_", "`", "[", "]", "(", ")"]:
-        text = text.replace(char, "")
-    return text
+def _make_audit_line(pair, audit, classification):
+    """Build a compact per-task dict for the Telegram audit summary."""
+    tool = pair["tool_name"]
+    if tool == "code":
+        task_type = "CODE"
+    elif tool == "chat":
+        task_type = "CHAT"
+    else:
+        task_type = "TOOL"
+    reasoning = (audit.get("reasoning", "") if audit else "no evaluation returned")[:100]
+    return {
+        "type": task_type,
+        "master": pair["user_request"][:70].replace("\n", " "),
+        "brain": f"routed → {tool}",
+        "worker": pair["original_response"][:70].replace("\n", " "),
+        "judge": f"{classification} — {reasoning}",
+    }
 
 
-def send_telegram_alert(message, image_path=None):
-    """Send summary metrics text and pillow dashboard image to Telegram bot."""
+def send_telegram_alert(message):
+    """Send plain-text audit summary to Telegram."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
+
     if not bot_token or not chat_id:
         print("[!] Telegram credentials missing from env. Telegram message skipped.")
         return
-        
-    send_msg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     try:
-        # Send text digest
-        r = requests.post(send_msg_url, json=payload, timeout=20)
+        r = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=20)
         if r.status_code != 200:
             print(f"[-] Telegram sendMessage failed (HTTP {r.status_code}): {r.text}")
-            # Fallback: Send plain unformatted text if markdown parsing failed
-            payload_plain = {
-                "chat_id": chat_id,
-                "text": message.replace("*", "").replace("_", "").replace("`", "")
-            }
-            requests.post(send_msg_url, json=payload_plain, timeout=20)
-        
-        # Send photo if dashboard image was built
-        if image_path and os.path.exists(image_path):
-            send_photo_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            with open(image_path, "rb") as photo:
-                files = {"photo": photo}
-                data = {"chat_id": chat_id, "caption": "📊 Nightly MLOps Dashboard | Ciel 2.0"}
-                requests.post(send_photo_url, data=data, files=files, timeout=30)
-                
-        print("[+] Telegram MLOps notification delivered.")
+        else:
+            print("[+] Telegram MLOps notification delivered.")
     except Exception as e:
         print(f"[-] Telegram alert delivery failed: {e}")
 
@@ -531,16 +547,14 @@ def main():
         current_dataset_size = get_dataset_size()
         state["cumulative_dataset_size"] = current_dataset_size
         save_state(state)
-        
-        # Render static dashboard
-        img_path = generate_dashboard(0, 0, 0, current_dataset_size)
-        
+
+        date_str = datetime.datetime.now().strftime("%d/%m %H:%M")
         telegram_msg = (
-            "🧠 *Ciel 2.0 MLOps Nightly Audit*\n\n"
-            "Status: *Idle* (No transactions recorded today)\n"
-            f"Cumulative Dataset Size: `{current_dataset_size}` training pairs."
+            f"🧠 MLOps Audit | {date_str}\n\n"
+            f"📊 No new transactions recorded.\n"
+            f"Cumulative dataset: {current_dataset_size} pairs."
         )
-        send_telegram_alert(telegram_msg, img_path)
+        send_telegram_alert(telegram_msg)
         return
         
     # 3. Parse entries and extract pairs
@@ -553,13 +567,14 @@ def main():
     accepted_today = 0
     rejected_today = 0
     records_to_save = []
-    
+    task_audit_lines = []  # Per-task results accumulated for Telegram summary
+
     # 4. Group pairs in batches of up to 4 items.
     # Smaller batches prevent DeepSeek from hitting max_tokens and truncating JSON mid-response.
     # Previous batch_size=10 caused ~50% Judge parse failures with large code scripts.
     batch_size = 4
     batches = [pairs[i:i + batch_size] for i in range(0, len(pairs), batch_size)]
-    
+
     overall_critiques = []
     overall_recs = []
     
@@ -579,30 +594,22 @@ def main():
             audit = eval_map.get(idx)
             
             if not audit:
-                # API failed or output format error, fallback to safe classification
-                print(f"[-] Warning: No evaluation for item {idx}. Falling back to default weak persona correction.")
-                # Basic persona check fallback
-                has_master = "Master" in pair["original_response"]
-                if has_master:
-                    classification = "GOOD"
-                    paraphrase_1 = pair["original_response"]
-                    paraphrase_2 = pair["original_response"]
-                    rewrite = None
-                else:
-                    classification = "WEAK"
-                    paraphrase_1 = None
-                    paraphrase_2 = None
-                    rewrite = "Master, " + pair["original_response"]
+                # Judge returned no evaluation for this item — skip entirely.
+                # Auto-accepting unaudited records risks polluting the dataset.
+                rejected_today += 1
+                print(f"[-] SKIPPED (no Judge evaluation returned for item {idx}): \"{pair['user_request'][:50]}\"")
+                task_audit_lines.append(_make_audit_line(pair, None, "SKIP"))
+                continue
             else:
                 classification = audit.get("classification", "WEAK").upper()
                 paraphrase_1 = audit.get("paraphrase_1")
                 paraphrase_2 = audit.get("paraphrase_2")
                 rewrite = audit.get("rewrite")
-                
+
             # Perform MLOps Auto-Correction & Augmentation
             if classification == "GOOD":
                 accepted_today += 1
-                
+
                 # Append original pair
                 records_to_save.append(format_chatml(
                     pair["user_request"], pair["raw_result"], pair["original_response"]
@@ -617,18 +624,20 @@ def main():
                     records_to_save.append(format_chatml(
                         pair["user_request"], pair["raw_result"], paraphrase_2
                     ))
-                    
+
             elif classification == "WEAK" and rewrite:
                 accepted_today += 1
                 # Save ONLY rewritten corrected version
                 records_to_save.append(format_chatml(
                     pair["user_request"], pair["raw_result"], rewrite
                 ))
-                
+
             else:
                 # BAD or rejected
                 rejected_today += 1
                 print(f"[-] REJECTED [BAD] entry: Request: \"{pair['user_request'][:50]}\"")
+
+            task_audit_lines.append(_make_audit_line(pair, audit, classification))
                 
     # 5. Save all records and update metrics
     if records_to_save:
@@ -645,48 +654,26 @@ def main():
     state["cumulative_dataset_size"] = current_dataset_size
     save_state(state)
     
-    # 7. Render Dashboard
-    print("[*] Generating Pillow dashboard visual...")
-    img_path = generate_dashboard(processed_today, accepted_today, rejected_today, current_dataset_size)
-    
-    # 8. Send Telegram Notification
-    tasks_summary_lines = []
-    if pairs:
-        tasks_summary_lines.append("\n📝 *Recent Tasks & Outcomes Summary:*")
-        for p_idx, pair in enumerate(pairs[-4:]):
-            req_clean = clean_for_markdown(pair["user_request"])
-            res_clean = clean_for_markdown(pair["original_response"])
-            
-            req_trunc = req_clean if len(req_clean) <= 80 else req_clean[:77] + "..."
-            res_trunc = res_clean if len(res_clean) <= 120 else res_clean[:117] + "..."
-            res_trunc = res_trunc.replace("\n", " ")
-            tasks_summary_lines.append(f"*{p_idx+1}. Task:* `{req_trunc}`\n   ↳ *Ciel:* {res_trunc}")
-            
-    tasks_summary_text = "\n".join(tasks_summary_lines) if tasks_summary_lines else ""
-    
-    final_critique = " | ".join(overall_critiques) if overall_critiques else "Standard runtime tone and conciseness conform to Master's directives."
+    # 7. Send Telegram Notification
+    final_critique = " | ".join(overall_critiques) if overall_critiques else "Standard performance."
     final_rec = " | ".join(overall_recs) if overall_recs else "Continue standard training runs."
-    
-    critique_clean = clean_for_markdown(final_critique)
-    rec_clean = clean_for_markdown(final_rec)
-    
-    telegram_msg = (
-        "🧠 *Ciel 2.0 Nightly MLOps Audit Complete*\n\n"
-        f"📊 *Today's Performance Breakdown:*\n"
-        f"• Processed: `{processed_today}` worker items\n"
-        f"• Accepted/Augmented: `{accepted_today}` records\n"
-        f"• Hallucinated/Discarded: `{rejected_today}` records\n\n"
-        f"📈 *Finetune Dataset Progress:*\n"
-        f"• Added today: `+{len(records_to_save)}` ChatML pairs\n"
-        f"• Cumulative Size: `{current_dataset_size}` ChatML pairs\n\n"
-        f"⚖️ *Judge's MLOps Assessment:*\n"
-        f"• *Critique:* {critique_clean}\n"
-        f"• *Recommendation:* {rec_clean}\n"
-        f"{tasks_summary_text}\n\n"
-        "Status: *Fine-tune dataset augmented successfully.*"
-    )
-    
-    send_telegram_alert(telegram_msg, img_path)
+
+    date_str = datetime.datetime.now().strftime("%d/%m %H:%M")
+    msg_lines = [
+        f"MLOps Audit | {date_str}",
+        f"Processed: {processed_today} | Accepted: {accepted_today} | Rejected: {rejected_today} | Dataset: {current_dataset_size}",
+        "",
+    ]
+    for i, t in enumerate(task_audit_lines[-4:], 1):
+        msg_lines.append(f"[{i}] {t['master'][:80]}")
+        msg_lines.append(f"     Worker: {t['worker'][:80]}")
+        msg_lines.append(f"     Judge: {t['judge'][:80]}")
+    msg_lines.append("")
+    msg_lines.append(f"Critique: {final_critique[:200]}")
+    msg_lines.append(f"Rec: {final_rec[:150]}")
+
+    send_telegram_alert("\n".join(msg_lines))
+
     print("[*] Nightly MLOps pipeline execution complete.")
 
 

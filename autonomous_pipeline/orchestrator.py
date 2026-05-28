@@ -102,13 +102,13 @@ def main():
             current_timestamp = time.time()
             today_date = now.strftime("%Y-%m-%d")
             
-            # 1. Simulated Master Task Generation Schedule (Every 1 hour)
+            # 1. Simulated Master Task Generation Schedule (Every 30 minutes)
             # If never run, run once immediately on startup to verify.
             time_since_last_task = current_timestamp - state["last_task_gen_timestamp"]
-            
-            # 3600 seconds = 1 Hour
-            if state["last_task_gen_timestamp"] == 0.0 or time_since_last_task >= 3600:
-                print(f"[*] Schedule Match: Generating task (Elapsed: {time_since_last_task/3600:.2f} hours)")
+
+            # 1800 seconds = 30 Minutes
+            if state["last_task_gen_timestamp"] == 0.0 or time_since_last_task >= 1800:
+                print(f"[*] Schedule Match: Generating task (Elapsed: {time_since_last_task/60:.1f} min)")
                 
                 # Snapshot log position BEFORE Ciel runs the task
                 log_path = BASE_DIR / "ciel_data" / "logs" / "thoughts.log"
