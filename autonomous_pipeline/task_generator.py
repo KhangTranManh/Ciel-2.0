@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import random
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -14,35 +13,110 @@ sys.path.insert(0, str(BASE_DIR))
 load_dotenv(BASE_DIR / ".env")
 
 from core.agent_loop import AgentLoop
+from autonomous_pipeline.data_pipeline import load_state, save_state
 
 
 # Diverse single-step fallback tasks used when DeepSeek task generation fails.
-# Rotated randomly (avoiding recent prompts) so the pipeline still exercises a
-# spread of categories instead of hammering the same task every 30-min cycle —
-# which otherwise freezes dataset variety and poisons RAG with duplicates.
+# Rotated SEQUENTIALLY (not random) via state.fallback_task_index so every entry
+# is exercised once per full pass before any repeats — guarantees dataset variety
+# even during extended DeepSeek outages. Covers all 21 capability categories.
 _FALLBACK_TASKS = [
+    # WORKSPACE
     "List all files and folders in ciel_workspace/ recursively and print the full tree to console.",
+    "Write 'Daily checkpoint' followed by the current timestamp to ciel_workspace/checkpoint.txt.",
+    "Append a timestamped line 'fallback heartbeat' to ciel_workspace/heartbeat.log.",
+    "Read the file ciel_workspace/heartbeat.log and print its last line to console.",
+    # MEMORY
     "Save a fact with key 'last_health_check' and value set to the current date to the memory vault.",
     "Retrieve the fact with key 'last_health_check' from the memory vault and print its value.",
+    "Delete the memory fact with key 'last_health_check' using delete_fact and print 'cleared'.",
+    # TRADING
     "Get the current closing price of BTC/USDT and report only the closing price value.",
+    "Get the current closing price of ETH/USDT and report only the closing price value.",
     "Get the current XAU/USD gold price and print only the price value to console.",
     "Get 24h stats (price change %, high, low) for ETH and print the result.",
-    "Check my unread emails and list the subjects and senders.",
+    "Run RSI + SMA technical analysis for BTC on the 1h interval and report the trend signal.",
+    # MAIL
+    "Check my unread emails and list the subjects and senders of the most recent 5.",
+    # GIT
     "Check the git status of the Ciel 2.0 repository and report uncommitted changes.",
+    "Run git diff on the repository and report the first meaningful changed lines.",
+    # OS / SHELL
     "Execute a shell command to check free disk space and print the result.",
     "Execute a safe shell command to list running processes and print the first 10 lines.",
-    "Search Google for today's high-level AI tech news and summarize the top headlines.",
+    "Execute a shell command to print current CPU and memory usage, then report the values.",
+    # VISION
+    "Take a screenshot of the current screen and describe what is visible.",
+    # CODE_GEN
     "Write a Python script to autonomous_pipeline/agent_output/disk_report.py that prints free disk space.",
+    "Write a Python script to autonomous_pipeline/agent_output/uptime_report.py that prints system uptime.",
+    # SELF_CORRECTION / EDGE
+    "Read the file ciel_workspace/daily_summary.txt and print its content (the file may not exist).",
+    # CHAT
+    "Briefly explain what RAG (retrieval-augmented generation) is in two sentences.",
 ]
 
 
 def _pick_fallback_task(recent_prompts):
-    """Pick a random fallback task that is not among the recent prompts (avoid repeats)."""
+    """Pick the next fallback task in sequential rotation, skipping entries in recent_prompts.
+
+    Uses state.fallback_task_index for persistent round-robin across cycles.
+    If an index lands on a task that's in recent_prompts, advances forward until
+    finding a non-recent one — guarantees no immediate repeats while still
+    making progress through the pool.
+    """
+    state = load_state()
+    start_idx = state.get("fallback_task_index", 0) % len(_FALLBACK_TASKS)
     recent = {p.strip() for p in (recent_prompts or [])}
-    candidates = [t for t in _FALLBACK_TASKS if t not in recent]
-    if not candidates:
-        candidates = _FALLBACK_TASKS
-    return random.choice(candidates)
+
+    chosen_idx = start_idx
+    for offset in range(len(_FALLBACK_TASKS)):
+        candidate_idx = (start_idx + offset) % len(_FALLBACK_TASKS)
+        if _FALLBACK_TASKS[candidate_idx] not in recent:
+            chosen_idx = candidate_idx
+            break
+
+    state["fallback_task_index"] = (chosen_idx + 1) % len(_FALLBACK_TASKS)
+    save_state(state)
+    return _FALLBACK_TASKS[chosen_idx]
+
+
+# Maximum length of a valid Master-generated task. Real single-scope tasks fit
+# easily under 400 chars; anything longer is almost always leaked reasoning
+# prose (e.g. "We need to generate exactly ONE task...") that the model emitted
+# instead of obeying the OUTPUT RULES.
+_MAX_TASK_CHARS = 400
+
+# Phrases that strongly indicate the model returned its chain-of-thought instead
+# of the final task string. Checked case-insensitively at the start of the text.
+_REASONING_LEAK_PREFIXES = (
+    "we need to", "we should", "let me", "let's", "first,", "first ",
+    "okay,", "alright,", "i need to", "i'll", "i will",
+    "looking at", "analyzing", "to generate", "based on the",
+    "given the", "since the", "thinking about", "considering",
+)
+
+
+def _looks_like_task(text):
+    """Reject reasoning-style blobs that leaked into the response.
+
+    A real task is a single concise imperative sentence. Multi-line analysis
+    prose or anything starting with planning language is the model's internal
+    reasoning — which, if passed through to Ciel, crashes the Brain router with
+    JSON decode errors (the input is too far out of distribution).
+    """
+    if not text:
+        return False
+    if len(text) > _MAX_TASK_CHARS:
+        return False
+    # Real tasks are one line, occasionally two. Anything with 3+ newlines is
+    # multi-paragraph reasoning.
+    if text.count("\n") >= 3:
+        return False
+    lowered = text.lstrip().lower()
+    if any(lowered.startswith(p) for p in _REASONING_LEAK_PREFIXES):
+        return False
+    return True
 
 
 def log_deepseek_call(actor, action, prompt, response):
@@ -64,7 +138,7 @@ def log_deepseek_call(actor, action, prompt, response):
 
 
 def get_recent_user_prompts():
-    """Extract the last 3 user requests from memory_bank.json or thoughts.log."""
+    """Extract the last 3 UNIQUE user requests from memory_bank.json or thoughts.log."""
     prompts = []
     
     # 1. Try reading from memory_bank.json (primary source)
@@ -74,7 +148,17 @@ def get_recent_user_prompts():
             with open(memory_bank_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 human_messages = [msg["content"] for msg in data if msg.get("type") == "human"]
-                prompts = human_messages[-3:]
+                # Walk backwards to collect last 3 UNIQUE prompts (avoid duplicates
+                # from repeated pipeline cycles eating all lookback slots).
+                seen = set()
+                for msg in reversed(human_messages):
+                    normalized = msg.strip().lower()
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        prompts.append(msg)
+                    if len(prompts) >= 3:
+                        break
+                prompts.reverse()  # Restore chronological order
         except Exception as e:
             print(f"[-] Failed to read memory bank: {e}")
             
@@ -104,9 +188,11 @@ def get_recent_user_prompts():
                     if len(log_prompts) >= 3:
                         break
                 
-                # Merge lists
+                # Merge lists (deduplicated)
+                existing = {p.strip().lower() for p in prompts}
                 for p in log_prompts:
-                    if p not in prompts:
+                    if p.strip().lower() not in existing:
+                        existing.add(p.strip().lower())
                         prompts.append(p)
                 prompts = prompts[-3:]
             except Exception as e:
@@ -137,7 +223,8 @@ def generate_simulated_task(recent_prompts):
     }
     
     # Format the recent history
-    history_str = "\n".join([f"- {p}" for p in recent_prompts])
+    history_str = "\n".join([f"- {p[:80]}..." if len(p) > 80 else f"- {p}" 
+                          for p in recent_prompts])
     
     now = datetime.datetime.now()
     current_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -205,32 +292,32 @@ OUTPUT RULES:
             res_data = response.json()
             choice = res_data["choices"][0]
             message = choice.get("message", {})
+            finish_reason = choice.get("finish_reason", "unknown")
             task_text = (message.get("content") or "").strip()
 
-            # Some reasoning-style models leave `content` empty and put the text in
-            # `reasoning_content`. Fall back to that before declaring failure.
-            if not task_text:
-                task_text = (message.get("reasoning_content") or "").strip()
-
-            # Strip any potential wrapping quotes or markdown blocks that the model hallucinated
+            # Strip wrapping quotes / markdown the model sometimes adds despite the OUTPUT RULES.
             task_text = task_text.replace("```", "").strip()
             if task_text.startswith('"') and task_text.endswith('"'):
                 task_text = task_text[1:-1].strip()
 
-            if not task_text:
-                # Log the full raw choice so the empty-response cause is visible
-                # (finish_reason='length', content filter, wrong model name, etc.).
-                finish_reason = choice.get("finish_reason", "unknown")
+            # Validate: must be a real task, not a reasoning blob.
+            # We deliberately do NOT fall back to `reasoning_content` — that field
+            # is literally the model's chain-of-thought, and passing it to Ciel
+            # crashes the Brain router (JSONDecodeError × 5 retries observed in
+            # test_end_to_end). If `content` is empty or reasoning-shaped, raise
+            # to trigger the sequential fallback pool instead.
+            if not _looks_like_task(task_text):
+                preview = (task_text[:150] + "...") if task_text else "(empty)"
                 raise RuntimeError(
-                    f"DeepSeek returned an empty task string "
-                    f"(finish_reason={finish_reason}, raw_choice={json.dumps(choice, ensure_ascii=False)[:500]})."
+                    f"DeepSeek returned non-task content "
+                    f"(finish_reason={finish_reason}, len={len(task_text)}, preview={preview!r})."
                 )
 
             # Log the successful DeepSeek call
             log_deepseek_call("SIMULATED_MASTER", "TASK_GENERATION", system_prompt, task_text)
             return task_text
         else:
-            raise RuntimeError(f"DeepSeek API error: HTTP {response.status_code} - {response.text}")
+            raise RuntimeError(f"DeepSeek API error: HTTP {response.status_code} - {response.text[:300]}")
     except Exception as e:
         # Graceful fallback task if DeepSeek API fails to avoid crashing cron.
         # Rotate through a diverse pool (avoiding recent prompts) so the pipeline

@@ -26,6 +26,17 @@ def run_task_generator():
         print(f"[-] Error running task generator: {e}")
 
 
+def run_chaos_injector():
+    """Inject a synthetic adversarial scenario into thoughts.log (no Gemini, no Ciel)."""
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[+] [{now_str}] Triggering Chaos Injector (adversarial dataset diversity)...")
+    try:
+        from autonomous_pipeline.chaos_injector import run_chaos_cycle
+        run_chaos_cycle()
+    except Exception as e:
+        print(f"[-] Error running chaos injector: {e}")
+
+
 def run_data_pipeline():
     """Import and execute Nightly MLOps Auditor in-memory."""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -73,23 +84,37 @@ def main():
 
             # 1800 seconds = 30 Minutes
             if state["last_task_gen_timestamp"] == 0.0 or time_since_last_task >= 1800:
-                print(f"[*] Schedule Match: Generating task (Elapsed: {time_since_last_task/60:.1f} min)")
-                
-                # Snapshot log position BEFORE Ciel runs the task
+                cycle_count = state.get("cycle_count", 0) + 1
+                # Every 10th cycle, inject adversarial scenarios instead of running a real task.
+                # Forces the dataset to cover error/empty/timeout edge cases the live pipeline
+                # rarely produces on its own.
+                is_chaos_cycle = (cycle_count % 10 == 0)
+
+                print(
+                    f"[*] Schedule Match: Cycle #{cycle_count} "
+                    f"({'CHAOS' if is_chaos_cycle else 'NORMAL'}) — "
+                    f"Elapsed: {time_since_last_task/60:.1f} min"
+                )
+
+                # Snapshot log position BEFORE Ciel (or Chaos) writes new entries
                 log_path = BASE_DIR / "ciel_data" / "logs" / "thoughts.log"
                 pre_task_seek = log_path.stat().st_size if log_path.exists() else 0
-                
-                run_task_generator()
-                
+
+                if is_chaos_cycle:
+                    run_chaos_injector()
+                else:
+                    run_task_generator()
+
                 # Set seek cursor to pre-task position so Judge reads exactly the fresh entries
                 state = load_state()
                 state["last_processed_seek"] = pre_task_seek
+                state["cycle_count"] = cycle_count
                 save_state(state)
-                
-                # Immediately audit what Ciel did and deliver Telegram assessment
+
+                # Immediately audit what Ciel/Chaos wrote and deliver Telegram assessment
                 print("[*] Task complete. Running immediate Judge audit and Telegram alert...")
                 run_data_pipeline()
-                
+
                 # Reload state in case pipeline updated metrics, then update timestamp
                 state = load_state()
                 state["last_task_gen_timestamp"] = time.time()

@@ -27,8 +27,11 @@ def main():
         from core.agent_loop import AgentLoop
 
         prompts = get_recent_user_prompts()
+        # Mirror the 80-char truncation used in generate_simulated_task so the
+        # console output shows exactly what the Master sees in the lookback.
         for p in prompts:
-            print(f"  -> {p}")
+            display = f"{p[:80]}..." if len(p) > 80 else p
+            print(f"  -> {display}")
 
         simulated_task = generate_simulated_task(prompts)
         print(f"[+] Task: \"{simulated_task}\"")

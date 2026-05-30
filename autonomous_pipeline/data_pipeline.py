@@ -1,8 +1,9 @@
-﻿import os
+import os
 import sys
 import re
 import json
 import time
+import hashlib
 import datetime
 from pathlib import Path
 import requests
@@ -122,7 +123,10 @@ DEFAULT_STATE = {
     "total_rejected": 0,
     "cumulative_dataset_size": 0,
     "last_task_gen_timestamp": 0.0,
-    "last_audit_date": ""
+    "last_audit_date": "",
+    "cycle_count": 0,
+    "chaos_scenario_index": 0,
+    "fallback_task_index": 0
 }
 
 
@@ -470,6 +474,48 @@ def format_chatml(user_req, tool_results, assistant_response):
     }
 
 
+def _hash_request(user_request):
+    """Return MD5 hex digest of a normalized user request string."""
+    return hashlib.md5(user_request.strip().lower().encode()).hexdigest()
+
+
+def _load_existing_request_hashes():
+    """Load MD5 hashes of all user_request values already in worker_finetune.jsonl."""
+    finetune_path = BASE_DIR / "autonomous_pipeline" / "worker_finetune.jsonl"
+    hashes = set()
+    if not finetune_path.exists():
+        return hashes
+    try:
+        with open(finetune_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    # Extract user_request from the ChatML user content
+                    for msg in record.get("messages", []):
+                        if msg.get("role") == "user":
+                            content = msg.get("content", "")
+                            # user content format: "[USER REQUEST]\n{req}\n\n[TOOL RESULTS]\n{results}"
+                            if "[USER REQUEST]" in content:
+                                req = content.split("[USER REQUEST]")[1].split("[TOOL RESULTS]")[0].strip()
+                            else:
+                                req = content
+                            hashes.add(_hash_request(req))
+                            break
+                except (json.JSONDecodeError, IndexError):
+                    continue
+    except Exception as e:
+        print(f"[-] Failed to load existing hashes from worker_finetune.jsonl: {e}")
+    return hashes
+
+
+def is_duplicate(user_request, existing_hashes):
+    """Check if a user_request already exists in the dataset (exact match via MD5)."""
+    return _hash_request(user_request) in existing_hashes
+
+
 def save_to_finetune_file(records):
     """Append accepted training records to worker_finetune.jsonl."""
     finetune_path = BASE_DIR / "autonomous_pipeline" / "worker_finetune.jsonl"
@@ -712,8 +758,13 @@ def main():
     
     accepted_today = 0
     rejected_today = 0
+    skipped_dupes = 0
     records_to_save = []
     task_audit_lines = []  # Per-task results accumulated for Telegram summary
+
+    # Load existing request hashes for dedup
+    existing_hashes = _load_existing_request_hashes()
+    print(f"[*] Loaded {len(existing_hashes)} existing request hashes for dedup check.")
 
     # 4. Group pairs in batches of up to 4 items.
     # Smaller batches prevent DeepSeek from hitting max_tokens and truncating JSON mid-response.
@@ -737,6 +788,13 @@ def main():
         eval_map = {item["index"]: item for item in evaluations if "index" in item}
         
         for idx, pair in enumerate(batch):
+            # Dedup check: skip if this exact request is already in the dataset
+            if is_duplicate(pair["user_request"], existing_hashes):
+                skipped_dupes += 1
+                print(f"[*] DEDUP SKIP: \"{pair['user_request'][:50]}\" already in dataset.")
+                task_audit_lines.append(_make_audit_line(pair, None, "DUPE"))
+                continue
+
             audit = eval_map.get(idx)
             
             if not audit:
@@ -786,8 +844,21 @@ def main():
             task_audit_lines.append(_make_audit_line(pair, audit, classification))
                 
     # 5. Save all records and update metrics
+    if skipped_dupes:
+        print(f"[*] Skipped {skipped_dupes} duplicate request(s) already in dataset.")
     if records_to_save:
         save_to_finetune_file(records_to_save)
+        # Add newly saved hashes so subsequent batches in same run also dedup
+        for rec in records_to_save:
+            for msg in rec.get("messages", []):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if "[USER REQUEST]" in content:
+                        req = content.split("[USER REQUEST]")[1].split("[TOOL RESULTS]")[0].strip()
+                    else:
+                        req = content
+                    existing_hashes.add(_hash_request(req))
+                    break
         print(f"[+] Appended {len(records_to_save)} augmented/corrected ChatML records to worker_finetune.jsonl")
         
     current_dataset_size = get_dataset_size()

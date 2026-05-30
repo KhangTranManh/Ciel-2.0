@@ -233,3 +233,22 @@ API keys required in `.env`:
 - `DEEPSEEK_API_KEY` — For Simulated Master (flash) and Judge (pro)
 - `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — For alerts
 - `GEMINI_API_KEY` — For Ciel Brain + Worker
+
+---
+
+## 10) Chaos Injector | Bộ tiêm tình huống khó
+
+Chaos Injector là một component thêm vào orchestrator, chạy 1 trong mỗi 10 cycles.
+
+Thay vì để Master generate task thật và Ciel execute thật — Chaos Injector tự viết thẳng vào thoughts.log một cặp [USER][REQUEST] + [TOOL][RESULT] giả, theo đúng format log thực tế.
+
+Mục đích là ép Worker gặp các tình huống khó mà pipeline bình thường không tự sinh ra được — tool timeout, file không tồn tại, API error — để Judge audit và nếu Worker respond đúng thì pair đó vào dataset.
+
+Không đụng Ciel, không tốn Gemini API, không ảnh hưởng gì ngoài thoughts.log và worker_finetune.jsonl.
+
+### Implementation
+
+- **Module:** `autonomous_pipeline/chaos_injector.py` — library of ~23 hand-crafted adversarial scenarios spanning file errors, API timeouts, rate limits, empty results, OS failures, vision blanks, git no-ops, mail miss, and self-healing exhaustion.
+- **Injection:** For each scenario, writes 4 sequential entries into `ciel_data/logs/thoughts.log` — `[USER][REQUEST]`, `[BRAIN][ROUTE_DECISION]`, `[TOOL][RESULT]`, `[WORKER][FORMAT_RESPONSE]` — in the exact format Ciel's runtime emits.
+- **Scheduling:** `orchestrator.py` increments `state.cycle_count` each cycle. On every 10th cycle, calls `run_chaos_cycle()` instead of `run_task_generator()`. Audit step runs unchanged afterward — the Judge picks up the synthetic entries via the same `extract_worker_pairs` parser.
+- **Why this works:** The ideal Worker responses in the library demonstrate correct error-acknowledgment patterns ("Master, the file does not exist" instead of fabricated content). When the Judge classifies them GOOD, they enter the dataset with 2 paraphrases — teaching the fine-tuned Worker to handle these edge cases without hallucinating.
