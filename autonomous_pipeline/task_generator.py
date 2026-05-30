@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import random
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -13,6 +14,35 @@ sys.path.insert(0, str(BASE_DIR))
 load_dotenv(BASE_DIR / ".env")
 
 from core.agent_loop import AgentLoop
+
+
+# Diverse single-step fallback tasks used when DeepSeek task generation fails.
+# Rotated randomly (avoiding recent prompts) so the pipeline still exercises a
+# spread of categories instead of hammering the same task every 30-min cycle —
+# which otherwise freezes dataset variety and poisons RAG with duplicates.
+_FALLBACK_TASKS = [
+    "List all files and folders in ciel_workspace/ recursively and print the full tree to console.",
+    "Save a fact with key 'last_health_check' and value set to the current date to the memory vault.",
+    "Retrieve the fact with key 'last_health_check' from the memory vault and print its value.",
+    "Get the current closing price of BTC/USDT and report only the closing price value.",
+    "Get the current XAU/USD gold price and print only the price value to console.",
+    "Get 24h stats (price change %, high, low) for ETH and print the result.",
+    "Check my unread emails and list the subjects and senders.",
+    "Check the git status of the Ciel 2.0 repository and report uncommitted changes.",
+    "Execute a shell command to check free disk space and print the result.",
+    "Execute a safe shell command to list running processes and print the first 10 lines.",
+    "Search Google for today's high-level AI tech news and summarize the top headlines.",
+    "Write a Python script to autonomous_pipeline/agent_output/disk_report.py that prints free disk space.",
+]
+
+
+def _pick_fallback_task(recent_prompts):
+    """Pick a random fallback task that is not among the recent prompts (avoid repeats)."""
+    recent = {p.strip() for p in (recent_prompts or [])}
+    candidates = [t for t in _FALLBACK_TASKS if t not in recent]
+    if not candidates:
+        candidates = _FALLBACK_TASKS
+    return random.choice(candidates)
 
 
 def log_deepseek_call(actor, action, prompt, response):
@@ -173,31 +203,41 @@ OUTPUT RULES:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         if response.status_code == 200:
             res_data = response.json()
-            task_text = res_data["choices"][0]["message"]["content"].strip()
-            
+            choice = res_data["choices"][0]
+            message = choice.get("message", {})
+            task_text = (message.get("content") or "").strip()
+
+            # Some reasoning-style models leave `content` empty and put the text in
+            # `reasoning_content`. Fall back to that before declaring failure.
+            if not task_text:
+                task_text = (message.get("reasoning_content") or "").strip()
+
             # Strip any potential wrapping quotes or markdown blocks that the model hallucinated
             task_text = task_text.replace("```", "").strip()
             if task_text.startswith('"') and task_text.endswith('"'):
                 task_text = task_text[1:-1].strip()
-                
+
+            if not task_text:
+                # Log the full raw choice so the empty-response cause is visible
+                # (finish_reason='length', content filter, wrong model name, etc.).
+                finish_reason = choice.get("finish_reason", "unknown")
+                raise RuntimeError(
+                    f"DeepSeek returned an empty task string "
+                    f"(finish_reason={finish_reason}, raw_choice={json.dumps(choice, ensure_ascii=False)[:500]})."
+                )
+
             # Log the successful DeepSeek call
             log_deepseek_call("SIMULATED_MASTER", "TASK_GENERATION", system_prompt, task_text)
             return task_text
         else:
             raise RuntimeError(f"DeepSeek API error: HTTP {response.status_code} - {response.text}")
     except Exception as e:
-        # Graceful fallback task if DeepSeek API fails to avoid crashing cron
-        print(f"[-] DeepSeek API call failed: {e}. Falling back to default scheduled task.")
-        fallback_task = ""
-        if 8 <= hour < 11:
-            fallback_task = "Check my unread emails and crypto prices today."
-        elif 11 <= hour < 15:
-            fallback_task = "Search Google for today's high-level AI tech news."
-        elif 15 <= hour < 18:
-            fallback_task = "Check workspace git repository status and list recent commits."
-        else:
-            fallback_task = "Retrieve crypto and gold 24h market price summaries."
-            
+        # Graceful fallback task if DeepSeek API fails to avoid crashing cron.
+        # Rotate through a diverse pool (avoiding recent prompts) so the pipeline
+        # keeps category variety even while task generation is broken.
+        print(f"[-] DeepSeek API call failed: {e}. Falling back to a rotated default task.")
+        fallback_task = _pick_fallback_task(recent_prompts)
+
         # Log the fallback for complete audit trail
         log_deepseek_call("SIMULATED_MASTER", "TASK_GENERATION_FALLBACK", system_prompt, f"Fallback Activated: {fallback_task} (Error: {e})")
         return fallback_task
@@ -212,24 +252,10 @@ def main():
         print(f"[*] Lookback Context:\n" + "\n".join([f"  -> {p}" for p in prompts]))
         
         simulated_task = generate_simulated_task(prompts)
-
-        # Guard: empty string from DeepSeek causes AgentLoop crash ("contents are required")
-        if not simulated_task or not simulated_task.strip():
-            hour = datetime.datetime.now().hour
-            if 8 <= hour < 11:
-                simulated_task = "Check the current BTC price and print only the closing price value to console."
-            elif 11 <= hour < 15:
-                simulated_task = "List all files in the autonomous_pipeline/agent_output/ directory and print the results to console."
-            elif 15 <= hour < 18:
-                simulated_task = "Get the current EUR/USD exchange rate and print only the price value to console."
-            else:
-                simulated_task = "Retrieve the XAU/USD gold price and print only the closing price value to console."
-            print(f"[!] Task generation returned empty string. Using time-based fallback: \"{simulated_task}\"")
-            log_deepseek_call("SIMULATED_MASTER", "TASK_GENERATION_EMPTY_FALLBACK", "N/A", f"Empty string returned — fallback used: {simulated_task}")
-
         print(f"\n[+] Simulated Master generated task:\n\"{simulated_task}\"")
 
         # Execute Ciel's agent loop with the generated task
+        
         print("\n[*] Initializing Ciel 2.0 loop & executing task...")
         ciel = AgentLoop()
         

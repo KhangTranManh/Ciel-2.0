@@ -450,8 +450,12 @@ class CielCore:
             f"1. Be extremely concise. Give just the requested data. No conversational filler.\n"
             f"2. Always address the user as 'Master' at the beginning of your response.\n"
             f"3. ANTI-HALLUCINATION: ONLY use facts present in the Raw result above. "
-            f"If the raw result contains an error or 'file not found', report the error honestly. "
-            f"NEVER invent, fabricate, or simulate data that is not in the raw result."
+            f"If the raw result contains an error, 'file not found', 'N/A', or is empty, "
+            f"report the error honestly to Master. Say 'the data is unavailable' or 'the tool returned an error'. "
+            f"NEVER invent, fabricate, or simulate data that is not in the raw result. "
+            f"NEVER generate fake file contents, fake statistics, or fake execution output.\n"
+            f"4. NO PROCESS NARRATION: Do NOT write status lines like 'Retrieving...', "
+            f"'Scanning...', 'Initiating...', 'Fetching...'. Report ONLY the final data/facts."
         )
         self._log_thought("WORKER", "format_task", format_task)
         formatted = self.worker.generate(format_task)
@@ -565,7 +569,13 @@ class CielCore:
             "1. Output ONLY production-ready code. Do NOT include dummy/test data, "
             "demonstration values, or example scaffolding unless explicitly asked.\n"
             "2. If input files may not exist, add proper error handling — do NOT fabricate their contents.\n"
-            "3. Do NOT simulate script execution output or invent fake results."
+            "3. Do NOT simulate script execution output or invent fake results.\n"
+            "4. Do NOT add a dummy 'if __name__ == \"__main__\"' block with fake test data or "
+            "file creation for demonstration. The main block should only call the real function "
+            "with the real parameters from the task.\n"
+            "5. Keep code concise: use brief inline comments only where logic is non-obvious. "
+            "Do NOT write multi-line docstrings for every function. Do NOT add verbose "
+            "explanatory comments on every line."
         )
         augmented_task = task + code_guardrail
         self._log_thought("WORKER", "code_task", task)
@@ -605,7 +615,9 @@ class CielCore:
             f"RULES:\n"
             f"1. Be concise. Deliver a unified report without conversational filler.\n"
             f"2. Always address the user as 'Master'.\n"
-            f"3. ONLY use facts present in the tool outputs above. NEVER invent data."
+            f"3. ONLY use facts present in the tool outputs above. NEVER invent data.\n"
+            f"4. If any tool returned an error, 'file not found', or empty result, "
+            f"report that honestly. Do NOT fabricate fake data, fake file contents, or fake execution output."
         )
         self._log_thought("WORKER", "multi_tool_format_task", format_task)
         formatted = self.worker.generate(format_task)
@@ -680,7 +692,11 @@ class CielCore:
                 HumanMessage(content=eval_request)
             ]
             response = self.brain._router_llm.invoke(messages)
-            raw = response.content.strip()
+            # Gemini occasionally returns content as a list of parts instead of a plain string
+            _eval_content = response.content
+            if isinstance(_eval_content, list):
+                _eval_content = "".join(c.text if hasattr(c, "text") else str(c) for c in _eval_content)
+            raw = _eval_content.strip()
             self._log_thought("BRAIN", "evaluate_result", raw)
 
             # Strip markdown fences if present
@@ -690,6 +706,8 @@ class CielCore:
                     raw = raw[:-3]
                 raw = raw.strip()
 
+            if not raw:
+                return None
             return json.loads(raw)
         except (json.JSONDecodeError, Exception) as e:
             self._log_thought("BRAIN", "evaluate_result_error", str(e))

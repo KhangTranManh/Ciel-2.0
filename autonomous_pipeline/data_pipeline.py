@@ -22,6 +22,79 @@ except ImportError:
     PILLOW_AVAILABLE = False
 
 
+def _decode_mime_words(text):
+    """Decode RFC 2047 MIME-encoded words (=?UTF-8?Q?...?=) into plain text."""
+    if "=?" not in text:
+        return text
+    try:
+        from email.header import decode_header, make_header
+        # decode_header only handles a header value, so decode each encoded-word run.
+        def _repl(match):
+            try:
+                return str(make_header(decode_header(match.group(0))))
+            except Exception:
+                return match.group(0)
+        # Encoded words may be split across folded lines (whitespace between them).
+        joined = re.sub(r"\?=\s+=\?", "?==?", text)
+        return re.sub(r"=\?[^?]+\?[BbQq]\?[^?]*\?=", _repl, joined)
+    except Exception:
+        return text
+
+
+def _sanitize_tool_result(raw_text):
+    """
+    Strip noise (HTML, URLs, base64 tokens, repeated mojibake, oversized JSON bodies)
+    from a tool result string before sending to the Judge or saving to the dataset.
+
+    Why: raw Gmail tool results contain encoded URLs, OAuth tokens, and broken
+    multi-byte characters that blow past the Judge's max_tokens budget (causing
+    JSON parse failures) and pollute training data.
+    """
+    if not raw_text or raw_text == "N/A - Direct or chat response":
+        return raw_text
+
+    # Decode MIME-encoded email subjects (=?UTF-8?Q?...?=) into readable text first.
+    text = _decode_mime_words(raw_text)
+    # Drop zero-width / combining mojibake spacers Gmail pads snippets with:
+    # U+034F (combining grapheme joiner), U+200B-200F (zero-width), U+00AD (soft hyphen).
+    text = re.sub("[͏​‌‍‎‏­]", "", text)
+
+    # Try to collapse Gmail-style JSON arrays into compact "- subject (sender): snippet" lines.
+    gmail_match = re.match(r"^(search_gmail|get_emails?|list_emails?)\s*:\s*(\[.*\])\s*$", text, re.DOTALL)
+    if gmail_match:
+        tool_label = gmail_match.group(1)
+        try:
+            emails = json.loads(gmail_match.group(2))
+            if isinstance(emails, list):
+                lines = [f"{tool_label}:"]
+                for em in emails[:15]:
+                    subject = (em.get("subject") or em.get("Subject") or "(no subject)")[:120]
+                    sender = (em.get("from") or em.get("From") or em.get("sender") or "?")[:80]
+                    snippet = (em.get("snippet") or "")[:80]
+                    lines.append(f"- {subject} | from: {sender} | {snippet}")
+                text = "\n".join(lines)
+        except Exception:
+            pass
+
+    # Strip HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Collapse ONLY long tracking URLs (100+ chars, e.g. Gmail/LinkedIn links).
+    # Short URLs in search results are legitimate, citable data the Worker is
+    # allowed to repeat — redacting them makes the Judge falsely flag the Worker's
+    # real URLs as "hallucinated", so they must be preserved.
+    text = re.sub(r"https?://\S{100,}", "[url]", text)
+    # Strip long base64-ish tokens (40+ chars of alnum/+/=)
+    text = re.sub(r"[A-Za-z0-9+/=]{40,}", "[token]", text)
+    # Collapse repeated mojibake placeholders (e.g. "I? I? I? I? I?")
+    text = re.sub(r"(I\?\s*){4,}", "[mojibake] ", text)
+    text = re.sub(r"(\?\s*){8,}", "[mojibake] ", text)
+    # Collapse whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
 def log_deepseek_call(actor, action, prompt, response):
     """Log DeepSeek prompt inputs and model responses inside autonomous_pipeline/thoughts.log."""
     log_path = BASE_DIR / "autonomous_pipeline" / "thoughts.log"
@@ -40,30 +113,37 @@ def log_deepseek_call(actor, action, prompt, response):
         print(f"[-] Failed to write to autonomous thoughts log: {e}")
 
 
+STATE_PATH = Path(__file__).resolve().parent / "state.json"
+
+DEFAULT_STATE = {
+    "last_processed_seek": 0,
+    "total_processed": 0,
+    "total_accepted": 0,
+    "total_rejected": 0,
+    "cumulative_dataset_size": 0,
+    "last_task_gen_timestamp": 0.0,
+    "last_audit_date": ""
+}
+
+
 def load_state():
-    """Load persistent pipeline metrics state from state.json."""
-    state_path = Path(__file__).resolve().parent / "state.json"
-    default_state = {
-        "last_processed_seek": 0,
-        "total_processed": 0,
-        "total_accepted": 0,
-        "total_rejected": 0,
-        "cumulative_dataset_size": 0
-    }
-    if state_path.exists():
+    """Load persistent pipeline state, backfilling any missing keys from DEFAULT_STATE."""
+    if STATE_PATH.exists():
         try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            for k, v in DEFAULT_STATE.items():
+                state.setdefault(k, v)
+            return state
         except Exception as e:
             print(f"[-] Failed to load state.json, using defaults: {e}")
-    return default_state
+    return dict(DEFAULT_STATE)
 
 
 def save_state(state):
-    """Save persistent pipeline metrics state to state.json."""
-    state_path = Path(__file__).resolve().parent / "state.json"
+    """Save persistent pipeline state to state.json."""
     try:
-        with open(state_path, "w", encoding="utf-8") as f:
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
     except Exception as e:
         print(f"[-] Failed to save state.json: {e}")
@@ -211,16 +291,24 @@ def audit_batch_with_judge(batch_pairs):
     batch_data = []
     for idx, pair in enumerate(batch_pairs):
         # For code tool: do not truncate response — Judge needs full script to evaluate correctly.
-        # For non-code tools: truncate at 800 chars to prevent max_tokens overflow.
+        # For non-code tools: truncate at 1500 chars (raised from 800 — multi-tool responses
+        # like email+crypto can exceed 800 chars, causing the Judge to see an incomplete
+        # response and misclassify as BAD).
         worker_resp = pair["original_response"]
         is_code_tool = pair["tool_name"] == "code"
-        if not is_code_tool and len(worker_resp) > 800:
-            worker_resp = worker_resp[:800] + "\n... [TRUNCATED FOR AUDIT]"
+        if not is_code_tool and len(worker_resp) > 1500:
+            worker_resp = worker_resp[:1500] + "\n... [TRUNCATED FOR AUDIT]"
+
+        # Raise to 4000 chars: the Judge MUST see at least as much as the Worker
+        # saw. At 1500 the tail of multi-item results (e.g. search hit #5) got cut,
+        # so the Worker's faithful summary of later items was falsely flagged as
+        # "invented". Sanitizing already removed the bulk of the noise.
+        sanitized_result = _sanitize_tool_result(pair["raw_result"])
         batch_data.append({
             "index": idx,
             "user_request": pair["user_request"][:500],
             "tool_name": pair["tool_name"],
-            "raw_tool_result": pair["raw_result"][:1500],  # Truncated for safety
+            "raw_tool_result": sanitized_result[:4000],
             "worker_response": worker_resp
         })
         
@@ -362,7 +450,8 @@ Your JSON response format must be an object matching this exact schema:
 
 def format_chatml(user_req, tool_results, assistant_response):
     """Format prompt data pair to standard ChatML format."""
-    prompt_str = f"[USER REQUEST]\n{user_req}\n\n[TOOL RESULTS]\n{tool_results}"
+    clean_results = _sanitize_tool_result(tool_results)
+    prompt_str = f"[USER REQUEST]\n{user_req}\n\n[TOOL RESULTS]\n{clean_results}"
     return {
         "messages": [
             {
@@ -462,7 +551,7 @@ def generate_dashboard(processed, accepted, rejected, dataset_size):
     chart_w = 720
     chart_x = 40
     
-    draw.text((chart_x, chart_y - 25), "ACCÈPTANCE vs. REJECTION RATIO", fill=(255, 255, 255), font=font_normal)
+    draw.text((chart_x, chart_y - 25), "ACCEPTANCE vs. REJECTION RATIO", fill=(255, 255, 255), font=font_normal)
     
     if processed > 0:
         acc_ratio = accepted / processed
@@ -492,6 +581,62 @@ def generate_dashboard(processed, accepted, rejected, dataset_size):
     return str(dashboard_path)
 
 
+# Maps the routed tool_name (from BRAIN_ROUTE_DECISION) to a broad task group
+# shown in the Telegram report. Kept high-level on purpose so Master can scan
+# what kind of work each cycle exercised at a glance.
+_GROUP_BY_TOOL = {
+    # chat
+    "chat": "CHAT",
+    # mail
+    "search_gmail": "MAIL",
+    "get_gmail_message": "MAIL",
+    "trash_email": "MAIL",
+    "mark_email_read": "MAIL",
+    "reply_to_email": "MAIL",
+    "send_gmail_message": "MAIL",
+    # workspace files
+    "list_workspace": "FILE",
+    "read_file": "FILE",
+    "get_file_info": "FILE",
+    "write_file": "FILE",
+    "append_file": "FILE",
+    "delete_file": "FILE",
+    # memory / fact vault
+    "save_fact": "MEMORY",
+    "get_fact": "MEMORY",
+    "delete_fact": "MEMORY",
+    # os
+    "execute_shell_command": "OS",
+    "take_screenshot": "OS",
+    "open_application": "OS",
+    # vision
+    "vision_act": "VISION",
+    "vision_describe": "VISION",
+    # trading
+    "get_market_price": "TRADING",
+    "get_crypto_stats": "TRADING",
+    "analyze_crypto_technical": "TRADING",
+    # code
+    "code": "CODE",
+    # git
+    "git_status": "GIT",
+    "git_list_repos": "GIT",
+    "git_diff": "GIT",
+    "git_commit_and_push": "GIT",
+    "git_confirm_push": "GIT",
+    # self-healing / script execution
+    "run_python_script": "TEST",
+}
+
+
+def _classify_task(pair):
+    """Return a broad group label (MAIL / FILE / TEST / ...) for the task."""
+    tool = (pair.get("tool_name") or "").lower()
+    if tool == "multi_tool":
+        return "MULTI"
+    return _GROUP_BY_TOOL.get(tool, f"OTHER ({tool or 'unknown'})")
+
+
 def _make_audit_line(pair, audit, classification):
     """Build a compact per-task dict for the Telegram audit summary."""
     tool = pair["tool_name"]
@@ -504,6 +649,7 @@ def _make_audit_line(pair, audit, classification):
     reasoning = (audit.get("reasoning", "") if audit else "no evaluation returned")[:100]
     return {
         "type": task_type,
+        "category": _classify_task(pair),
         "master": pair["user_request"][:70].replace("\n", " "),
         "brain": f"routed → {tool}",
         "worker": pair["original_response"][:70].replace("\n", " "),
@@ -665,7 +811,7 @@ def main():
         "",
     ]
     for i, t in enumerate(task_audit_lines[-4:], 1):
-        msg_lines.append(f"[{i}] {t['master'][:80]}")
+        msg_lines.append(f"[{i}] ({t['category']}) {t['master'][:70]}")
         msg_lines.append(f"     Worker: {t['worker'][:80]}")
         msg_lines.append(f"     Judge: {t['judge'][:80]}")
     msg_lines.append("")

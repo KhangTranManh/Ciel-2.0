@@ -52,7 +52,7 @@ def main():
             load_state, save_state, get_new_log_entries, parse_entries,
             extract_worker_pairs, audit_batch_with_judge,
             format_chatml, save_to_finetune_file, get_dataset_size,
-            send_telegram_alert
+            send_telegram_alert, _classify_task
         )
 
         state = load_state()
@@ -67,7 +67,18 @@ def main():
         print(f"[+] {processed_today} Worker transactions found.")
 
         if processed_today == 0:
-            print("[-] No transactions. Exiting.")
+            # Fact tools (delete_fact / save_fact / get_fact) and a few other
+            # paths in llm_connector skip the Worker formatting step entirely,
+            # so the extractor finds no [WORKER][*_RESPONSE] pair. Still send
+            # Telegram so Master sees the run completed.
+            date_str = datetime.datetime.now().strftime("%d/%m %H:%M")
+            send_telegram_alert(
+                f"E2E Test | {date_str}\n"
+                f"Task ran successfully, but produced no auditable Worker pair "
+                f"(likely a fact/memory tool that bypasses Worker formatting).\n"
+                f"Ciel response: {str(response)[:300]}"
+            )
+            print("[-] No auditable pairs. Telegram sent. Exiting.")
             sys.exit(0)
 
         accepted_today = 0
@@ -123,7 +134,8 @@ def main():
         for idx, pair in enumerate(pairs[:4]):
             audit = eval_map.get(idx)
             verdict = audit.get("classification", "SKIP").upper() if audit else "SKIP"
-            lines.append(f"[{idx+1}] {pair['user_request'][:80]}")
+            category = _classify_task(pair)
+            lines.append(f"[{idx+1}] ({category}) {pair['user_request'][:70]}")
             lines.append(f"     Worker: {pair['original_response'][:80]}")
             lines.append(f"     Judge: {verdict}")
         lines.append("")

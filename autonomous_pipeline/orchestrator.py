@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import json
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -13,41 +12,7 @@ sys.path.insert(0, str(BASE_DIR))
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
 
-STATE_PATH = Path(__file__).resolve().parent / "state.json"
-
-
-def load_state():
-    """Load persistent state, creating safe defaults if missing."""
-    default_state = {
-        "last_processed_seek": 0,
-        "total_processed": 0,
-        "total_accepted": 0,
-        "total_rejected": 0,
-        "cumulative_dataset_size": 0,
-        "last_task_gen_timestamp": 0.0,
-        "last_audit_date": ""
-    }
-    if STATE_PATH.exists():
-        try:
-            with open(STATE_PATH, "r", encoding="utf-8") as f:
-                state = json.load(f)
-                # Ensure new scheduling keys exist
-                for k, v in default_state.items():
-                    if k not in state:
-                        state[k] = v
-                return state
-        except Exception as e:
-            print(f"[-] Failed to load state: {e}")
-    return default_state
-
-
-def save_state(state):
-    """Save updated metrics and schedule timestamps to state.json."""
-    try:
-        with open(STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        print(f"[-] Failed to save state: {e}")
+from autonomous_pipeline.data_pipeline import load_state, save_state
 
 
 def run_task_generator():
