@@ -1,12 +1,12 @@
 {
-  "last_processed_seek": 1663200,
-  "total_processed": 30,
-  "total_accepted": 21,
-  "total_rejected": 9,
-  "cumulative_dataset_size": 35,
-  "last_task_gen_timestamp": 1780126143.9334874,
-  "last_audit_date": "",
-  "cycle_count": 0,
-  "chaos_scenario_index": 0,
-  "fallback_task_index": 3
+  "last_processed_seek": 1908952,
+  "total_processed": 42,
+  "total_accepted": 30,
+  "total_rejected": 12,
+  "cumulative_dataset_size": 62,
+  "last_task_gen_timestamp": 1780199789.4697478,
+  "last_audit_date": "2026-05-30",
+  "cycle_count": 29,
+  "chaos_scenario_index": 2,
+  "fallback_task_index": 16
 }
