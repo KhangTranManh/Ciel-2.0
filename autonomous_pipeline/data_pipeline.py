@@ -42,7 +42,7 @@ def _decode_mime_words(text):
         return text
 
 
-def _sanitize_tool_result(raw_text):
+def _sanitize_tool_result(raw_text, tool_name=None):
     """
     Strip noise (HTML, URLs, base64 tokens, repeated mojibake, oversized JSON bodies)
     from a tool result string before sending to the Judge or saving to the dataset.
@@ -50,9 +50,17 @@ def _sanitize_tool_result(raw_text):
     Why: raw Gmail tool results contain encoded URLs, OAuth tokens, and broken
     multi-byte characters that blow past the Judge's max_tokens budget (causing
     JSON parse failures) and pollute training data.
+
+    Exception: stealth_search (web search) results are left with ALL their URLs
+    intact — those URLs are the legitimate, citable payload the Worker reports back,
+    so stripping them makes the Judge falsely flag the Worker's real links as
+    hallucinated. Detected via tool_name or the 'stealth_search:' content prefix.
     """
     if not raw_text or raw_text == "N/A - Direct or chat response":
         return raw_text
+
+    is_search = (tool_name == "stealth_search") or \
+        raw_text.lstrip().lower().startswith("stealth_search")
 
     # Decode MIME-encoded email subjects (=?UTF-8?Q?...?=) into readable text first.
     text = _decode_mime_words(raw_text)
@@ -79,13 +87,14 @@ def _sanitize_tool_result(raw_text):
 
     # Strip HTML tags
     text = re.sub(r"<[^>]+>", "", text)
-    # Collapse ONLY long tracking URLs (100+ chars, e.g. Gmail/LinkedIn links).
-    # Short URLs in search results are legitimate, citable data the Worker is
-    # allowed to repeat — redacting them makes the Judge falsely flag the Worker's
-    # real URLs as "hallucinated", so they must be preserved.
-    text = re.sub(r"https?://\S{100,}", "[url]", text)
-    # Strip long base64-ish tokens (40+ chars of alnum/+/=)
-    text = re.sub(r"[A-Za-z0-9+/=]{40,}", "[token]", text)
+    if not is_search:
+        # Collapse ONLY long tracking URLs (100+ chars, e.g. Gmail/LinkedIn links).
+        # Short URLs in search results are legitimate, citable data the Worker is
+        # allowed to repeat — redacting them makes the Judge falsely flag the Worker's
+        # real URLs as "hallucinated", so they must be preserved.
+        text = re.sub(r"https?://\S{100,}", "[url]", text)
+        # Strip long base64-ish tokens (40+ chars of alnum/+/=)
+        text = re.sub(r"[A-Za-z0-9+/=]{40,}", "[token]", text)
     # Collapse repeated mojibake placeholders (e.g. "I? I? I? I? I?")
     text = re.sub(r"(I\?\s*){4,}", "[mojibake] ", text)
     text = re.sub(r"(\?\s*){8,}", "[mojibake] ", text)
@@ -307,7 +316,7 @@ def audit_batch_with_judge(batch_pairs):
         # saw. At 1500 the tail of multi-item results (e.g. search hit #5) got cut,
         # so the Worker's faithful summary of later items was falsely flagged as
         # "invented". Sanitizing already removed the bulk of the noise.
-        sanitized_result = _sanitize_tool_result(pair["raw_result"])
+        sanitized_result = _sanitize_tool_result(pair["raw_result"], pair["tool_name"])
         batch_data.append({
             "index": idx,
             "user_request": pair["user_request"][:500],
