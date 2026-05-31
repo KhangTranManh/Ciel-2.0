@@ -1,12 +1,12 @@
 {
-  "last_processed_seek": 1908952,
-  "total_processed": 42,
-  "total_accepted": 30,
-  "total_rejected": 12,
-  "cumulative_dataset_size": 62,
-  "last_task_gen_timestamp": 1780199789.4697478,
+  "last_processed_seek": 2088838,
+  "total_processed": 51,
+  "total_accepted": 37,
+  "total_rejected": 13,
+  "cumulative_dataset_size": 75,
+  "last_task_gen_timestamp": 1780246045.4218502,
   "last_audit_date": "2026-05-30",
-  "cycle_count": 29,
-  "chaos_scenario_index": 2,
-  "fallback_task_index": 16
+  "cycle_count": 54,
+  "chaos_scenario_index": 5,
+  "fallback_task_index": 6
 }
