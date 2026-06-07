@@ -1,29 +1,35 @@
 import datetime
 import os
 
-def log_fallback_heartbeat(log_file_path: str = 'ciel_workspace/heartbeat.log'):
+def append_fallback_heartbeat_log():
     """
-    Appends the current timestamp followed by 'fallback heartbeat' to the specified log file.
+    Appends the current UTC timestamp followed by 'fallback heartbeat' to
+    'ciel_workspace/heartbeat.log'.
     Creates the directory if it doesn't exist.
     """
+    log_dir = 'ciel_workspace'
+    log_file_path = os.path.join(log_dir, 'heartbeat.log')
+
     try:
         # Ensure the directory exists
-        log_dir = os.path.dirname(log_file_path)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
 
-        current_time = datetime.datetime.now()
-        timestamp_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        # Get current UTC timestamp
+        current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+        timestamp_str = current_time_utc.isoformat(timespec='seconds')
+
         log_message = f"{timestamp_str} fallback heartbeat\n"
 
+        # Append to the log file
         with open(log_file_path, 'a') as f:
             f.write(log_message)
+
     except IOError as e:
-        # Log or print the error if the file cannot be written
-        print(f"Error writing to log file '{log_file_path}': {e}")
+        # Log or handle file I/O errors
+        print(f"Error writing to log file {log_file_path}: {e}")
     except Exception as e:
         # Catch any other unexpected errors
         print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
-    log_fallback_heartbeat()
+    append_fallback_heartbeat_log()
