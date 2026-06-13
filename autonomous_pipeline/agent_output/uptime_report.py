@@ -3,24 +3,40 @@ import datetime
 
 def get_system_uptime():
     """
-    Calculates and prints the system uptime in a human-readable format.
+    Retrieves and formats the system uptime.
+    Handles cross-platform compatibility using the psutil library.
     """
-    boot_time_timestamp = psutil.boot_time()
-    boot_datetime = datetime.datetime.fromtimestamp(boot_time_timestamp)
-    current_datetime = datetime.datetime.now()
+    try:
+        # Get the system boot time as a Unix timestamp
+        boot_timestamp = psutil.boot_time()
+        boot_time = datetime.datetime.fromtimestamp(boot_timestamp)
+        current_time = datetime.datetime.now()
+        uptime_delta = current_time - boot_time
 
-    uptime_delta = current_datetime - boot_datetime
+        days = uptime_delta.days
+        # Calculate hours, minutes, and seconds from the remaining seconds
+        seconds = uptime_delta.seconds
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
 
-    total_seconds = int(uptime_delta.total_seconds())
+        uptime_parts = []
+        if days > 0:
+            uptime_parts.append(f"{days} day{'s' if days != 1 else ''}")
+        if hours > 0:
+            uptime_parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+        if minutes > 0:
+            uptime_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+        # Always include seconds if there are no other units, or if seconds are non-zero
+        if seconds > 0 or not uptime_parts:
+            uptime_parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
 
-    days = total_seconds // (24 * 3600)
-    total_seconds %= (24 * 3600)
-    hours = total_seconds // 3600
-    total_seconds %= 3600
-    minutes = total_seconds // 60
-    seconds = total_seconds % 60
+        return ", ".join(uptime_parts) if uptime_parts else "Uptime information not available."
 
-    print(f"System Uptime: {days} days, {hours} hours, {minutes} minutes, {seconds} seconds")
+    except ImportError:
+        return "Error: 'psutil' library not found. Please install it using 'pip install psutil'."
+    except Exception as e:
+        return f"An unexpected error occurred while getting uptime: {e}"
 
 if __name__ == "__main__":
-    get_system_uptime()
+    uptime_info = get_system_uptime()
+    print(f"System Uptime: {uptime_info}")
