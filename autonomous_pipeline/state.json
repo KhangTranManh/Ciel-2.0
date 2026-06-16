@@ -1,12 +1,12 @@
 {
-  "last_processed_seek": 5774637,
-  "total_processed": 256,
+  "last_processed_seek": 5958287,
+  "total_processed": 268,
   "total_accepted": 75,
   "total_rejected": 31,
   "cumulative_dataset_size": 185,
-  "last_task_gen_timestamp": 1781380473.558009,
-  "last_audit_date": "2026-06-12",
-  "cycle_count": 660,
-  "chaos_scenario_index": 20,
-  "fallback_task_index": 5
+  "last_task_gen_timestamp": 1781614029.240278,
+  "last_audit_date": "2026-06-15",
+  "cycle_count": 784,
+  "chaos_scenario_index": 9,
+  "fallback_task_index": 6
 }
