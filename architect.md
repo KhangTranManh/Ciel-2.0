@@ -40,11 +40,12 @@ User Input → CielCore.process()
   → Router (Brain LLM) classifies intent → JSON decision
   → Based on action:
       "chat"       → Worker generates natural response
-      "tool"       → SAFETY GATE: if high-risk tool, request Master’s Y/N confirmation
-                     → if denied: return "[CANCELLED]" immediately
-                     → if approved: ToolManager executes → Worker formats result (if needed)
+      "tool"       → Optional safety gate (controlled by SAFETY_OPEN / DISABLE_SAFETY_GATE).
+                     When open: high-risk tools (send_gmail_message, delete, shell, etc.) execute without Y/N.
+                     Protections remain for violent text, leaks, harm, and big/destructive changes.
+                     ToolManager executes → Worker formats result (if needed)
                      ↳ Brain Self-Correction: evaluates result. If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
-      "code"       → Worker generates code → buffer_writer flushes to disk
+      "code"       → Worker generates code → buffer_writer flushes to user-specified or clarified path (agent_output/ or ciel_workspace/)
       "multi_tool" → Sequential tool execution → Worker synthesizes combined report
   → Self-Healing Loop (if error detected):
       Attempt 1: Fix obvious cause (syntax/import)
@@ -139,11 +140,9 @@ Ciel 2.0/
 │       ├── thoughts_view.md      # Generated readable grouped debug view (ignored by git)
 │       └── thoughts_view.jsonl   # Generated structured log view (ignored by git)
 │
-├── ciel_workspace/               # Sandbox for user scripts
-│   ├── test_healing.py
-│   └── loop_test.py
+├── ciel_workspace/               # Sandbox for user data, logs, screenshots, and user-specified files
 │
-└── agent_output/                 # Generated code output directory
+└── agent_output/                 # Primary location for AI-generated code (user can also direct writes here via explicit paths)
 ```
 
 ---
@@ -184,22 +183,25 @@ Ciel 2.0/
 
 ### 4.2 Multi-Provider Support
 
-Ciel supports **three LLM providers**, configurable independently for Brain and Worker:
+Ciel supports multiple LLM providers, configurable independently for Brain and Worker via `.env` or `agent_system/config.py`.
 
-| Provider   | Brain Model (Router) | Worker Model (Generator) | Config Key        |
-|------------|----------------------|--------------------------|-------------------|
-| **Gemini** (default) | `gemini-1.5-pro`     | `gemini-1.5-flash`       | `GEMINI_API_KEY`  |
-| **DeepSeek** | `deepseek-v4-pro`    | `deepseek-v4-pro`        | `DEEPSEEK_API_KEY`|
-| **Ollama** (local) | `qwen2.5:14b`       | `qwen2.5-coder:14b`     | `OLLAMA_BASE_URL` |
+**Current recommended setup:**
+- **Brain (Router):** Vilao (`alic/qwen3.7-max`) — with `SAFETY_OPEN`, `VILAO_SAFETY_BYPASS` for reduced filtering on normal tasks.
+- **Worker (Generator):** DeepSeek (`deepseek-chat`).
 
-Provider is set via `BRAIN_PROVIDER` and `WORKER_PROVIDER` in `.env` or `agent_system/config.py`.
+Supported providers include Gemini, DeepSeek, Ollama, and Vilao (OpenAI-compatible). Provider selection is done with `BRAIN_PROVIDER` / `WORKER_PROVIDER` and corresponding keys (e.g., `VILAO_KEY`, `VILAO_URL`).
+
+Safety behavior is controlled by:
+- `SAFETY_OPEN=true` (permissive for most operations)
+- `DISABLE_SAFETY_GATE=true` (skips Y/N confirms for high-risk tools)
+- Targeted protections retained for violent text, leaks, harm, and destructive actions.
 
 ### 4.3 Key runtime services / credentials
 
-- **Gemini API:** `GEMINI_API_KEY` (prepaid credits, monthly spend cap)
-- **DeepSeek API:** `DEEPSEEK_API_KEY`
-- **Local models via Ollama:** `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- **Trading (TwelveData):** `TWELVEDATA_API_KEY` (free tier for Forex/Metals/Stocks)
+- **Vilao (current Brain):** `VILAO_KEY`, `VILAO_URL` (with SAFETY_OPEN / VILAO_SAFETY_BYPASS for permissive routing)
+- **DeepSeek (current Worker):** `DEEPSEEK_API_KEY`
+- **Gemini / Ollama:** Still supported via respective keys and base URLs
+- **Trading (TwelveData):** `TWELVEDATA_API_KEY`
 - **Google OAuth:** `credentials.json`, token files under `ciel_data/`
 - **Telegram Notifications:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
@@ -235,7 +237,7 @@ The Router uses the Brain LLM to classify user input into one of four action typ
 
 - `chat` — Conversation, questions, explanations
 - `tool` — Single tool execution (email, file ops, trading, shell)
-- `code` — Code generation + save to `agent_output/`
+- `code` — Code generation. Target path is taken from user request or asked explicitly (supports `agent_output/` or `ciel_workspace/`).
 - `multi_tool` — Sequential multi-tool workflow with synthesized report
 
 **Prompt Roles Embedded:**
@@ -265,9 +267,9 @@ Multi-attempt self-healing system with two strategies:
 
 The Brain has two specialized prompts:
 - **BRAIN_SYSTEM_PROMPT:** For the LangGraph pipeline — multi-step planner with `shared_context` for isolated Worker steps.
-- **CIEL_ROUTER_PROMPT (in router.py):** For the main CielCore pipeline — intent classifier.
+- **CIEL_ROUTER_PROMPT (in router.py):** For the main CielCore pipeline — intent classifier. Prompt has been lightened (risk language reduced) to improve compatibility with filtered providers.
 
-Supports three providers: Gemini (`ChatGoogleGenerativeAI`), DeepSeek (`ChatOpenAI`), Ollama (`ChatOllama`).
+Current primary: Vilao (`alic/qwen3.7-max`) with `VILAO_SAFETY_BYPASS` and pre-routing sanitization. Supports Gemini, DeepSeek, Ollama, Vilao. Path decisions for writes now respect user input or explicit clarification rather than hard defaults.
 
 ### 5.4 Worker (`agent_system/models/worker.py`)
 
@@ -372,7 +374,7 @@ Pure text/code generator. No tools, no routing. Features:
 - `get_system_tools()` - Build and return internal filesystem/workspace tools + prompt.
 - `list_workspace()` *(nested)* - Recursively list workspace files/folders.
 - `read_file(filename)` *(nested)* - Read file in sandbox.
-- `write_file(filename, content)` *(nested)* - Overwrite/create file in sandbox.
+- `write_file(filename, content)` *(nested)* - Overwrite/create file. Respects user-specified prefix (`ciel_workspace/` or `agent_output/`) or clarified path. Sandbox rules apply per prefix.
 - `append_file(filename, content)` *(nested)* - Append line/text to file.
 - `delete_file(filename)` *(nested)* - Delete file/folder in sandbox.
 - `get_file_info(filename)` *(nested)* - Return file type + size.
@@ -592,32 +594,17 @@ The `backtest/test_integration.py` suite covers 21 test cases:
 
 ## 10) Notes | Ghi chú
 
-- This map reflects the current repository contents as of May 2026.
-- Bản đồ này phản ánh trạng thái hiện tại của repository tại tháng 5/2026.
-- Default provider is Gemini (prepaid credits with monthly spend cap).
+- This map reflects the current repository contents (updated July 2026).
+- Current recommended: Brain on Vilao (`alic/qwen3.7-max`) + `SAFETY_OPEN=true` / `VILAO_SAFETY_BYPASS`; Worker on DeepSeek (`deepseek-chat`).
+- Write paths are no longer forced to `agent_output/`. The system asks for destination unless specified in the request. Both `ciel_workspace/` and `agent_output/` are supported.
 - The system supports hot-swapping providers via `.env` without code changes.
 - Keep `thoughts.log` raw and chronological. Use `scripts/format_thoughts_log.py` to generate readable local views when debugging.
+- Safety model: open/permissive by default (SAFETY_OPEN, gate disabled) for normal use; protections kept for violent text, info leaks, harm, and big/destructive changes.
 
 ---
 
-## Recent Developments (July 2026)
+## Document Maintenance Note
 
-### Provider, Safety & Filter Resilience
-- Primary Brain switched to Vilao (alic/qwen3.7-max) with DeepSeek as Worker. Added VILAO_SAFETY_BYPASS and input sanitization (English translation + trigger stripping via Worker before router calls on Vilao).
-- New flags: SAFETY_OPEN=true (permissive for normal tasks), VILAO_SAFETY_BYPASS=true, DISABLE_SAFETY_GATE=true.
-- Safety kept active for violent text, info leaks, harm, and big/destructive changes. Broad filtering and internal confirmations opened for usability.
-- Early proactive bypasses for email-send requests and Vilao sanitization to avoid CONTENT_FILTERED.
-- Added _fallback_direct_action + catch in process() for graceful recovery when Brain routing is blocked.
+This architect.md has been refreshed in its core sections (providers, safety model, file writing behavior, Brain description) to match the July 2026 state of the project.
 
-### File Writing & Path Control
-- Removed hard-coded always prefix agent_output rules from Brain plan and Router prompt.
-- New path clarification logic: if write/create/save/generate intent detected but no explicit path in query, immediately ask user for destination (ciel_workspace/ or agent_output/).
-- If path is already in the question, proceed directly.
-- Updated system_ops.py resolver to support writes to both ciel_workspace/ and agent_output/ based on user-supplied prefix.
-
-### Cleanup & Polish
-- Removed old test logs and artifacts from backtest/logs/, backtest/agent_output/, and __pycache__.
-- Router prompt further lightened (risk language minimized).
-- All changes preserve core architecture while making legitimate flows (especially Gmail + file creation) robust against upstream filters.
-
-See README.md for quick-start and note.txt for knowledge guidelines.
+The previous "Recent Developments" details are now integrated into the relevant sections above (e.g. 4.2, 5.3, Notes, and code action descriptions). For a concise list of July changes see the end of README.md or the dedicated section in note.txt.
