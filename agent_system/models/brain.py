@@ -97,8 +97,22 @@ ROUTING LOGIC:
 FILE PATH RULES:
 - Respect the path the user provides if mentioned.
 - Otherwise, the system will ask for the destination path (ciel_workspace/ or agent_output/ or specific).
-- IMPORTS MUST BE FLAT: Always use flat imports between project files (e.g., `from config import Config` or `from scraper import Scraper`). Do NOT use the `agent_output.` prefix in Python import statements."""
 
+NEVER LEAK INTERNAL PATHS IN EXTERNAL COMMUNICATIONS:
+- When the final output is an email or message to an external recipient, NEVER include any internal paths such as agent_output/, ciel_workspace/, or any file system locations.
+- Refer to saved reports only in generic terms: "the detailed evaluation has been prepared", "see the attached summary", or include the content directly in the email body.
+- If the user specifically asks to share a file path with an external party, confirm explicitly before doing so.
+
+EMAIL TEMPLATES AND SELECTION:
+When preparing content for emails (especially when request mentions market data/evaluation + send email), first determine the type:
+- Market / Asset Report (XAUUSD, BTC, crypto, forex, gold, prices, technicals like RSI/MA/trend, risk evaluation, overall recommendation): Use the structure exactly from email_template/Report.pdf as the primary template. This is highest priority for such requests. Use for XAUUSD + BTC or similar combos.
+- Todo/Productivity: use Todo / Productivity Summary template.
+- General task/status: use General Task / Status Report template.
+- Alerts/digests: use Alert / Warning / Digest template.
+- Gmail replies/summaries: use Gmail-related template.
+- Else: General / Custom Content template.
+Fill only with real data from tool results. Follow exact sections, order, and tone from the chosen template. Generate the email body from it.
+"""
 
 # ==========================================================
 # RETRY LOGGING HELPER
@@ -153,13 +167,15 @@ class Brain:
             if os.getenv("VILAO_SAFETY_BYPASS", "false").lower() in ("true", "1", "yes") or os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes"):
                 extra = {"extra_body": {"safe_mode": False, "safety": False, "content_filter": False}}
 
-            self._router_llm = ChatOpenAI(
-                model=model_name,
-                api_key=VILAO_API_KEY,
-                base_url=VILAO_URL,
-                temperature=BRAIN_TEMPERATURE,
-                model_kwargs=extra,
-            )
+            llm_kwargs = {
+                "model": model_name,
+                "api_key": VILAO_API_KEY,
+                "base_url": VILAO_URL,
+                "temperature": BRAIN_TEMPERATURE,
+            }
+            if extra and "extra_body" in extra:
+                llm_kwargs["extra_body"] = extra["extra_body"]
+            self._router_llm = ChatOpenAI(**llm_kwargs)
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {model_name} (Vilao, safety-bypass={bool(extra)})")
         else:

@@ -20,7 +20,7 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 - **Tool packs | Các gói kỹ năng:**
   - Internal: workspace/file ops (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py` — standalone, no external dependency)
   - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`), Telegram notifications (`skills/external/telegram_ops.py`)
-- **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17-test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests), `backtest/test_rag_memory.py` (45-prompt amnesia stress test for hybrid memory).
+- **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17+ test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests), `backtest/test_rag_memory.py` (45-prompt amnesia stress test for hybrid memory), `backtest/test_hard_special.py` + results (hard cases for email bypass, market+send flows, path handling, partial failures, self-correction, mixed language).
 - **Workspace sandbox | Vùng workspace:** `ciel_workspace/` contains files created/tested by tools.
 
 ---
@@ -46,7 +46,7 @@ User Input → CielCore.process()
                      ToolManager executes → Worker formats result (if needed)
                      ↳ Brain Self-Correction: evaluates result. If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
       "code"       → Worker generates code → buffer_writer flushes to user-specified or clarified path (agent_output/ or ciel_workspace/)
-      "multi_tool" → Sequential tool execution → Worker synthesizes combined report
+      "multi_tool" → Sequential tool execution (data tools first) → Worker synthesizes combined report (for email sends: synthesis happens before final send re-execution so body contains real filled data)
   → Self-Healing Loop (if error detected):
       Attempt 1: Fix obvious cause (syntax/import)
       Attempt 2: Rewrite logic with alternative approach
@@ -122,9 +122,12 @@ Ciel 2.0/
 │   └── identity.txt
 │
 ├── backtest/                     # Test suites
-│   ├── test_integration.py       # 17-test full pipeline validation
+│   ├── test_integration.py       # 17+ test full pipeline validation
 │   ├── test_brain_worker.py      # Brain-Worker multi-file workflow tests
 │   ├── test_rag_memory.py        # 45-prompt amnesia stress test (hybrid memory)
+│   ├── test_hard_special.py      # Expanded hard/special cases (email bypass + market send, path ask, mixed lang, partial fail, self-correction, harmful)
+│   ├── hard_special_results.txt  # Analysis logs from repeated hard special test runs (Gmail/market focus)
+│   ├── verify_gmail_send.py / run_multi_gmail_test.py / run_bot_again_test.py  # Gmail + multi-tool verification helpers
 │   └── logs/                     # Test output logs (.txt + .json)
 │
 ├── scripts/                      # Maintenance/debug helper scripts
@@ -453,7 +456,7 @@ Pure text/code generator. No tools, no routing. Features:
 
 ## 7) Integration Test Coverage | Phạm vi kiểm thử tích hợp
 
-The `backtest/test_integration.py` suite covers 21 test cases:
+The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `test_hard_special.py` expands coverage for difficult real-world flows (ambiguity, email intent bypass, multi-tool market data + send email, Vietnamese prompts, path asking, partial tool results, and self-correction on synthesis/send).
 
 | # | Test | Category |
 |---|------|----------|
@@ -572,6 +575,19 @@ The `backtest/test_integration.py` suite covers 21 test cases:
 - **Added:** `backtest/test_integration.py` — 17-test full pipeline validation.
 - **Added:** `backtest/test_brain_worker.py` — multi-step workflow stress tests.
 
+### Gmail Delivery & Market Report Flows (July 2026)
+
+- Focused on end-to-end real delivery for complex user requests such as "check XAUUSD / BTC situation + evaluate risk + send detailed report email".
+- Added proactive early bypass for email intent keywords (English + Vietnamese) in the Brain routing stage. This routes directly to multi_tool planning and avoids upstream CONTENT_FILTERED blocks on Vilao.
+- For market-related email sends: the bypass plans a full sequence of non-send data tools first (multiple price symbols including variants for XAU, BTC stats, technical analysis), followed by a send_gmail_message placeholder. Non-send tools execute, then the Worker synthesizes a clean body using the Market/Asset Report structure, and send is re-executed with the filled body.
+- Strict guarantees added in execution and synthesis layers: never claim "sent" unless a real Message Id is present in the tool result; never include internal file paths (agent_output/, ciel_workspace/, etc.); never leave unfilled [] placeholders or [Worker:...] tags; fill exclusively from live tool data (or honest statements when data is unavailable); no hallucinated prices.
+- Grounded email body structure for market reports in the concrete template defined in note.txt (email_template/Report.pdf was found to contain unrelated social analytics content and is no longer referenced for market use).
+- Updated system prompts (router, persona, Gmail tool, synthesis rules) to enforce data-first ordering, template fidelity, no-leak rules, and language matching.
+- Expanded backtesting with `test_hard_special.py` (16+ specialized cases covering email bypass + self-correction, path clarification requests, mixed/partial failures, harmful intent rejection, Vietnamese market+email prompts). Multiple runs performed; results analyzed in hard_special_results.txt.
+- File writing behavior: system always explicitly asks for destination path (ciel_workspace/ or agent_output/) unless the user query already names a target.
+- Result: tests and manual runs now produce data-filled Vietnamese/English structured report bodies (real prices, RSI, honest notes for flaky symbols) that are re-sent as the final email step. Users must verify actual inbox receipt for end confirmation.
+- Safety model remains selective: open for these flows (SAFETY_OPEN / DISABLE_SAFETY_GATE), protections retained for violent/leak/harm/destructive actions.
+
 ---
 
 ## 9) Roadmap Suggestions | Gợi ý roadmap nâng cấp
@@ -600,6 +616,7 @@ The `backtest/test_integration.py` suite covers 21 test cases:
 - The system supports hot-swapping providers via `.env` without code changes.
 - Keep `thoughts.log` raw and chronological. Use `scripts/format_thoughts_log.py` to generate readable local views when debugging.
 - Safety model: open/permissive by default (SAFETY_OPEN, gate disabled) for normal use; protections kept for violent text, info leaks, harm, and big/destructive changes.
+- Gmail + market data flows: Early bypass + data-first multi-tool + Worker synthesis + re-execution now used so that emails contain filled real data (prices, analysis) based on the Market/Asset Report template in note.txt. Internal paths and placeholders are blocked at multiple layers. Actual inbox verification by user is required to confirm delivery. Backtest/test_hard_special.py covers these scenarios.
 
 ---
 
@@ -607,4 +624,6 @@ The `backtest/test_integration.py` suite covers 21 test cases:
 
 This architect.md has been refreshed in its core sections (providers, safety model, file writing behavior, Brain description) to match the July 2026 state of the project.
 
-The previous "Recent Developments" details are now integrated into the relevant sections above (e.g. 4.2, 5.3, Notes, and code action descriptions). For a concise list of July changes see the end of README.md or the dedicated section in note.txt.
+A new detailed July 2026 entry was added to the Changelog covering Gmail delivery hardening for market reports (XAUUSD/BTC + evaluation + send), including early bypass, data-first multi-tool execution with synthesis before re-send, strict no-leak / no-placeholder / real-data rules, note.txt template grounding, expanded hard_special backtests, and path clarification behavior.
+
+The previous "Recent Developments" details are now integrated into the relevant sections above (e.g. 4.2, 5.3, Notes, and code action descriptions). For a concise list of July changes see the end of README.md or the dedicated "Ciel 2.0 Current Status" section in note.txt.

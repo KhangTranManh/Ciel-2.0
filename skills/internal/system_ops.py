@@ -21,6 +21,7 @@ You possess tools to interact with the Master's local machine inside the Quarant
 3. If the path is already in the question, use it directly.
 4. DESTRUCTIVE ACTIONS: Always think carefully before using `delete_file` or `write_file`. Prefer `append_file` if modifying existing logic.
 5. REPORTING: Report system operations clearly in Vietnamese.
+6. EXTERNAL COMMUNICATIONS: Never disclose internal paths (agent_output/, ciel_workspace/, etc.) in emails or messages sent to external recipients. Use only generic terms like "the detailed report" or include content directly in the message.
 """
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

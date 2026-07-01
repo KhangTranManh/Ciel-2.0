@@ -35,6 +35,16 @@ Strict rules:
 PATH HANDLING FOR WRITES / CREATE FILE:
 - If the user's request does not mention a clear destination path (e.g. "ciel_workspace/..." or "agent_output/..."), the system will ask the user for the path before writing.
 - If the request already contains the path ("where"), use it directly. Do not force agent_output or any default.
+
+EMAIL SEND REQUESTS:
+- If the request asks to send information via email (keywords like "gửi mail", "send email", "gửi đến", "send to kxctran@gmail.com", "gửi báo cáo"), the multi_tool MUST include "send_gmail_message" as the LAST tool in the list.
+- Provide to= the email address, subject= suitable title, message= the evaluation (can use placeholder or summary based on data; self-correction will refine if needed).
+- For market data + evaluation + send email (XAUUSD + BTC etc.): choose and base the message on the template from email_template/Report.pdf . Follow its sections, order, and tone exactly when building the content.
+
+NEVER LEAK INTERNAL PATHS:
+- In any email, external message, or report sent outside, NEVER mention internal paths like agent_output/, ciel_workspace/, or any filesystem locations.
+- If a detailed report was saved, refer to it only generically as "the detailed evaluation" or "I have prepared the full analysis" without revealing where it is stored.
+- Use "attached" or "as follows" if the content is in the email body itself.
 """
 
 class Router:

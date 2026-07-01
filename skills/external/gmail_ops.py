@@ -42,6 +42,16 @@ CRITICAL RULES:
 [Number]. [Sender Name] ([Sender Email])
 * **Tiêu đề:** [Subject]
 * **Tóm tắt:** [A short, concise, and analytical summary in Vietnamese]
+
+EMAIL TEMPLATES FOR SENDING (USE THESE FOR PREPARING EMAIL CONTENT):
+When the request involves preparing and sending a report or evaluation via email (e.g. market analysis, status, todos, alerts), first determine the type of content.
+- For market data + evaluation + send email (XAUUSD, BTC, crypto, forex, gold, prices, technicals, risk): Use the Market / Asset Report structure defined in note.txt (the filled version under Recommended Email Templates). Gather prices + stats + technicals from tools FIRST, then fill ONLY with real current values. Never send a body containing unfilled [] placeholders or hallucinated prices. Never leak internal paths.
+- For todo/productivity related + email: Use Todo / Productivity Summary template (see note.txt for structure).
+- For general task/status + email: Use General Task / Status Report template.
+- For alerts/digests: Use Alert / Warning / Digest template.
+- For replies or gmail summaries: Use Gmail-related template.
+- Otherwise: Use General / Custom Content template.
+Always follow the chosen template's exact sections, order, and tone. Gather data with tools first, then populate only with actual results. When sending, use send_message or send_gmail_message with the filled template content as the message. Never leak internal paths in the email.
 """
 
 def _get_gmail_credentials_compat(token_file: Path, credentials_file: Path):

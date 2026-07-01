@@ -276,6 +276,82 @@ This project (Ciel 2.0) has the following active configuration and recent focus:
 - Router prompt lightened; system tools updated to support paths in both target directories
 - Backtest/logs cleaned of old artifacts
 
-See README.md (newly created) and the Recent Developments section at the end of architect.md for details.
+Recent emphasis (late June / July 2026):
+- Made complex real-world flows work reliably: "check XAUUSD/BTC situation + evaluate + send report email to kxctran@gmail.com" (or similar).
+- Implemented email intent bypass that plans full data collection (market prices for XAU variants + BTC, stats, technical analysis) before any send step.
+- Non-send tools run first; Worker then synthesizes a clean, structured body; send_gmail_message is re-executed using the synthesized content.
+- Email bodies must use the concrete Market / Asset Report structure defined in this note.txt. Only real live data from tools; honest notes when data missing; no placeholders, no invented numbers, no internal path leaks.
+- Strong rules enforced across prompts and execution: claim success only on actual Message Id; keep bodies free of meta tags / worker tags / file paths.
+- Expanded dedicated test suite (backtest/test_hard_special.py) with many hard cases (email bypass, mixed language, partial tool failure, explicit path ask, self-correction, harmful requests). Tests run repeatedly and results analyzed (hard_special_results.txt). Multiple runs confirmed data-filled bodies are now prepared and re-sent.
+- Market/Asset Report template (section below) is the active reference. The unrelated content in email_template/Report.pdf is explicitly not used for these reports.
+- User verification of actual inbox is the final check (multiple test emails sent to kxctran@gmail.com during development).
+
+See README.md and the July 2026 Gmail Delivery & Market Report Flows section in architect.md (Changelog) for details.
 
 When working on Ciel, prioritize the selective/open safety model and explicit path handling for writes.
+
+## Recommended Email Templates
+
+These templates are for use when Ciel prepares and sends emails (via send_gmail_message or similar). The model must choose the appropriate template based on the request type, gather real data from tools FIRST, fill the placeholders with live facts only, and use the resulting content as the email body. Never use internal paths in the email. Never leave placeholders like [Worker: ...] or invent data. For market reports, always follow the filled Market / Asset Report structure below.
+
+Progress note: Market/Asset Report is now actively referenced and has been validated through repeated backtests and live runs for XAUUSD + BTC + risk evaluation + send-email flows. Other templates remain for future use / user fill-in.
+
+User will fill the actual template content below.
+
+### 1. Market / Asset Report (highest priority right now)
+NOTE: email_template/Report.pdf contains unrelated social analytics content and is NOT used as the structure for market emails. Use the filled structure below (and the rules in prompts) instead.
+
+Use this for any request with XAUUSD / BTC / gold / crypto + evaluation / risk + send email to someone.
+Gather live data from tools first. Fill ONLY with real numbers/facts from current tool results. No placeholders, no invented prices, no internal paths.
+
+**Subject:** Báo cáo thị trường XAUUSD & BTC – Đánh giá rủi ro [ngày]
+
+Kính gửi anh/chị,
+
+**1. Tổng quan thị trường**
+- XAU/USD: [giá thực từ tool] ([thay đổi %])
+- BTC/USD: [giá thực từ tool] ([thay đổi % 24h])
+- Các chỉ số khác nếu có (volume, dominance...).
+
+**2. Phân tích kỹ thuật & xu hướng**
+- Xu hướng chính cho XAUUSD.
+- Xu hướng chính cho BTC.
+- Các mức hỗ trợ/kháng cự quan trọng và chỉ báo (nếu có từ tool).
+
+**3. Đánh giá rủi ro**
+- Mức rủi ro tổng thể (thấp/trung bình/cao).
+- Yếu tố chính ảnh hưởng (tin tức, macro...).
+- Khuyến nghị hành động cụ thể.
+
+**4. Kết luận**
+Tóm tắt ngắn và lời khuyên theo dõi.
+
+Trân trọng,
+Ciel
+
+Fill every [ ] with actual current data from tools. If a tool fails, say so honestly instead of making up numbers.
+
+### 2. Todo / Productivity Summary
+Use when request involves todos, tasks, add/complete/list todos, or productivity updates + send email.
+Covers: list of todos (added, completed), current status, follow-ups.
+[USER TO FILL TEMPLATE CONTENT HERE - e.g. header, todo list format, status summary, polite close. Placeholders: {{TODO_LIST}}, {{DATE}}, {{STATUS}}]
+
+### 3. General Task / Status Report
+Use for general "I completed X" or multi-tool results + send summary email.
+Covers: what was done, results, any issues.
+[USER TO FILL TEMPLATE CONTENT HERE - placeholders: {{TASK_SUMMARY}}, {{RESULTS}}, {{NEXT_STEPS}}]
+
+### 4. Alert / Warning / Digest Emails
+Use for scheduled or alert-type sends (e.g. morning digest, risk alerts, system checks).
+Shorter, urgent tone with clear actions.
+[USER TO FILL TEMPLATE CONTENT HERE - placeholders: {{ALERT_TYPE}}, {{DETAILS}}, {{ACTION_ITEMS}}]
+
+### 5. Gmail-related Replies or Summaries
+Use when replying to emails or summarizing searched Gmail.
+Respect thread if reply.
+[USER TO FILL TEMPLATE CONTENT HERE - subject like "Re: ...", body format for replies]
+
+### 6. General / Custom Content Emails
+Fallback for any other email send request.
+Flexible structure based on user request.
+[USER TO FILL TEMPLATE CONTENT HERE - basic structure with placeholders for custom content]
