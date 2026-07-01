@@ -260,3 +260,22 @@
 # 9. Test it: give ONLY the instructionAI/ folder to a fresh AI and ask
 #    it to explain your project. If it can't, your docs are incomplete.
 # 10. One source of truth: don't duplicate across files, cross-reference
+
+---
+
+## Ciel 2.0 Current Status (as of July 2026)
+
+This project (Ciel 2.0) has the following active configuration and recent focus:
+
+- Brain: Vilao (alic/qwen3.7-max) with permissive settings
+- Worker: DeepSeek (deepseek-chat)
+- SAFETY_OPEN=true, VILAO_SAFETY_BYPASS=true, DISABLE_SAFETY_GATE=true (open for normal use)
+- Safety kept specifically for: violent text, info leaks, harm, big/destructive changes
+- File writing: System now always asks for explicit path (ciel_workspace/ or agent_output/) unless already specified in the user query
+- Proactive bypasses and fallbacks in place to avoid upstream CONTENT_FILTERED errors on legitimate tasks such as Gmail sends
+- Router prompt lightened; system tools updated to support paths in both target directories
+- Backtest/logs cleaned of old artifacts
+
+See README.md (newly created) and the Recent Developments section at the end of architect.md for details.
+
+When working on Ciel, prioritize the selective/open safety model and explicit path handling for writes.

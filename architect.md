@@ -597,3 +597,27 @@ The `backtest/test_integration.py` suite covers 21 test cases:
 - Default provider is Gemini (prepaid credits with monthly spend cap).
 - The system supports hot-swapping providers via `.env` without code changes.
 - Keep `thoughts.log` raw and chronological. Use `scripts/format_thoughts_log.py` to generate readable local views when debugging.
+
+---
+
+## Recent Developments (July 2026)
+
+### Provider, Safety & Filter Resilience
+- Primary Brain switched to Vilao (alic/qwen3.7-max) with DeepSeek as Worker. Added VILAO_SAFETY_BYPASS and input sanitization (English translation + trigger stripping via Worker before router calls on Vilao).
+- New flags: SAFETY_OPEN=true (permissive for normal tasks), VILAO_SAFETY_BYPASS=true, DISABLE_SAFETY_GATE=true.
+- Safety kept active for violent text, info leaks, harm, and big/destructive changes. Broad filtering and internal confirmations opened for usability.
+- Early proactive bypasses for email-send requests and Vilao sanitization to avoid CONTENT_FILTERED.
+- Added _fallback_direct_action + catch in process() for graceful recovery when Brain routing is blocked.
+
+### File Writing & Path Control
+- Removed hard-coded always prefix agent_output rules from Brain plan and Router prompt.
+- New path clarification logic: if write/create/save/generate intent detected but no explicit path in query, immediately ask user for destination (ciel_workspace/ or agent_output/).
+- If path is already in the question, proceed directly.
+- Updated system_ops.py resolver to support writes to both ciel_workspace/ and agent_output/ based on user-supplied prefix.
+
+### Cleanup & Polish
+- Removed old test logs and artifacts from backtest/logs/, backtest/agent_output/, and __pycache__.
+- Router prompt further lightened (risk language minimized).
+- All changes preserve core architecture while making legitimate flows (especially Gmail + file creation) robust against upstream filters.
+
+See README.md for quick-start and note.txt for knowledge guidelines.
