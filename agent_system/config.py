@@ -15,6 +15,16 @@ BRAIN_MODEL = os.getenv("BRAIN_MODEL", "gemini-2.5-pro")
 BRAIN_TEMPERATURE = 0.1
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+VILAO_URL = os.getenv("VILAO_URL", "")
+VILAO_API_KEY = os.getenv("VILAO_KEY", "")
+
+# Safety - SAFETY_OPEN=true means open/permissive (most things allowed to avoid over-blocking normal tasks)
+# false = not open (enforce more)
+# Keep safety active ("in") specifically for: violent text, leak info, harm, or big/destructive changes.
+# Per your spec: currently open (permissive) for other categories, only keep violent text protection "in".
+SAFETY_OPEN = os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes")
+DISABLE_SAFETY_GATE = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes") or SAFETY_OPEN
+VILAO_SAFETY_BYPASS = os.getenv("VILAO_SAFETY_BYPASS", "false").lower() in ("true", "1", "yes") or SAFETY_OPEN
 
 # --- Worker ---
 WORKER_PROVIDER = os.getenv("WORKER_PROVIDER", "gemini")

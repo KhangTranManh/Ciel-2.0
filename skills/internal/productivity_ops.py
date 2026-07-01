@@ -1,0 +1,192 @@
+import json
+import re
+import ast
+from pathlib import Path
+from datetime import datetime
+import urllib.request
+import urllib.error
+import urllib.parse
+from langchain_core.tools import StructuredTool
+
+PRODUCTIVITY_PROMPT = """
+[PRODUCTIVITY ARMORY]
+You have tools for personal productivity, time, info lookup, calculation and file search:
+1. `add_todo`: Add a new task to the todo list.
+2. `list_todos`: Show all current todos with status.
+3. `complete_todo`: Mark a todo as done by its ID.
+4. `get_current_time`: Get the current date and time.
+5. `get_weather`: Get current weather for a city (uses wttr.in, simple text).
+6. `calculate`: Safely evaluate math expressions (e.g. "2 + 2 * 3").
+7. `grep_in_workspace`: Search for text pattern in workspace files (like grep).
+Use these for planning, reminders, scheduling, quick research, math, and searching code/notes.
+Always confirm changes to the Master.
+"""
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+WORKSPACE_DIR = BASE_DIR / "ciel_workspace"
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+TODO_FILE = WORKSPACE_DIR / "todos.json"
+
+def _load_todos():
+    if TODO_FILE.exists():
+        try:
+            with open(TODO_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def _save_todos(todos):
+    with open(TODO_FILE, "w", encoding="utf-8") as f:
+        json.dump(todos, f, indent=2, ensure_ascii=False)
+
+def get_productivity_tools() -> dict:
+    try:
+        tools = []
+
+        def add_todo(task: str) -> str:
+            try:
+                todos = _load_todos()
+                todo_id = len(todos) + 1
+                todos.append({"id": todo_id, "task": task, "done": False, "created": datetime.now().isoformat()})
+                _save_todos(todos)
+                return f"Đã thêm todo #{todo_id}: {task}"
+            except Exception as e:
+                return f"Lỗi thêm todo: {e}"
+        tools.append(StructuredTool.from_function(
+            func=add_todo,
+            name="add_todo",
+            description="Add a new task to the todo list. Use when user wants to remember or plan something to do."
+        ))
+
+        def list_todos() -> str:
+            try:
+                todos = _load_todos()
+                if not todos:
+                    return "Todo list hiện đang trống."
+                lines = ["Danh sách Todo:"]
+                for t in todos:
+                    status = "✓" if t.get("done") else "○"
+                    lines.append(f"#{t['id']} [{status}] {t['task']}")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"Lỗi lấy todo: {e}"
+        tools.append(StructuredTool.from_function(
+            func=list_todos,
+            name="list_todos",
+            description="List all todos with their status. USE THIS when asked about tasks, plans, or what to do."
+        ))
+
+        def complete_todo(todo_id: int) -> str:
+            try:
+                todos = _load_todos()
+                for t in todos:
+                    if t["id"] == todo_id:
+                        t["done"] = True
+                        _save_todos(todos)
+                        return f"Đã hoàn thành todo #{todo_id}"
+                return f"Không tìm thấy todo #{todo_id}"
+            except Exception as e:
+                return f"Lỗi hoàn thành todo: {e}"
+        tools.append(StructuredTool.from_function(
+            func=complete_todo,
+            name="complete_todo",
+            description="Mark a todo as completed by its numeric ID."
+        ))
+
+        def get_current_time() -> str:
+            try:
+                now = datetime.now()
+                return f"Thời gian hiện tại: {now.strftime('%Y-%m-%d %H:%M:%S')} (local)"
+            except Exception as e:
+                return f"Lỗi lấy thời gian: {e}"
+        tools.append(StructuredTool.from_function(
+            func=get_current_time,
+            name="get_current_time",
+            description="Get the current date and time. Useful for scheduling or time-based queries."
+        ))
+
+        def get_weather(city: str) -> str:
+            try:
+                if not city:
+                    city = "Hanoi"
+                city_quoted = urllib.parse.quote(city.strip())
+                url = f"https://wttr.in/{city_quoted}?format=3"
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    data = response.read().decode("utf-8").strip()
+                return f"Thời tiết ở {city}: {data}"
+            except urllib.error.URLError as e:
+                return f"Không lấy được thời tiết cho {city}: {e}"
+            except Exception as e:
+                return f"Lỗi thời tiết: {e}"
+        tools.append(StructuredTool.from_function(
+            func=get_weather,
+            name="get_weather",
+            description="Get current weather for a city (e.g. 'Hanoi', 'Ho Chi Minh City', 'London', 'New York'). City names with spaces are supported. Uses wttr.in public service."
+        ))
+
+        def calculate(expression: str) -> str:
+            try:
+                # Safe eval using ast
+                tree = ast.parse(expression, mode='eval')
+                # Only allow safe nodes
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.Call, ast.Attribute, ast.NameConstant, ast.Subscript, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp, ast.Lambda)):
+                        if not (isinstance(node, ast.Name) and node.id in ('abs', 'round', 'min', 'max', 'sum', 'len', 'int', 'float', 'pow', 'sqrt')):
+                            return "Error: unsafe expression"
+                # Add safe builtins
+                safe_dict = {
+                    "__builtins__": {},
+                    "abs": abs, "round": round, "min": min, "max": max,
+                    "sum": sum, "len": len, "int": int, "float": float, "pow": pow
+                }
+                result = eval(compile(tree, '<string>', 'eval'), safe_dict)
+                return str(result)
+            except Exception as e:
+                return f"Error: {e}"
+        tools.append(StructuredTool.from_function(
+            func=calculate,
+            name="calculate",
+            description="Safely calculate math expressions like '2+2', 'sqrt(16)', 'sin(0)' etc. Use for any calculations."
+        ))
+
+        def grep_in_workspace(pattern: str, path: str = ".") -> str:
+            try:
+                safe_base = WORKSPACE_DIR
+                target = (safe_base / path).resolve()
+                if not target.is_relative_to(safe_base):
+                    return "Error: path outside workspace"
+                if target.is_file():
+                    files = [target]
+                else:
+                    files = list(target.rglob("*")) if target.exists() else []
+                matches = []
+                regex = re.compile(pattern, re.IGNORECASE)
+                for f in files:
+                    if f.is_file() and f.suffix in ('.txt', '.py', '.md', '.json', '.log', '.csv'):
+                        try:
+                            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                                for i, line in enumerate(fh, 1):
+                                    if regex.search(line):
+                                        rel = f.relative_to(safe_base)
+                                        matches.append(f"{rel}:{i}: {line.strip()[:100]}")
+                        except:
+                            pass
+                if not matches:
+                    return f"No matches for '{pattern}' in {path}"
+                return "\n".join(matches[:20])  # limit
+            except Exception as e:
+                return f"Error: {e}"
+        tools.append(StructuredTool.from_function(
+            func=grep_in_workspace,
+            name="grep_in_workspace",
+            description="Search for regex pattern in workspace files (recursive). Great for finding code or notes. E.g. pattern='TODO', path='.' "
+        ))
+
+        return {
+            "tools": tools,
+            "prompt": PRODUCTIVITY_PROMPT
+        }
+    except Exception as e:
+        print(f"[Productivity] Error loading tools: {e}")
+        return {"tools": [], "prompt": ""}

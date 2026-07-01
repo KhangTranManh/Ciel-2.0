@@ -130,16 +130,7 @@ Be concise but thorough. Use bullet points."""
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
-def _make_result(success: bool, data=None, code: str = None, message: str = None, tool_name: str = "") -> dict:
-    return {
-        "success": success,
-        "data": data,
-        "error": None if success else {
-            "code": code or "VISION_ERROR",
-            "message": message or "Vision operation failed."
-        },
-        "meta": {"tool_name": tool_name}
-    }
+from skills._result import make_result as _make_result
 
 
 def _capture_screen() -> Image.Image:

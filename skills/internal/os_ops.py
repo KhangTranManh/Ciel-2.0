@@ -48,8 +48,8 @@ SAFE_COMMANDS = {
     "wmic", "set", "path", "date", "time",
     # Navigation
     "cd", "pushd", "popd",
-    # Process
-    "start",
+    # Process management
+    "start", "taskkill",
 }
 
 BLOCKED_COMMAND_PATTERNS = [
@@ -70,18 +70,7 @@ BLOCKED_COMMAND_PATTERNS = [
 BLOCKED_META_CHARS = ["&&", "||", ">", ">>", "<", ";", "`"]
 
 
-def _make_result(success: bool, data=None, code: str = None, message: str = None, tool_name: str = "") -> dict:
-    return {
-        "success": success,
-        "data": data,
-        "error": None if success else {
-            "code": code or "OS_OPS_ERROR",
-            "message": message or "OS operation failed."
-        },
-        "meta": {
-            "tool_name": tool_name
-        }
-    }
+from skills._result import make_result as _make_result
 
 
 def _extract_base_command(command: str) -> str:

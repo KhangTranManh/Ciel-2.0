@@ -16,21 +16,43 @@ You possess tools to interact with the Master's local machine inside the Quarant
 7. `run_python_script`: Run a .py script and get terminal output.
 
 [STRICT SECURITY RULES - PARANOIA]
-1. QUARANTINE ZONE: You are physically locked inside the `ciel_workspace` directory. Do NOT attempt to access files outside this folder.
-2. DESTRUCTIVE ACTIONS: Always think carefully before using `delete_file` or `write_file`. Prefer `append_file` if modifying existing logic.
-3. REPORTING: Report system operations clearly in Vietnamese.
+1. You can write to either `ciel_workspace/` (user data) or `agent_output/` (generated code).
+2. If the user did not specify the destination path in their request, the system will ask them first before writing.
+3. If the path is already in the question, use it directly.
+4. DESTRUCTIVE ACTIONS: Always think carefully before using `delete_file` or `write_file`. Prefer `append_file` if modifying existing logic.
+5. REPORTING: Report system operations clearly in Vietnamese.
 """
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "ciel_workspace"
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+AGENT_OUTPUT_DIR = BASE_DIR / "agent_output"
+AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _resolve_target_path(target_path: str) -> Path:
+    """Resolve path allowing both ciel_workspace and agent_output based on prefix."""
+    target_path = target_path.strip().replace("\\", "/")
+    if target_path.startswith("agent_output/"):
+        rel = target_path[len("agent_output/"):].lstrip("/")
+        base = AGENT_OUTPUT_DIR
+    elif target_path.startswith("ciel_workspace/"):
+        rel = target_path[len("ciel_workspace/"):].lstrip("/")
+        base = WORKSPACE_DIR
+    else:
+        # default to workspace for safety if no prefix given
+        rel = target_path.lstrip("/")
+        base = WORKSPACE_DIR
+
+    resolved = (base / rel).resolve()
+    if not resolved.is_relative_to(base):
+        raise PermissionError(f"[CẢNH BÁO BẢO MẬT] Truy cập bị từ chối. Lệnh '{target_path}' nhắm ra ngoài vùng cho phép.")
+    return resolved
 
 def _is_safe_path(target_path: str) -> Path:
     try:
-        resolved_path = (WORKSPACE_DIR / target_path).resolve()
-        if not str(resolved_path).startswith(str(WORKSPACE_DIR)):
-            raise PermissionError(f"[CẢNH BÁO BẢO MẬT] Truy cập bị từ chối. Lệnh '{target_path}' nhắm ra ngoài Vùng Cách Ly.")
-        return resolved_path
+        return _resolve_target_path(target_path)
+    except PermissionError:
+        raise
     except Exception as e:
         raise PermissionError(f"Đường dẫn không hợp lệ: {e}")
 
@@ -65,7 +87,7 @@ def get_system_tools() -> dict:
                 with open(safe_path, "w", encoding="utf-8") as f: f.write(content)
                 return f"Đã GHI ĐÈ thành công vào '{filename}'."
             except Exception as e: return str(e)
-        tools.append(StructuredTool.from_function(func=write_file, name="write_file", description="Create a new file or completely overwrite an existing one. YOU MUST USE THIS TOOL when asked to write code, create a file, or save text to a new file."))
+        tools.append(StructuredTool.from_function(func=write_file, name="write_file", description="Create a new file or completely overwrite an existing one. The system will ask for the target path (ciel_workspace/ or agent_output/) if not specified in the request."))
 
         def append_file(filename: str, content: str) -> str:
             try:

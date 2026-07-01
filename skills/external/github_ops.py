@@ -101,19 +101,7 @@ def _run_git(args: list, cwd: str, timeout: int = 30) -> dict:
         return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}
 
 
-def _make_result(success: bool, data=None, code: str = None, message: str = None, tool_name: str = "") -> dict:
-    """Standardized result format matching ToolManager expectations."""
-    return {
-        "success": success,
-        "data": data,
-        "error": None if success else {
-            "code": code or "GIT_ERROR",
-            "message": message or "Git operation failed."
-        },
-        "meta": {
-            "tool_name": tool_name
-        }
-    }
+from skills._result import make_result as _make_result
 
 
 # ==========================================

@@ -1,2 +1,0 @@
-with open('test_integration.txt', 'w') as file:
-    file.write('Hello from integration test')

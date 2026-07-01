@@ -1,259 +1,63 @@
 from colorama import Fore, Style
+import importlib
 import json
 import time
+from pathlib import Path
 from typing import Any
+
 
 class ToolManager:
     def __init__(self):
         self.tools = []
         self.tool_map = {}
-        self.system_prompts = [] # NEW: We now collect prompts from the tools
-        self.tool_arg_schemas = {
-            "execute_shell_command": {
-                "required": {"command": str},
-                "optional": {}
-            },
-            "open_application": {
-                "required": {"target_path": str},
-                "optional": {}
-            },
-            "list_workspace": {
-                "required": {},
-                "optional": {}
-            },
-            "read_file": {
-                "required": {"filename": str},
-                "optional": {}
-            },
-            "write_file": {
-                "required": {"filename": str, "content": str},
-                "optional": {}
-            },
-            "append_file": {
-                "required": {"filename": str, "content": str},
-                "optional": {}
-            },
-            "delete_file": {
-                "required": {"filename": str},
-                "optional": {}
-            },
-            "get_file_info": {
-                "required": {"filename": str},
-                "optional": {}
-            },
-            "run_python_script": {
-                "required": {"filename": str},
-                "optional": {}
-            },
-            "save_fact": {
-                "required": {"key": str, "value": str},
-                "optional": {}
-            },
-            "get_fact": {
-                "required": {"key": str},
-                "optional": {}
-            },
-            "delete_fact": {
-                "required": {"key": str},
-                "optional": {}
-            },
-            "take_screenshot": {
-                "required": {},
-                "optional": {}
-            },
-            "git_list_repos": {
-                "required": {"search_path": str},
-                "optional": {}
-            },
-            "git_status": {
-                "required": {"repo_path": str},
-                "optional": {}
-            },
-            "git_diff": {
-                "required": {"repo_path": str},
-                "optional": {}
-            },
-            "git_commit_and_push": {
-                "required": {"repo_path": str, "message": str},
-                "optional": {}
-            },
-            "git_confirm_push": {
-                "required": {"repo_path": str, "message": str},
-                "optional": {}
-            },
-            "stealth_search": {
-                "required": {"query": str},
-                "optional": {"max_results": int}
-            },
-            "smart_scrape": {
-                "required": {"url": str},
-                "optional": {}
-            },
-            "vision_act": {
-                "required": {"task": str},
-                "optional": {}
-            },
-            "vision_describe": {
-                "required": {},
-                "optional": {}
-            }
-        }
+        self.system_prompts = []
+
+        # Auto-discover and load all skill modules
+        self._auto_load_skills("skills.internal", Path(__file__).resolve().parent.parent / "skills" / "internal")
+        self._auto_load_skills("skills.external", Path(__file__).resolve().parent.parent / "skills" / "external")
+
+    def _auto_load_skills(self, package_name: str, package_path: Path):
+        """Auto-discover and load all skill modules from a package directory.
         
-        # Load zones independently to prevent cross-corruption
-        self._load_internal_tools()
-        self._load_external_tools()
+        Each skill module must expose a get_*_tools() function that returns
+        {"tools": [StructuredTool, ...], "prompt": str}.
+        """
+        if not package_path.exists():
+            return
 
-    def _load_internal_tools(self):
-        # 1. NẠP CÁC CÔNG CỤ BỘ NHỚ CŨ (Nếu ngài vẫn đang dùng)
-        try:
-            from skills.internal.memory_ops import save_fact, get_fact, delete_fact
-            self.tools.extend([save_fact, get_fact, delete_fact])
-            print(Fore.GREEN + "[Ciel System] Internal memory tools loaded safely." + Style.RESET_ALL)
-        except Exception as e:
-            pass # Bỏ qua nếu ngài đã xóa file memory_ops
+        for py_file in sorted(package_path.glob("*.py")):
+            modname = py_file.stem
+            if modname.startswith("__"):
+                continue
 
-        # ==========================================
-        # 2. NẠP KHO VŨ KHÍ HỆ THỐNG (QUARANTINE ZONE)
-        # ==========================================
-        try:
-            from skills.internal.system_ops import get_system_tools
-            sys_data = get_system_tools()
-            
-            sys_tools = sys_data.get("tools", [])
-            sys_prompt = sys_data.get("prompt", "")
-            
-            if sys_tools:
-                self.tools.extend(sys_tools)
-                if sys_prompt:
-                    self.system_prompts.append(sys_prompt) # Nạp chỉ thị Paranoia vào não Ciel
-                print(Fore.GREEN + "[Ciel System] Local System Armory (Quarantine Zone) locked and loaded." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No System tools loaded." + Style.RESET_ALL)
-                
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Fatal] Failed to load System tools: {e}" + Style.RESET_ALL)
+            try:
+                module = importlib.import_module(f"{package_name}.{modname}")
 
-        # ==========================================
-        # 3. NẠP KHO VŨ KHÍ OS DIRECT CONTROL
-        # ==========================================
-        try:
-            from skills.internal.os_ops import get_os_tools
-            os_data = get_os_tools()
+                # Find the get_*_tools() factory function
+                loader_fn = None
+                for attr_name in dir(module):
+                    if attr_name.startswith("get_") and attr_name.endswith("_tools") and callable(getattr(module, attr_name)):
+                        loader_fn = getattr(module, attr_name)
+                        break
 
-            os_tools = os_data.get("tools", [])
-            os_prompt = os_data.get("prompt", "")
+                if loader_fn is None:
+                    print(Fore.CYAN + f"[Ciel System] Skipped {modname} — no get_*_tools() factory found." + Style.RESET_ALL)
+                    continue
 
-            if os_tools:
-                self.tools.extend(os_tools)
-                if os_prompt:
-                    self.system_prompts.append(os_prompt)
-                print(Fore.GREEN + "[Ciel System] OS Direct Control Armory loaded." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No OS Direct Control tools loaded." + Style.RESET_ALL)
+                data = loader_fn()
+                tools = data.get("tools", [])
+                prompt = data.get("prompt", "")
 
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Warning] Failed to load OS Direct Control tools: {e}" + Style.RESET_ALL)
+                if tools:
+                    self.tools.extend(tools)
+                    if prompt:
+                        self.system_prompts.append(prompt)
+                    print(Fore.GREEN + f"[Ciel System] Loaded {modname}: {len(tools)} tool(s)." + Style.RESET_ALL)
+                else:
+                    print(Fore.CYAN + f"[Ciel System] {modname} returned 0 tools." + Style.RESET_ALL)
 
-        # ==========================================
-        # 4. VISION & UI INTERACTION ARMORY
-        # ==========================================
-        try:
-            from skills.internal.vision_ops import get_vision_tools
-            vision_data = get_vision_tools()
-
-            vision_tools = vision_data.get("tools", [])
-            vision_prompt = vision_data.get("prompt", "")
-
-            if vision_tools:
-                self.tools.extend(vision_tools)
-                if vision_prompt:
-                    self.system_prompts.append(vision_prompt)
-                print(Fore.GREEN + "[Ciel System] Vision & UI Interaction Armory loaded." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No Vision tools loaded." + Style.RESET_ALL)
-
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Warning] Failed to load Vision tools: {e}" + Style.RESET_ALL)
-
-    def _load_external_tools(self):
-        try:
-            from skills.external.gmail_ops import get_gmail_tools
-            gmail_data = get_gmail_tools() # This now returns a dictionary!
-            
-            # Extract tools and prompt
-            gmail_tools = gmail_data.get("tools", [])
-            gmail_prompt = gmail_data.get("prompt", "")
-            
-            if gmail_tools:
-                self.tools.extend(gmail_tools)
-                if gmail_prompt:
-                    self.system_prompts.append(gmail_prompt) # Add the manual to our collection
-                print(Fore.GREEN + "[Ciel System] Gmail armory fully loaded and operational." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No external tools loaded." + Style.RESET_ALL)
-                
-        except Exception as e:
-            print(f"[Ciel Warning] External tool corruption detected. Error: {e}")
-        try:
-            from skills.external.trading_ops import get_trading_tools
-            trading_data = get_trading_tools()
-            
-            trading_tools = trading_data.get("tools", [])
-            trading_prompt = trading_data.get("prompt", "")
-            
-            if trading_tools:
-                self.tools.extend(trading_tools)
-                if trading_prompt:
-                    self.system_prompts.append(trading_prompt)
-                print(Fore.GREEN + "[Ciel System] Trading armory fully loaded and operational." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No Trading tools loaded." + Style.RESET_ALL)
-                
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Warning] Trading tool corruption detected. Error: {e}" + Style.RESET_ALL)
-            print(Fore.CYAN + "[Ciel System] External tools registry is empty." + Style.RESET_ALL)
-
-        # ==========================================
-        # 3. GIT VERSION CONTROL ARMORY
-        # ==========================================
-        try:
-            from skills.external.github_ops import get_github_tools
-            github_data = get_github_tools()
-
-            github_tools = github_data.get("tools", [])
-            github_prompt = github_data.get("prompt", "")
-
-            if github_tools:
-                self.tools.extend(github_tools)
-                if github_prompt:
-                    self.system_prompts.append(github_prompt)
-                print(Fore.GREEN + "[Ciel System] Git armory fully loaded and operational." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No Git tools loaded." + Style.RESET_ALL)
-
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Warning] Git tool corruption detected. Error: {e}" + Style.RESET_ALL)
-
-        # ==========================================
-        # 4. WEB AGENT ARMORY (Jarvis Vision)
-        # ==========================================
-        try:
-            from skills.external.web_agent_ops import get_web_tools
-            web_data = get_web_tools()
-
-            web_tools = web_data.get("tools", [])
-            web_prompt = web_data.get("prompt", "")
-
-            if web_tools:
-                self.tools.extend(web_tools)
-                if web_prompt:
-                    self.system_prompts.append(web_prompt)
-                print(Fore.GREEN + "[Ciel System] Web Agent armory fully loaded and operational." + Style.RESET_ALL)
-            else:
-                print(Fore.CYAN + "[Ciel System] No Web Agent tools loaded." + Style.RESET_ALL)
-
-        except Exception as e:
-            print(Fore.RED + f"[Ciel Warning] Web Agent tool corruption detected. Error: {e}" + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"[Ciel Warning] Failed to load {modname}: {e}" + Style.RESET_ALL)
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
@@ -261,11 +65,10 @@ class ToolManager:
         return self.tools
 
     def get_dynamic_prompt(self) -> str:
-        """NEW: Stitches all tool manuals together into one string."""
+        """Stitches all tool manuals together into one string."""
         if not self.system_prompts:
             return ""
         
-        # Join all the prompts we collected with a nice divider
         combined_prompts = "\n\n--- ACTIVE WEAPON MANUALS ---\n\n".join(self.system_prompts)
         return f"\n\n{combined_prompts}"
 
@@ -281,9 +84,17 @@ class ToolManager:
         }
 
     def _validate_tool_args(self, name: str, args: dict):
-        schema = self.tool_arg_schemas.get(name)
-        if not schema:
-            return None
+        """Auto-validate tool arguments using the tool's own Pydantic args_schema.
+        
+        No hardcoded schemas needed — every StructuredTool carries its own
+        args_schema derived from the function signature.
+        """
+        tool = self.tool_map.get(name)
+        if not tool:
+            return None  # Tool not found, will be caught later
+
+        if not hasattr(tool, 'args_schema') or not tool.args_schema:
+            return None  # No schema available, skip validation
 
         if args is None:
             args = {}
@@ -291,27 +102,12 @@ class ToolManager:
         if not isinstance(args, dict):
             return f"Invalid arguments type for '{name}': expected object/dict."
 
-        required = schema.get("required", {})
-        optional = schema.get("optional", {})
-        allowed_keys = set(required.keys()) | set(optional.keys())
-
-        missing = [k for k in required if k not in args]
-        if missing:
-            return f"Missing required argument(s) for '{name}': {', '.join(missing)}."
-
-        unknown = [k for k in args.keys() if k not in allowed_keys]
-        if unknown:
-            return f"Unknown argument(s) for '{name}': {', '.join(unknown)}."
-
-        for key, expected_type in required.items():
-            if not isinstance(args.get(key), expected_type):
-                return f"Argument '{key}' for '{name}' must be of type {expected_type.__name__}."
-
-        for key, expected_type in optional.items():
-            if key in args and not isinstance(args.get(key), expected_type):
-                return f"Argument '{key}' for '{name}' must be of type {expected_type.__name__}."
-
-        return None
+        try:
+            tool.args_schema(**args)
+            return None  # Validation passed
+        except Exception as e:
+            # Extract a clean error message from Pydantic validation
+            return f"Invalid arguments for '{name}': {e}"
 
     def format_tool_result(self, result: dict) -> str:
         if not isinstance(result, dict):
@@ -319,7 +115,7 @@ class ToolManager:
 
         if result.get("success"):
             data = result.get("data")
-            if isinstance(data, dict) and "message" in data and len(data) == 1:
+            if isinstance(data, dict) and "message" in data:
                 return str(data["message"])
             if isinstance(data, str):
                 return data

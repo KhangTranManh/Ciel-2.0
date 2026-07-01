@@ -19,9 +19,9 @@ from ..config import (
     WORKER_MODEL,
     WORKER_TEMPERATURE,
     WORKER_NUM_CTX,
-    OLLAMA_RETRY_MAX_ATTEMPTS,
-    OLLAMA_RETRY_INITIAL_WAIT,
-    OLLAMA_RETRY_MAX_WAIT,
+    RETRY_MAX_ATTEMPTS,
+    RETRY_INITIAL_WAIT,
+    RETRY_MAX_WAIT,
 )
 from ..utils.logger import log
 
@@ -57,7 +57,7 @@ def _log_worker_retry(retry_state):
     attempt = retry_state.attempt_number
     log.error(
         f"Worker call failed ({exc_name}: {exc_msg}). "
-        f"Retrying in {wait:.1f}s (attempt {attempt}/{OLLAMA_RETRY_MAX_ATTEMPTS})"
+        f"Retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})"
     )
 
 
@@ -127,8 +127,8 @@ class Worker:
 
     # Bonus: Worker gets retry protection for GPU timeouts and connection drops
     @retry(
-        stop=stop_after_attempt(OLLAMA_RETRY_MAX_ATTEMPTS),
-        wait=wait_exponential(multiplier=OLLAMA_RETRY_INITIAL_WAIT, max=OLLAMA_RETRY_MAX_WAIT),
+        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
+        wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
         retry=retry_if_exception_type(WORKER_TRANSIENT_ERRORS),
         before_sleep=_log_worker_retry,
     )

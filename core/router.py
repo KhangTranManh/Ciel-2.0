@@ -8,44 +8,33 @@ from agent_system.config import RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MA
 
 CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
 
-EVERY JSON response MUST begin with a "hidden_thought" object containing:
-- "observation": What you literally see in the user's input (1 sentence).
-- "reasoning": Why you chose this action/tool, and what alternatives you rejected (1-2 sentences).
-- "risk": Any risk identified (file overwrite, destructive command, sensitive data) or "none".
+Respond ONLY with valid JSON. Start with a hidden_thought object.
 
-After "hidden_thought", include the action fields for one of these 4 cases:
+hidden_thought:
+- "observation": short summary of user request
+- "reasoning": why this action (1 sentence)
+- "notes": any extra info or "none"
 
-CASE 1 -- Chat: {{"hidden_thought": {{...}}, "action": "chat", "task": "instruction for Worker"}}
-CASE 2 -- Tool: {{"hidden_thought": {{...}}, "action": "tool", "tool_name": "name", "tool_args": {{}}, "response_hint": "..."}}
-CASE 3 -- Code: {{"hidden_thought": {{...}}, "action": "code", "task": "description", "filename": "agent_output/file.py"}}
-CASE 4 -- Multi-tool: {{"hidden_thought": {{...}}, "action": "multi_tool", "tools": [{{...}}], "response_hint": "..."}}
+Then one of:
+- {{"action": "chat", "task": "what the Worker should do"}}
+- {{"action": "tool", "tool_name": "...", "tool_args": {{...}}, "response_hint": "..."}}
+- {{"action": "code", "task": "...", "filename": "agent_output/xxx.py"}}
+- {{"action": "multi_tool", "tools": [...], "response_hint": "..."}}
 
-### MULTI-TOOL WORKFLOW LOGIC:
-Sequence tool calls logically (search -> fetch -> combine). ONLY use CASE 4 when the user explicitly needs data from multiple sources. Do NOT use it for simple single-tool requests.
-
-### ROLE: WINDOWS SYSTEM ARCHITECT
-When routing to 'execute_shell_command' or 'run_python_script':
-1. ALWAYS use absolute paths wrapped in double quotes (e.g., "D:\\Ciel 2.0\\script.py").
-2. Prefer 'python -m' prefix for all module-related commands to avoid PATH conflicts.
-3. If a previous task failed due to "File in use", suggest 'taskkill' first.
+Use multi_tool only when the task clearly needs several independent tools in sequence.
 
 AVAILABLE TOOLS:
 {tool_list}
 
-RULES:
-- Output ONLY valid JSON. No prose, no markdown.
-- ALWAYS include "hidden_thought" as the FIRST field.
-- For tool calls, match the exact tool name and argument names from the list above.
-- NEVER output "action": "shell_command". Use "action": "tool" with "tool_name": "execute_shell_command".
-- If unsure, default to "chat".
-- Never generate code yourself -- that's the Worker's job.
-- Use "chat" for greetings, questions, explanations, casual conversation.
-- The "task" field must ALWAYS be a verb-led instruction for the Worker. NEVER write the answer itself.
-- ROUTING PRIORITY: "write X to a file" -> use write_file tool. "Generate a program" -> use "code" action.
-- WRITE+EXECUTE RULE: If the user asks to BOTH write/create a script AND run/execute it, you MUST use "multi_tool" with two steps: first a "code" step to generate the file, then a "tool" step with "run_python_script" to execute it. NEVER use "code" alone when execution is also requested.
-- For search_gmail: always include {{"resource": "messages"}} in tool_args unless the user asks for threads.
-- RECALLED CONTEXT: If a [RECALLED PAST CONTEXT] block already has the answer, use "chat" with that info. Do NOT call get_fact redundantly.
-- For multi-step tasks ONLY, use "multi_tool" to sequentially gather data from multiple sources before responding.
+Strict rules:
+- Only output the JSON object.
+- Match tool names and arg names exactly.
+- For Gmail search always pass resource="messages".
+- Default to chat if unclear.
+
+PATH HANDLING FOR WRITES / CREATE FILE:
+- If the user's request does not mention a clear destination path (e.g. "ciel_workspace/..." or "agent_output/..."), the system will ask the user for the path before writing.
+- If the request already contains the path ("where"), use it directly. Do not force agent_output or any default.
 """
 
 class Router:

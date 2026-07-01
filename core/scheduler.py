@@ -5,12 +5,19 @@ Design principles:
   - Direct Execution: Tools are called as raw Python/APIs, skipping the Brain.
   - Ghost Mode: Scheduled tasks do NOT pollute memory_bank.json or RAG.
   - Single API Call: Only the Worker is invoked once to format the digest.
+
+Data gatherers are imported from their respective skill modules
+instead of being duplicated here. This ensures any API logic changes
+(e.g. new fallback providers, credential handling) stay in one place.
 """
 import time
 import threading
-import requests
 from datetime import datetime
 from pathlib import Path
+
+# Import raw functions from skill modules (no duplication)
+from skills.external.telegram_ops import send_telegram_message as _send_telegram
+from skills.external.trading_ops import fetch_market_price
 
 # Lazy imports — only loaded when a task actually fires
 _worker = None
@@ -29,7 +36,13 @@ def _get_worker():
 # ──────────────────────────────────────────────
 
 def _fetch_unread_emails(max_results: int = 5) -> str:
-    """Directly call Gmail API using existing credentials."""
+    """Directly call Gmail API using existing credentials.
+    
+    Note: Gmail credential logic is complex and tightly coupled to
+    langchain_google_community internals, so this remains here rather
+    than being extracted into gmail_ops.py (which wraps the LangChain
+    GmailToolkit and doesn't expose a raw fetch function).
+    """
     try:
         import inspect
         from langchain_google_community.gmail.utils import (
@@ -77,48 +90,6 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
         return f"[Gmail Error] {e}"
 
 
-def _fetch_market_price(symbol: str) -> str:
-    """Directly call TwelveData API for Forex/Metals (same logic as trading_ops.py)."""
-    import os
-    api_key = os.getenv("TWELVEDATA_API_KEY")
-    if not api_key:
-        return f"{symbol}: Missing TWELVEDATA_API_KEY in .env"
-    try:
-        url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={api_key}"
-        data = requests.get(url, timeout=10).json()
-        if "price" in data:
-            return f"{symbol}: {data['price']}"
-        return f"{symbol}: No data available."
-    except Exception as e:
-        return f"{symbol}: API Error - {e}"
-
-
-# ──────────────────────────────────────────────
-#  TELEGRAM NOTIFIER
-# ──────────────────────────────────────────────
-
-def _send_telegram(message: str) -> bool:
-    """Send message via Telegram Bot API."""
-    import os
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    if not bot_token or not chat_id:
-        return False
-
-    try:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-        }, timeout=10)
-        return resp.status_code == 200
-    except Exception as e:
-        print(f"[Telegram Error] {e}")
-        return False
-
-
 # ──────────────────────────────────────────────
 #  SCHEDULED TASKS
 # ──────────────────────────────────────────────
@@ -130,9 +101,9 @@ def _morning_digest():
 
     # 1. Gather raw data (0 tokens)
     emails = _fetch_unread_emails(max_results=5)
-    eurusd = _fetch_market_price("EUR/USD")
-    xauusd = _fetch_market_price("XAU/USD")
-    gbpusd = _fetch_market_price("GBP/USD")
+    eurusd = fetch_market_price("EUR/USD")
+    xauusd = fetch_market_price("XAU/USD")
+    gbpusd = fetch_market_price("GBP/USD")
 
     # 2. Format with Worker (1 API call)
     worker = _get_worker()

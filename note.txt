@@ -1,336 +1,262 @@
-================================================================================
-  CIEL 2.0 — DEVELOPER NOTES (Next Features to Build)
-  Last Updated: 2026-05-21
-================================================================================
+# How to Store Project Knowledge for AI Assistants
+# =================================================
+# This is a universal guide. Follow this structure for ANY project
+# so that any AI assistant can immediately understand and work on it.
 
-These are features that have been discussed, analyzed (pros/cons), and agreed
-upon for future development. They are listed in priority order.
 
-Reference: architect.md (Section 8: Changelog, Section 9: Roadmap)
+# ================================================================
+# 1. WHERE TO PUT IT
+# ================================================================
 
-================================================================================
-  RECENT FIXES: RAG CONTEXT HYGIENE & DEBUG LOG VIEW (2026-05-21)
-================================================================================
+# Create a folder at the project root:
+#
+#   your_project/
+#   └── instructionAI/        ← all AI knowledge goes here
+#       ├── SKILL.md           ← entry point (AI reads this FIRST)
+#       ├── architecture.md    ← project structure
+#       ├── ...                ← topic-specific files
+#       └── references/        ← (optional) large docs, schemas, examples
+#
+# WHY a dedicated folder?
+# - AI tools scan for SKILL.md or AGENTS.md files automatically
+# - Keeps instructions separate from source code
+# - Easy to copy between projects or share with teammates
 
-  STATUS: DONE
-  FILES:
-    - core/rag_manager.py
-    - core/llm_connector.py
-    - scripts/format_thoughts_log.py
-    - .gitignore
 
-  WHAT CHANGED:
-    1. RAG recall now has two-tier compression before context reaches Router.
-       - Tier 1: zero-token regex/structural filtering in compress_context().
-       - Tier 2: Worker compression only if recalled context remains > ~1000 tokens.
+# ================================================================
+# 2. FILE STRUCTURE (what to create)
+# ================================================================
 
-    2. Tier 1 removes common old-memory poison:
-       - raw smart_scrape blocks
-       - raw git_diff payloads
-       - HTML/script/style noise
-       - large fenced code/diff/JSON blocks
-       - base64/data URL junk
+# REQUIRED FILES (create these for every project):
+#
+# ┌─────────────────────┬──────────────────────────────────────────────┐
+# │ File                │ Purpose                                      │
+# ├─────────────────────┼──────────────────────────────────────────────┤
+# │ SKILL.md            │ Entry point. Project overview + file index.  │
+# │                     │ AI reads this first to know what exists.     │
+# │                     │ Must have YAML frontmatter (name, desc).     │
+# ├─────────────────────┼──────────────────────────────────────────────┤
+# │ architecture.md     │ File/folder map, what each file does,        │
+# │                     │ dependency graph, key design decisions.      │
+# ├─────────────────────┼──────────────────────────────────────────────┤
+# │ conventions.md      │ Code style, naming rules, patterns used,     │
+# │                     │ known gotchas, what is safe/dangerous to     │
+# │                     │ change.                                      │
+# └─────────────────────┴──────────────────────────────────────────────┘
+#
+# OPTIONAL FILES (add based on project type):
+#
+# ┌─────────────────────┬──────────────────────────────────────────────┐
+# │ File                │ When to add                                  │
+# ├─────────────────────┼──────────────────────────────────────────────┤
+# │ data_pipeline.md    │ Project processes data (ETL, ML, analytics)  │
+# │ api_spec.md         │ Project has APIs (REST, GraphQL, gRPC)       │
+# │ environment.md      │ Project has simulation/env (RL, games)       │
+# │ deployment.md       │ Complex deploy process (Docker, K8s, CI/CD)  │
+# │ safety_and_risk.md  │ Project has safety-critical rules            │
+# │ model_spec.md       │ Project uses ML models                       │
+# │ database.md         │ Project has database schema/migrations       │
+# │ testing.md          │ Complex test setup or test conventions       │
+# │ auth_and_security.md│ Auth flows, secrets management, permissions  │
+# └─────────────────────┴──────────────────────────────────────────────┘
 
-    3. Fact vault tool outputs are now user-clean but log-raw:
-       - thoughts.log keeps: get_fact: Fact 'preferred_chat_language': English
-       - UI shows: Master, your preferred chat language is English.
 
-    4. thoughts.log is not rearranged directly. A generated view is created:
-       - ciel_data/logs/thoughts_view.md    -> readable grouped Markdown timeline
-       - ciel_data/logs/thoughts_view.jsonl -> structured records for future tools
+# ================================================================
+# 3. SKILL.md FORMAT (the entry point)
+# ================================================================
 
-  HOW TO RUN:
-    python scripts/format_thoughts_log.py --limit 30
+# Every SKILL.md must follow this format:
+#
+# ---
+# name: your-project-name
+# description: >
+#   One paragraph describing what this project does.
+#   This is what AI uses to decide if this skill is relevant.
+# ---
+#
+# # Project Name — AI Instruction Set
+#
+# ## What this project is
+# [2-3 sentences explaining the project]
+#
+# ## Instruction files in this folder
+# [Table listing every file in instructionAI/ and its purpose]
+#
+# ## Critical rules for any AI working on this project
+# [Numbered list of absolute rules that must never be broken]
+#
+# RULES FOR WRITING SKILL.md:
+# - Keep under 500 lines
+# - The YAML frontmatter (name + description) is what triggers
+#   AI to load this skill — make the description specific
+# - Critical rules should be things that cause BREAKAGE if violated
+# - Don't put details here — link to the specific file instead
 
-  IMPORTANT:
-    - thoughts.log remains the raw chronological source of truth.
-    - thoughts_view.md and thoughts_view.jsonl are generated local debug files.
-    - Generated log views are ignored by git.
 
-================================================================================
-  PLANNED FIXES: SAFETY GATE POLISH & DEADLOCK PREVENTION (2026-05-21)
-================================================================================
+# ================================================================
+# 4. WHAT TO INCLUDE vs EXCLUDE
+# ================================================================
 
-  STATUS: ✅ DONE (2026-05-21)
-  FILES:
-    - main_api.py
-    - core/llm_connector.py
-    - skills/internal/memory_ops.py
+# ✅ INCLUDE (stable knowledge that rarely changes):
+#
+# - Project architecture and file responsibilities
+# - Code conventions and naming patterns
+# - Data flow / pipeline diagrams
+# - API contracts and interface specs
+# - Safety rules and constraints
+# - Known gotchas and common mistakes
+# - How components connect (dependency graph)
+# - What is safe vs dangerous to modify
+# - Design decisions and WHY they were made
+# - Environment setup steps
+#
+# ❌ EXCLUDE (things that change frequently):
+#
+# - Performance metrics and benchmark results
+# - TODO lists and pending actions
+# - Account numbers, API keys, passwords
+# - Deployment timelines and schedules
+# - Specific version numbers (put in requirements.txt instead)
+# - Bug reports and issue trackers
+# - Meeting notes or decision logs with dates
+#
+# RULE OF THUMB: If it will be outdated in 2 weeks, don't put it
+# in instructionAI/. Put it in a separate living document instead.
 
-  WHAT NEEDS TO BE FIXED:
-    1. WebSocket Deadlock (main_api.py):
-       - Currently, "await loop.run_in_executor(..., ciel_agent.run_step, ...)" blocks
-         the WebSocket reader loop. Ciel cannot read the incoming "confirm_response"
-         from Flutter because it's suspended awaiting the run_step thread.
-       - Solution: Run the agent's run_step inside a background "asyncio.create_task"
-         so the main loop can immediately resume and read WebSocket responses.
 
-    2. Safety Gate Bypass in Multi-Tool (core/llm_connector.py):
-       - "CielCore.execute_multi_tool()" calls "self.tool_manager.execute_tool()"
-         directly, bypassing the safety check in "self.execute_tool()".
-       - Solution: Reroute sequential steps in execute_multi_tool through
-         "self.execute_tool" so high-risk steps trigger confirmation prompts.
+# ================================================================
+# 5. HOW TO WRITE EACH FILE
+# ================================================================
 
-  OPTIONAL ENHANCEMENTS:
-    3. Fail-Closed Mode:
-       - Add a "STRICT_SAFETY" toggle in .env. If True and no callback is wired,
-         Ciel will safely deny tool execution (fail-closed) rather than auto-approving.
-    4. Telegram Alert:
-       - Send a Telegram bot notification if a WebSocket confirmation request times out.
+# Follow these principles for every .md file:
+#
+# A) STRUCTURE
+#    - Start with a 1-2 line summary of what this file covers
+#    - Use ## headers to break into sections
+#    - Use tables for specs, parameters, and comparisons
+#    - Use code blocks for exact formats, commands, formulas
+#    - Use bullet lists for rules and constraints
+#
+# B) VOICE
+#    - Write as facts, not instructions ("The bot uses X" not "You should use X")
+#    - Be specific — exact values, exact file paths, exact function names
+#    - Explain WHY, not just WHAT (design rationale prevents AI from
+#      "improving" things that are intentional)
+#
+# C) LENGTH
+#    - Each file: 50-200 lines ideal, max 300 lines
+#    - If a file exceeds 300 lines, split it into subtopics
+#    - Keep the total instructionAI/ folder under 50KB
+#
+# D) CROSS-REFERENCES
+#    - Reference other files by name: "See architecture.md for..."
+#    - Don't duplicate content across files
+#    - SKILL.md is the only file that lists all other files
 
-================================================================================
-  PRIORITY 1: GitHub Manager (Dev Tool Pack)
-================================================================================
 
-  STATUS: ✅ DONE (2026-05-11)
-  FILE:   skills/external/github_ops.py
+# ================================================================
+# 6. ALTERNATIVE STORAGE LOCATIONS
+# ================================================================
 
-  WHAT:
-    Give Ciel the ability to manage Git repositories directly. This turns her
-    from a "chat advisor" into a "Junior Developer" who can execute version
-    control operations on the Master's behalf.
+# Different AI tools look for instructions in different places.
+# For maximum compatibility, you can ALSO place rules in these
+# standard locations:
+#
+# ┌────────────────────────────┬───────────────────────────────────┐
+# │ Location                   │ Which AI reads it                 │
+# ├────────────────────────────┼───────────────────────────────────┤
+# │ .agents/skills/*/SKILL.md  │ Gemini / Antigravity (auto-load)  │
+# │ .agents/AGENTS.md          │ Gemini / Antigravity (rules)      │
+# │ .claude/                   │ Claude Code                       │
+# │ .cursor/rules/             │ Cursor                            │
+# │ .github/copilot-instructions│ GitHub Copilot                   │
+# │ CONVENTIONS.md (root)      │ Most AI tools check root .md      │
+# │ .ai/                       │ Generic convention (growing)      │
+# └────────────────────────────┴───────────────────────────────────┘
+#
+# RECOMMENDED APPROACH:
+# 1. Keep the master copy in instructionAI/ (your main folder)
+# 2. Optionally symlink or copy SKILL.md to .agents/skills/ for
+#    tools that auto-discover skills
+# 3. Put a one-liner in root AGENTS.md pointing to instructionAI/:
+#    "For all project knowledge, see instructionAI/SKILL.md"
 
-  TOOLS TO BUILD:
-    1. git_status()     — Show changed/staged/untracked files.
-    2. git_diff()       — Show the actual code changes before committing.
-    3. git_commit_and_push(message) — Stage all, commit, and push.
 
-  CRITICAL SAFETY RULES:
-    - MUST require explicit "Y/N" user approval before executing push.
-    - MUST never commit .env or files listed in .gitignore.
-    - MUST show a preview of what will be committed before asking approval.
-    - Consider adding a "dry run" mode that shows what WOULD happen.
+# ================================================================
+# 7. TEMPLATE FOR A NEW PROJECT
+# ================================================================
 
-  WHY THIS WAS CHOSEN:
-    The Master's goal is to make Ciel a virtual assistant for work. The biggest
-    friction right now is that Ciel can write/fix code but cannot commit it.
-    This feature eliminates that friction and makes Ciel a true collaborator.
+# Step-by-step to set up instructionAI/ for any new project:
+#
+# 1. Create the folder:
+#      mkdir instructionAI
+#
+# 2. Create SKILL.md with:
+#      - YAML frontmatter (name + description)
+#      - "What this project is" section
+#      - Empty "Instruction files" table (fill as you add files)
+#      - "Critical rules" list (even if just 2-3 rules)
+#
+# 3. Create architecture.md with:
+#      - File tree (copy from `tree` or `ls -R` output)
+#      - One sentence per file explaining its role
+#      - Dependency graph (what imports what)
+#
+# 4. Create conventions.md with:
+#      - Naming conventions used in the codebase
+#      - File organization pattern
+#      - Known gotchas (things that surprised you while building)
+#      - "Safe to change" vs "Dangerous to change" lists
+#
+# 5. Add topic-specific files as needed (see section 2)
+#
+# 6. Update SKILL.md's file table whenever you add a new file
+#
+# 7. Review every ~month: remove anything that became outdated
 
-  RISKS DISCUSSED:
-    - Ciel could accidentally overwrite a branch or discard uncommitted changes.
-    - Ciel could commit sensitive files (.env, API keys).
-    - Solution: strict safety rails + mandatory user confirmation.
 
-================================================================================
-  PRIORITY 2: 11:00 PM "Brain Cleanse" (Scheduled Task)
-================================================================================
+# ================================================================
+# 8. EXAMPLE: MINIMAL instructionAI/ FOR A WEB APP
+# ================================================================
 
-  STATUS: DONE (2026-05-11)
-  FILE:   core/scheduler.py (add new task to existing file)
+# instructionAI/
+# ├── SKILL.md              (project overview, 3 critical rules)
+# ├── architecture.md       (file tree, component responsibilities)
+# ├── conventions.md        (React patterns, state management, CSS approach)
+# ├── api_spec.md           (endpoint list, auth flow, error format)
+# └── database.md           (schema, migrations, query patterns)
+#
+# Total: 5 files, ~15KB — enough for any AI to work on the project
+# without asking 20 questions first.
 
-  WHAT:
-    A nightly scheduled task that flushes ALL remaining short-term memory
-    (memory_bank.json) into the RAG vector database (ChromaDB), then generates
-    a "Daily Summary" entry in RAG so Ciel can recall what happened each day.
 
-  HOW:
-    1. At 23:00, read all messages from memory_bank.json.
-    2. Archive every message into ChromaDB via rag_manager.add_memory().
-    3. Use Worker (1 API call) to generate a concise "Daily Summary" of all
-       the day's interactions.
-    4. Save the summary into RAG as a special "daily_summary" entry.
-    5. Clear memory_bank.json to start fresh the next morning.
-    6. Optionally notify Master via Telegram: "Brain cleanse complete."
+# ================================================================
+# 9. EXAMPLE: MINIMAL instructionAI/ FOR AN ML PROJECT
+# ================================================================
 
-  WHY:
-    Prevents context bleed across days. Every morning starts clean and fast.
-    The Daily Summary in RAG means the Master can ask "What did we do last
-    Tuesday?" and Ciel will find it via semantic search.
+# instructionAI/
+# ├── SKILL.md              (project overview, critical rules)
+# ├── architecture.md       (file tree, pipeline stages)
+# ├── conventions.md        (code style, gotchas)
+# ├── data_pipeline.md      (data sources, preprocessing, splits)
+# ├── model_spec.md         (architecture, hyperparams, I/O format)
+# └── observation_pipeline.md (features, scaling, vector format)
+#
+# Total: 6 files, ~20KB
 
-  RISKS DISCUSSED:
-    - If Master is working late (past 11 PM) on a complex task, the cleanse
-      could wipe the active conversation context mid-flow.
-    - Solution: Add a "grace period" check — if the last message was within
-      the past 30 minutes, skip the cleanse and retry at midnight.
 
-================================================================================
-  PRIORITY 3: RAG Re-ranking (Advanced Memory Optimization)
-================================================================================
+# ================================================================
+# 10. GOLDEN RULES
+# ================================================================
 
-  STATUS: Discussed, DEFERRED until needed.
-  FILE:   core/rag_manager.py (modify search_similar)
-
-  WHAT:
-    Add a local cross-encoder model (e.g., bge-reranker-base) that runs on the
-    RTX 3060 to re-score RAG search results. Currently, search_similar returns
-    results based on pure cosine similarity. A re-ranker would use deeper
-    semantic understanding to filter out "similar but irrelevant" memories.
-
-  HOW:
-    1. search_similar() fetches top 10 results from ChromaDB (instead of 3).
-    2. Pass all 10 results + the query through the cross-encoder.
-    3. Re-rank by semantic relevance score.
-    4. Return only the top 3 highest-scoring results to the Brain.
-
-  WHY IT WAS DEFERRED:
-    The current RAG system passed a 45-prompt stress test with 100% accuracy
-    on the critical recall test. The noise filters (MIN_QUERY_LENGTH=15,
-    MIN_RELEVANCE_SCORE=0.65) plus the 2026-05-21 recall compressor are already
-    doing a good job. Adding a
-    cross-encoder would:
-    - Consume 1-2 GB extra VRAM on the RTX 3060.
-    - Add latency to every single user message.
-    - Add architectural complexity to a system that is currently healthy.
-
-  WHEN TO REVISIT:
-    - When the RAG database grows beyond 10,000+ memories.
-    - When the Master notices Ciel recalling irrelevant or confusing context.
-    - When upgrading to a GPU with more VRAM (e.g., RTX 4090).
-================================================================================
-  PRIORITY 4: Stealth Web Search & Autonomous Navigation (Jarvis Vision)
-================================================================================
-
-  STATUS: ✅ DONE (2026-05-11)
-  FILE:   skills/external/web_agent_ops.py
-
-  WHAT:
-    Give Ciel "eyes" on the internet. Instead of relying on static APIs, Ciel 
-    will autonomously search, browse, and scrape real-time web data to provide 
-    the most up-to-date answers (Crypto news, Tech trends, Documentation).
-
-  TOOLS TO BUILD:
-    1. stealth_search(query)  — Use Serper/Google Search to find high-quality URLs.
-    2. smart_scrape(url)      — Use Jina Reader (r.jina.ai) to get clean Markdown.
-    3. browse_with_stealth()  — Playwright + Stealth Plugin for interactive tasks.
-
-  STEALTH & SAFETY RULES:
-    - MUST use Jina Reader/Firecrawl as a proxy to mask Master's local IP.
-    - MUST implement "Human-like Delay" (3-5s) between clicks/scrolls.
-    - MUST NEVER provide credentials (login) without Master's real-time approval.
-    - MUST strip JS/CSS to feed only pure Markdown to the Brain to save tokens.
-
-  WHY THIS WAS CHOSEN:
-    Jarvis isn't Jarvis if he's stuck in 2024. Web search allows Ciel to bypass
-    API limitations and access the entire internet's live knowledge base while
-    remaining undetectable by anti-bot systems (Cloudflare, etc.).
-
-================================================================================
-  PRIORITY 5: Vision & UI Interaction (The Hands of Ciel)
-================================================================================
-
-  STATUS: ✅ DONE
-  FILE:   skills/internal/vision_ops.py (NEW)
-
-  WHAT:
-    Two-tier autonomous Vision & UI Interaction system. Ciel plans the optimal
-    approach: CLI shortcuts for navigation (0 vision tokens), then visual 
-    interaction only for UI elements that require seeing the screen.
-
-  HOW:
-    TIER 1 — Pre-flight Planner (text-only Gemini, near-zero cost):
-      1. Analyze task → determine if CLI/URL shortcut is possible.
-      2. For YouTube: open youtube.com/results?search_query=... directly.
-      3. For apps: launch via subprocess (e.g. notepad.exe).
-      4. If CLI handles 100% of task → return immediately (0 screenshots).
-    TIER 2 — Vision Loop (only for remaining UI interaction):
-      5. Capture screenshot + draw 10×8 labeled grid overlay (A1-J8).
-      6. Send gridded screenshot to Gemini 2.5 Flash Vision.
-      7. Execute PyAutoGUI actions (click, type, hotkey, scroll).
-      8. Loop until task complete (max 10 steps).
-    SAFETY:
-      - Loop-break detector: auto-stops after 3 identical actions.
-      - Auto Ctrl+A before typing to prevent text appending.
-      - pyautogui.FAILSAFE=True (mouse to corner aborts).
-
-  WHY:
-    Enables true Jarvis-like interaction: "Ciel, play lofi on YouTube".
-    Old approach: 10+ vision steps just to navigate. New: 1 CLI + 1-2 vision steps.
-
-================================================================================
-  PRIORITY 6: Multi-modal Artifact Rendering (Flutter HUD)
-================================================================================
-
-  STATUS: ✅ DONE
-  FILE:   ciel_flutter_ui/lib/ui/widgets/matrix_chat.dart (New/Upgrade)
-
-  WHAT:
-    Move beyond plain text logs in the Matrix Chat window. Implement a 
-    WebView or specialized card system in Flutter to render rich content like
-    scraped web pages (HTML/Images), Markdown tables, or trading charts directly.
-
-  HOW:
-    1. Update FastAPI backend to send structured JSON artifacts via WebSocket.
-    2. Implement Flutter widgets capable of rendering HTML, Markdown, and Images.
-
-  WHY:
-    Enhances the user experience by providing visual context, especially when 
-    using the Stealth Web Search or Trading tools, making the HUD feel premium.
-
-================================================================================
-  PRIORITY 7: UI/UX Polish for Neon Terminal
-================================================================================
-
-  STATUS: ✅ DONE
-  FILE:   ciel_flutter_ui/lib/ui/widgets/neon_terminal.dart
-
-  WHAT:
-    Enhance the "Neon Terminal" with more distinct color coding and formatting 
-    for different activity logs to improve readability.
-
-  HOW:
-    1. Apply distinct colors for `[TOOL]`, `[BRAIN]`, `[WORKER]`, `[RAG]`.
-    2. Add subtle micro-animations for terminal text entry.
-
-  WHY:
-    To maintain a dynamic, aesthetically pleasing "hacker" UI that WOWs the user.
-================================================================================
-  CURRENT SYSTEM STATUS (as of 2026-05-21)
-================================================================================
-
-  OPERATIONAL FEATURES:
-    [x] Brain-Worker architecture (Gemini 2.5 Pro)
-    [x] Router with anti-hallucination guardrails
-    [x] Chain-of-Thought (CoT) audit trail (hidden_thought: observation, reasoning, risk)
-    [x] Autonomous Self-Correction Loop (Brain evaluates tool results and retries if unsatisfied)
-    [x] Self-healing engine (3-attempt auto-fix)
-    [x] Hybrid Memory: short-term JSON (20 msg) + long-term ChromaDB RAG
-    [x] RAG noise filters (MIN_QUERY_LENGTH=15, MIN_RELEVANCE_SCORE=0.65)
-    [x] RAG recall compression (Tier 1 regex cleanup + Tier 2 Worker compression for long context)
-    [x] Gmail integration (search, read, reply, trash, mark read)
-    [x] Trading tools (Binance crypto stats, TwelveData forex/metals)
-    [x] OS tools (shell, screenshot, app launcher)
-    [x] Workspace tools (file CRUD, Python runner)
-    [x] Memory/Fact vault (save/get/delete facts)
-    [x] Proactive Scheduler (Morning Digest at 08:00 → Telegram)
-    [x] Telegram notification channel
-    [x] 45-prompt amnesia stress test (all passing)
-    [x] thoughts.log audit trail with [RAG] [ARCHIVED] and [RAG] [RECALLED] tags
-    [x] thoughts.log generated views (thoughts_view.md + thoughts_view.jsonl)
-    [x] Clean user-facing fact vault responses while preserving raw tool logs
-    [x] FastAPI WebSocket Bridge for Real-time Flutter UI Stream
-    [x] Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
-    [x] Tool Confirmation Loop (Y/N safety gate for high-risk tools: delete, shell, gmail, git push, vision)
-
-PENDING FEATURES:
-    [x] GitHub Manager (Priority 1 — done 2026-05-11)
-    [x] Chain-of-Thought Audit & Self-Correction (done 2026-05-11)
-    [x] 11 PM Brain Cleanse & Boot-up Date Check (Priority 2 - done 2026-05-11)
-    [x] RAG Context Hygiene & Debug Log View (done 2026-05-21)
-    [ ] RAG Re-ranking (Priority 3 — deferred) - UNDONE
-    [x] Stealth Web Search Engine (Priority 4 - done 2026-05-11)
-    [x] Vision & UI Interaction (Priority 5 - done 2026-05-12)
-    [x] Multi-modal Artifact Rendering (Priority 6) - DONE
-    [x] Neon Terminal UI/UX Polish (Priority 7) - DONE
-    [x] Modular "Ultimate Sage" Persona System & Language Auto-Adaptation (Priority 8 - done 2026-05-12)
-    [/] Tool Confirmation Loop — Safety Gate (in progress - pending deadlock/multi-tool fixes)
-
-  KEY FILES TO READ FIRST:
-    - architect.md          → Full project map, all functions, changelog
-    - core/llm_connector.py → Main orchestration pipeline (CielCore)
-    - core/rag_manager.py   → Hybrid memory system
-    - scripts/format_thoughts_log.py -> Generate readable Markdown/JSONL views from thoughts.log
-    - core/scheduler.py     → Proactive background tasks
-    - core/router.py        → Brain routing logic + RECALLED CONTEXT rule
-    - .env                  → API keys (NEVER auto-edit this file)
-
-  IMPORTANT RULES:
-    1. NEVER touch .env programmatically. Master manages it manually.
-    2. All scheduled tasks must use "Zero-Token Standby" — Python watches
-       the clock, LLM sleeps until needed. Direct API calls, bypass Brain.
-    3. All scheduled tasks run in "Ghost Mode" — no pollution to
-       memory_bank.json or RAG. Results go to files/Telegram only.
-    4. thoughts.log is the single source of truth for debugging.
-    5. Never rearrange thoughts.log directly; generate thoughts_view.md/jsonl instead:
-       python scripts/format_thoughts_log.py --limit 30
-
-================================================================================
+# 1. SKILL.md is ALWAYS the entry point — AI reads it first
+# 2. Each file covers ONE topic — don't mix architecture with conventions
+# 3. Include WHY, not just WHAT — prevents AI from "fixing" intentional design
+# 4. Never include secrets, keys, or credentials
+# 5. Never include things that change weekly (metrics, TODOs, logs)
+# 6. Use tables for specs, code blocks for formats, bullets for rules
+# 7. Keep total folder under 50KB — AI context windows are limited
+# 8. Update the folder when architecture changes, not when values change
+# 9. Test it: give ONLY the instructionAI/ folder to a fresh AI and ask
+#    it to explain your project. If it can't, your docs are incomplete.
+# 10. One source of truth: don't duplicate across files, cross-reference
