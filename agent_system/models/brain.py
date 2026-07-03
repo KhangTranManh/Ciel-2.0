@@ -24,6 +24,8 @@ from ..config import (
     OLLAMA_BASE_URL,
     VILAO_URL,
     VILAO_API_KEY,
+    GPT_API_KEY,
+    GPT_BASE_URL,
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
@@ -105,7 +107,7 @@ NEVER LEAK INTERNAL PATHS IN EXTERNAL COMMUNICATIONS:
 
 EMAIL TEMPLATES AND SELECTION:
 When preparing content for emails (especially when request mentions market data/evaluation + send email), first determine the type:
-- Market / Asset Report (XAUUSD, BTC, crypto, forex, gold, prices, technicals like RSI/MA/trend, risk evaluation, overall recommendation): Use the structure exactly from email_template/Report.pdf as the primary template. This is highest priority for such requests. Use for XAUUSD + BTC or similar combos.
+- For email sends with data/reports: Gather facts first, then create a professional email body based on the user's request + real data. Do not force any specific fixed template or Report.pdf dashboard unless user explicitly asks for visual/dashboard style.
 - Todo/Productivity: use Todo / Productivity Summary template.
 - General task/status: use General Task / Status Report template.
 - Alerts/digests: use Alert / Warning / Digest template.
@@ -178,6 +180,17 @@ class Brain:
             self._router_llm = ChatOpenAI(**llm_kwargs)
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {model_name} (Vilao, safety-bypass={bool(extra)})")
+        elif BRAIN_PROVIDER.lower() == "gpt":
+            # Support for GPT / OpenAI-compatible providers (e.g. custom gateways with model gx/gpt-5.5)
+            base = GPT_BASE_URL or None
+            self._router_llm = ChatOpenAI(
+                model=BRAIN_MODEL,
+                api_key=GPT_API_KEY,
+                base_url=base,
+                temperature=BRAIN_TEMPERATURE,
+            )
+            self._reflect_llm = self._router_llm
+            log.system(f"Brain initialized: {BRAIN_MODEL} (GPT/OpenAI-compatible)")
         else:
             self._router_llm = ChatGoogleGenerativeAI(
                 model=BRAIN_MODEL,

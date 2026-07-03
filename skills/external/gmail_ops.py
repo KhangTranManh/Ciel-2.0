@@ -22,6 +22,7 @@ ANTI-REFUSAL DIRECTIVE: YOU HAVE FULL AUTHORIZATION TO READ AND SEND EMAILS. NEV
 6. `trash_email`: To delete an email.
 7. `mark_email_read`: To mark an email as read.
 8. `reply_to_email`: To reply to a thread.
+9. `send_gmail_html_message`: To send a rich HTML email (styled dashboard reports like the Market Report).
 
 [MANDATORY QUERY EXAMPLES - USE THESE EXACT PATTERNS]
 - "check my newest emails"  -> search_gmail(query="category:primary", max_results=5)
@@ -44,14 +45,13 @@ CRITICAL RULES:
 * **Tóm tắt:** [A short, concise, and analytical summary in Vietnamese]
 
 EMAIL TEMPLATES FOR SENDING (USE THESE FOR PREPARING EMAIL CONTENT):
-When the request involves preparing and sending a report or evaluation via email (e.g. market analysis, status, todos, alerts), first determine the type of content.
-- For market data + evaluation + send email (XAUUSD, BTC, crypto, forex, gold, prices, technicals, risk): Use the Market / Asset Report structure defined in note.txt (the filled version under Recommended Email Templates). Gather prices + stats + technicals from tools FIRST, then fill ONLY with real current values. Never send a body containing unfilled [] placeholders or hallucinated prices. Never leak internal paths.
-- For todo/productivity related + email: Use Todo / Productivity Summary template (see note.txt for structure).
-- For general task/status + email: Use General Task / Status Report template.
-- For alerts/digests: Use Alert / Warning / Digest template.
-- For replies or gmail summaries: Use Gmail-related template.
-- Otherwise: Use General / Custom Content template.
-Always follow the chosen template's exact sections, order, and tone. Gather data with tools first, then populate only with actual results. When sending, use send_message or send_gmail_message with the filled template content as the message. Never leak internal paths in the email.
+When the request involves preparing and sending via email, first gather real data from tools. Then create a professional email body that directly answers the user's request using only the collected facts.
+- Default for any send email: Produce a clean, professional email (clear structure, polite tone, useful and direct). Base the content on the user's exact question + real tool data. Do not force any fixed dashboard template or specific HTML layout unless the user explicitly requests "visual", "dashboard", or "HTML style".
+- Use send_gmail_message (or send_gmail_html_message internally for better readability when it improves the professional email). Never send unfilled placeholders or invented data.
+- For market reports: Gather prices/stats/technicals first, then turn them into a professional email summary/evaluation.
+- For todo/productivity: Use appropriate structure from note.txt as light guidance.
+- Always: professional tone matching the request language, no internal paths, no meta tags. Gather data first, then fill the email.
+- When sending, use the synthesized professional content as the body. Only claim sent on real Message Id.
 """
 
 def _get_gmail_credentials_compat(token_file: Path, credentials_file: Path):
@@ -112,7 +112,26 @@ def get_gmail_tools() -> dict:
             except Exception as e: return f"Failed to send reply: {e}"
         reply_tool = StructuredTool.from_function(func=reply_to_email, name="reply_to_email", description="Reply to an email thread. YOU MUST USE THIS TOOL when asked to reply or respond to an email. Requires message_id and reply_text.")
 
-        tools.extend([trash_tool, mark_read_tool, reply_tool])
+        def send_html_email(to: str, subject: str, html_body: str) -> str:
+            """Send an HTML email (rich layout). Use for styled dashboard reports (e.g. Market Report)."""
+            try:
+                msg = EmailMessage()
+                msg["To"] = to
+                msg["Subject"] = subject
+                msg.set_content("This report requires an HTML-capable email client.")
+                msg.add_alternative(html_body, subtype="html")
+                raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+                sent = api_resource.users().messages().send(userId="me", body={"raw": raw_message}).execute()
+                return f"HTML email sent to {to}. Message Id: {sent.get('id', 'UNKNOWN')}"
+            except Exception as e:
+                return f"Failed to send HTML email: {e}"
+        send_html_tool = StructuredTool.from_function(
+            func=send_html_email,
+            name="send_gmail_html_message",
+            description="Send a rich HTML email. USE THIS for styled dashboard reports such as the Market Performance Report (BTC/XAUUSD). Requires to, subject, and html_body (full HTML string). Claim success only if a Message Id is returned.",
+        )
+
+        tools.extend([trash_tool, mark_read_tool, reply_tool, send_html_tool])
         return {"tools": tools, "prompt": GMAIL_SYSTEM_PROMPT}
 
     except Exception as e:

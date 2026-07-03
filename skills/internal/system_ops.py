@@ -8,12 +8,13 @@ SYSTEM_OPS_PROMPT = """
 [LOCAL SYSTEM ARMORY & PARANOIA PROTOCOL]
 You possess tools to interact with the Master's local machine inside the Quarantine Zone.
 1. `list_workspace`: List all files and directories.
-2. `read_file`: Read file content.
-3. `write_file`: Create or completely overwrite a file.
-4. `append_file`: Add content to the end of a file.
-5. `delete_file`: Delete file or folder.
-6. `get_file_info`: Check file size and type.
-7. `run_python_script`: Run a .py script and get terminal output.
+2. `read_file`: Read plain text file content (.txt, .md, .json, .py, etc.).
+3. `read_document`: Extract text from PDF (.pdf) or Word (.docx) files. Use this, NOT read_file, for those formats.
+4. `write_file`: Create or completely overwrite a file.
+5. `append_file`: Add content to the end of a file.
+6. `delete_file`: Delete file or folder.
+7. `get_file_info`: Check file size and type.
+8. `run_python_script`: Run a .py script and get terminal output.
 
 [STRICT SECURITY RULES - PARANOIA]
 1. You can write to either `ciel_workspace/` (user data) or `agent_output/` (generated code).
@@ -80,6 +81,39 @@ def get_system_tools() -> dict:
                 with open(safe_path, "r", encoding="utf-8") as f: return f.read()
             except Exception as e: return str(e)
         tools.append(StructuredTool.from_function(func=read_file, name="read_file", description="Read the exact content of a file. YOU MUST USE THIS TOOL when asked to read, view, or check what is written inside a file."))
+
+        def read_document(filename: str) -> str:
+            try:
+                safe_path = _is_safe_path(filename)
+                if not safe_path.exists(): return f"Lỗi: '{filename}' không tồn tại."
+                if not safe_path.is_file(): return f"Lỗi: '{filename}' là thư mục."
+                suffix = safe_path.suffix.lower()
+
+                if suffix == ".pdf":
+                    try:
+                        from pypdf import PdfReader
+                    except ImportError:
+                        return "Lỗi: Thư viện 'pypdf' chưa được cài đặt. Chạy: pip install pypdf"
+                    reader = PdfReader(str(safe_path))
+                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                elif suffix == ".docx":
+                    try:
+                        from docx import Document
+                    except ImportError:
+                        return "Lỗi: Thư viện 'python-docx' chưa được cài đặt. Chạy: pip install python-docx"
+                    doc = Document(str(safe_path))
+                    text = "\n".join(p.text for p in doc.paragraphs)
+                else:
+                    return f"Lỗi: '{filename}' không phải PDF hoặc DOCX. Dùng read_file cho văn bản thuần (.txt, .md, .json...)."
+
+                text = text.strip()
+                if not text:
+                    return f"'{filename}' không có nội dung văn bản trích xuất được (có thể là file scan/ảnh)."
+                if len(text) > 30000:
+                    text = text[:30000] + "\n...[Đã cắt bớt do quá dài]"
+                return text
+            except Exception as e: return f"Lỗi đọc tài liệu '{filename}': {e}"
+        tools.append(StructuredTool.from_function(func=read_document, name="read_document", description="Extract text content from a PDF (.pdf) or Word (.docx) document. YOU MUST USE THIS TOOL instead of read_file when the target file is a .pdf or .docx — read_file cannot decode these binary formats."))
 
         def write_file(filename: str, content: str) -> str:
             try:

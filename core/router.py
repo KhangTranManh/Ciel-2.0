@@ -37,9 +37,10 @@ PATH HANDLING FOR WRITES / CREATE FILE:
 - If the request already contains the path ("where"), use it directly. Do not force agent_output or any default.
 
 EMAIL SEND REQUESTS:
-- If the request asks to send information via email (keywords like "gửi mail", "send email", "gửi đến", "send to kxctran@gmail.com", "gửi báo cáo"), the multi_tool MUST include "send_gmail_message" as the LAST tool in the list.
-- Provide to= the email address, subject= suitable title, message= the evaluation (can use placeholder or summary based on data; self-correction will refine if needed).
-- For market data + evaluation + send email (XAUUSD + BTC etc.): choose and base the message on the template from email_template/Report.pdf . Follow its sections, order, and tone exactly when building the content.
+- If the request asks to send information via email (keywords like "gửi mail", "send email", "gửi đến", "send to kxctran@gmail.com", "gửi báo cáo"), use multi_tool to first gather the necessary data/tools, then send a professional email as the final step.
+- The email should be a clean, professional message that directly addresses the user's request using only real data from the tools. Do not force any specific template or dashboard layout unless the user explicitly asks for visual/dashboard style.
+- Professional email means: clear structure, polite tone, facts only, useful and direct, no internal paths, no meta comments. Use send_gmail_message (or send_gmail_html_message if richer formatting improves readability) with the body synthesized after data collection.
+- ANTI-HALLUCINATION FOR EMAIL BODIES: if you choose action="tool" for an email-sending tool (send_gmail_message, send_gmail_html_message, reply_to_email) and compose the body yourself, you may ONLY reuse facts/numbers that already appear verbatim in the conversation history above. Note that this history is truncated per message — if you cannot see the full prior content or the user is asking for NEW data (prices, stats, news) you don't already have, route to multi_tool to fetch it instead of inventing numbers, indices, or statistics to make the email sound complete.
 
 NEVER LEAK INTERNAL PATHS:
 - In any email, external message, or report sent outside, NEVER mention internal paths like agent_output/, ciel_workspace/, or any filesystem locations.

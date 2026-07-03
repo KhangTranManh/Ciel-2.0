@@ -90,6 +90,61 @@ def fetch_crypto_technical(symbol: str, interval: str = "1h") -> str:
 
 
 # ==========================================
+# MARKET DASHBOARD REPORT (Report.pdf layout -> BTC/XAUUSD)
+# ==========================================
+
+def build_market_report_html(
+    report_date: str,
+    btc_price: str,
+    btc_change_pct: str,
+    btc_rsi: str,
+    btc_trend: str,
+    xau_price: str,
+    xau_change_pct: str,
+    xau_trend: str,
+    risk_level: str,
+    risk_factors: str,
+    conclusion: str,
+    xau_rsi: str = "N/A",
+) -> str:
+    """Build the market dashboard HTML (email_template/market_report.html) for BTC & XAU/USD.
+
+    All values must come from real tool results (get_market_price, get_crypto_stats,
+    analyze_crypto_technical). Do NOT invent numbers. Pass "N/A" for anything unavailable.
+    Returns the full HTML string to feed into send_gmail_html_message.
+    """
+    def _color(pct: str) -> str:
+        try:
+            return "#16a34a" if float(str(pct).replace("%", "").replace("+", "")) >= 0 else "#dc2626"
+        except Exception:
+            return "#64748b"
+
+    tpl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "email_template", "market_report.html")
+    with open(tpl_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    values = {
+        "REPORT_DATE": report_date,
+        "BTC_PRICE": btc_price,
+        "BTC_CHANGE_PCT": btc_change_pct,
+        "BTC_CHANGE_COLOR": _color(btc_change_pct),
+        "BTC_RSI": btc_rsi,
+        "BTC_TREND": btc_trend,
+        "XAU_PRICE": xau_price,
+        "XAU_CHANGE_PCT": xau_change_pct,
+        "XAU_CHANGE_COLOR": _color(xau_change_pct),
+        "XAU_RSI": xau_rsi,
+        "XAU_TREND": xau_trend,
+        "RISK_LEVEL": risk_level,
+        "RISK_FACTORS": risk_factors,
+        "CONCLUSION": conclusion,
+    }
+    for k, v in values.items():
+        html = html.replace("{{" + k + "}}", str(v))
+    return html
+
+
+# ==========================================
 # FACTORY (standard get_*_tools() pattern)
 # ==========================================
 def get_trading_tools() -> dict:
@@ -114,7 +169,13 @@ def get_trading_tools() -> dict:
             description="Get technical analysis (RSI, MA, Trend) for CRYPTO ONLY via Binance API."
         )
 
-        tools.extend([price_tool, stats_tool, tech_tool])
+        report_tool = StructuredTool.from_function(
+            func=build_market_report_html,
+            name="build_market_report_html",
+            description="Build a styled HTML market dashboard report (Report.pdf layout) for BTC & XAU/USD. Fill every field ONLY with real values from get_market_price / get_crypto_stats / analyze_crypto_technical; use 'N/A' if missing. Returns full HTML to pass into send_gmail_html_message.",
+        )
+
+        tools.extend([price_tool, stats_tool, tech_tool, report_tool])
         return {"tools": tools, "prompt": TRADING_SYSTEM_PROMPT}
 
     except Exception as e: return {"tools": [], "prompt": ""}

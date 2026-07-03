@@ -331,6 +331,21 @@ Ciel
 
 Fill every [ ] with actual current data from tools. If a tool fails, say so honestly instead of making up numbers.
 
+### 1b. Market Dashboard Report (Report.pdf visual layout)
+For a *styled/visual* BTC & XAUUSD report that mirrors email_template/Report.pdf's dashboard
+(KPI tiles + technical breakdown + risk block + conclusion), use the tool flow:
+  1. Gather live data: get_market_price(XAU/USD), get_market_price(BTC/USD) or get_crypto_stats(BTC),
+     analyze_crypto_technical(BTC).
+  2. build_market_report_html(...) -> fills the Report.pdf dashboard layout with ONLY real values
+     ('N/A' when missing). The PDF's social-analytics fields are remapped to market fields:
+       - 4 KPI tiles      -> BTC price, BTC 24h change%, XAU price, XAU 24h change%
+       - platform table   -> per-asset RSI + trend breakdown
+       - type/times blocks -> risk level + risk factors
+       - conclusion        -> conclusion/recommendation
+  3. send_gmail_html_message(to, subject, html_body) sends the rich HTML dashboard.
+Report.pdf itself (social analytics content) is only used as the VISUAL LAYOUT reference,
+not as literal content. Use the note.txt text template (section 1) only when plain text is requested.
+
 ### 2. Todo / Productivity Summary
 Use when request involves todos, tasks, add/complete/list todos, or productivity updates + send email.
 Covers: list of todos (added, completed), current status, follow-ups.

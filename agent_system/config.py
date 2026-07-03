@@ -18,12 +18,18 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 VILAO_URL = os.getenv("VILAO_URL", "")
 VILAO_API_KEY = os.getenv("VILAO_KEY", "")
 
-# Safety - SAFETY_OPEN=true means open/permissive (most things allowed to avoid over-blocking normal tasks)
-# false = not open (enforce more)
-# Keep safety active ("in") specifically for: violent text, leak info, harm, or big/destructive changes.
-# Per your spec: currently open (permissive) for other categories, only keep violent text protection "in".
+# GPT / OpenAI-compatible (for custom models like gx/gpt-5.5)
+GPT_API_KEY = os.getenv("GPT_API_KEY", "")
+GPT_BASE_URL = os.getenv("GPT_BASE_URL", "")
+
+# Safety - SAFETY_OPEN=true means open/permissive Brain CONTENT filtering
+# (reduces over-blocking on normal tasks like email/text). This is about LLM
+# content moderation ONLY — it does NOT control the destructive-tool gate.
 SAFETY_OPEN = os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes")
-DISABLE_SAFETY_GATE = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes") or SAFETY_OPEN
+# DISABLE_SAFETY_GATE controls the destructive-tool confirmation gate independently.
+# Default OFF (gate active / fail-safe). Do NOT couple it to SAFETY_OPEN.
+DISABLE_SAFETY_GATE = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
+# VILAO_SAFETY_BYPASS is a provider-level content flag; it may follow SAFETY_OPEN.
 VILAO_SAFETY_BYPASS = os.getenv("VILAO_SAFETY_BYPASS", "false").lower() in ("true", "1", "yes") or SAFETY_OPEN
 
 # --- Worker ---

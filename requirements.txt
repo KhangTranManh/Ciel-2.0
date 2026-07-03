@@ -31,6 +31,10 @@ websockets
 ddgs
 requests
 
+# --- Document Reading ---
+pypdf
+python-docx
+
 # --- Vision & UI Interaction ---
 pyautogui
 pyperclip

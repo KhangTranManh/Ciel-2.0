@@ -20,9 +20,10 @@ def main():
         ciel = AgentLoop()
         scheduler.cleanse_callback = ciel.core._brain_cleanse
 
-        # SAFETY GATE: CLI confirmation handler for high-risk tools
-        # Skipped when SAFETY_OPEN or DISABLE_SAFETY_GATE (permissive for non-violent)
-        disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes") or os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes")
+        # SAFETY GATE: CLI confirmation handler for high-risk tools.
+        # Controlled ONLY by DISABLE_SAFETY_GATE (default OFF = gate active).
+        # SAFETY_OPEN is unrelated here — it tunes Brain content-filtering, not tool approval.
+        disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
         if not disable_gate:
             def _cli_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
                 """Blocking CLI confirmation prompt for destructive tools."""

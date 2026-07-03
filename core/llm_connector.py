@@ -11,6 +11,7 @@ import os
 import re
 import json
 import traceback
+import unicodedata
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -49,7 +50,11 @@ If the result is insufficient and no tool can help, explain to user:
 
 RULES:
 - Return satisfied=true if the result reasonably answers the request, even partially.
-- Only return satisfied=false if you have a CONCRETE better alternative.
+- A result is NEVER satisfactory if it is an error message, empty, "not found",
+  "does not exist", "không tồn tại", or clearly unrelated junk — in those cases you
+  MUST return satisfied=false and provide the best alternative tool, or an "action":"chat"
+  that honestly explains the situation to the user.
+- Only return satisfied=false if you have a CONCRETE better alternative OR the result is an error/empty/junk.
 - NEVER suggest the same tool with identical arguments.
 - Keep reasoning to 1 sentence.
 """
@@ -114,6 +119,24 @@ class CielCore:
 
     # Tools that require Master's explicit Y/N approval before execution
     _HIGH_RISK_TOOLS = set(_RISK_DESCRIPTIONS.keys())
+
+    # Email-sending tools and the arg holding the body that must be sanitized
+    # before it leaves the system (strips internal reasoning/meta/paths).
+    _EMAIL_BODY_ARGS = {
+        "send_gmail_message":      "message",
+        "send_gmail_html_message": "html_body",
+        "reply_to_email":          "reply_text",
+        "create_gmail_draft":      "message",
+    }
+
+    # Keyword triggers for "the user wants this sent via email" — shared by the
+    # proactive router-bypass check, the content-filter fallback, and the
+    # multi_tool missing-send-step safeguard.
+    _EMAIL_INTENT_KEYWORDS = (
+        "gửi email", "send email", "gửi thư", "gửi mail", "email đến", "send to",
+        "gửi cho", "qua email", "qua mail", "qua gmail", "gửi báo cáo", "gửi report",
+        "send report", "email report", "báo cáo qua", "report qua", "mail cho", "email cho",
+    )
 
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
     _TOOL_HINTS = {
@@ -349,12 +372,33 @@ class CielCore:
             log.error(f"Tool not found: {tool_name}")
             return f"[TOOL_ERROR] Tool '{tool_name}' not found."
 
-        # SAFETY GATE: require confirmation for high-risk tools
-        # Only enforced for big change/harm/leak when not open; violent kept separately if needed
-        disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes") or os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes")
+        # OUTBOUND EMAIL SANITIZATION (single choke-point): every email-sending path
+        # — multi_tool synthesis, direct Brain send, content-filter fallback, replies,
+        # drafts — funnels through here, so cleaning the body once covers them all.
+        body_key = self._EMAIL_BODY_ARGS.get(tool_name)
+        if body_key and isinstance(tool_args.get(body_key), str):
+            cleaned = self._sanitize_outbound_email(tool_args[body_key])
+            if cleaned != tool_args[body_key]:
+                tool_args = dict(tool_args)
+                tool_args[body_key] = cleaned
+                self._log_thought("TOOL", "email_sanitized", f"{tool_name}: stripped internal/meta content from '{body_key}'.")
+
+        # SAFETY GATE: require confirmation for high-risk tools.
+        # Controlled ONLY by DISABLE_SAFETY_GATE (default OFF = gate active / fail-safe).
+        # NOTE: SAFETY_OPEN governs Brain LLM content-filtering, a separate concern —
+        # it must NOT influence the destructive-tool confirmation gate.
+        disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
         if tool_name in self._HIGH_RISK_TOOLS and not disable_gate:
             if not self._request_confirmation(tool_name, tool_args):
                 return f"[CANCELLED] Master denied execution of {tool_name}. No action was taken."
+
+        # send_gmail_message transmits its body as text/html (langchain), so raw '\n'
+        # collapse into a wall of text on the recipient side. Render the clean plain
+        # body into simple HTML AFTER the confirmation preview (which stays plain/readable)
+        # so the delivered email preserves paragraphs and line breaks.
+        if tool_name == "send_gmail_message" and isinstance(tool_args.get("message"), str):
+            tool_args = dict(tool_args)
+            tool_args["message"] = self._plaintext_to_html(tool_args["message"])
 
         result = self.tool_manager.execute_tool(tool_name, tool_args)
         result_text = self.tool_manager.format_tool_result(result)
@@ -596,6 +640,87 @@ class CielCore:
         log.tool(result)
         return f"Code written to {filename}"
 
+    def _build_market_html_from_results(self, combined_results: str, synthesized: str) -> str:
+        """Parse market tool outputs and build the styled HTML dashboard.
+
+        Uses real numbers from the tool results only. Missing values become 'N/A'.
+        The Worker-synthesized text supplies risk/conclusion prose.
+        """
+        import re
+        from datetime import date
+        from skills.external.trading_ops import build_market_report_html
+
+        text = combined_results or ""
+
+        def _search(pattern, default="N/A"):
+            m = re.search(pattern, text, re.IGNORECASE)
+            return m.group(1).strip() if m else default
+
+        # BTC from get_crypto_stats: "Stats BTCUSDT: Price=..., Change=...%, High=..., Low=..."
+        btc_price = _search(r"Price=([\d.,]+)")
+        btc_change = _search(r"Change=(-?[\d.,]+%?)")
+        if btc_change != "N/A" and not btc_change.endswith("%"):
+            btc_change += "%"
+        # BTC technicals: "... RSI: 33.64 (...), MA(5,30): ..., Xu h?????ng: ..."
+        btc_rsi = _search(r"RSI:\s*([\d.]+)")
+        btc_trend = _search(r"Xu h\S+ng:\s*([^\n,]+)")
+        # XAU from get_market_price: "Gi?? XAU/USD: 2350.1"
+        xau_price = _search(r"XAU/?USD:\s*([\d.,]+)")
+
+        # Risk level heuristic from synthesized prose (explicit risk phrases only,
+        # never bare "cao" which also appears in "Cao nhat" = 24h high).
+        low = (synthesized or "").lower()
+        if any(w in low for w in ["rui ro cao", "r\u1ee7i ro cao", "high risk", "nguy c\u01a1 cao"]):
+            risk_level = "High"
+        elif any(w in low for w in ["rui ro thap", "r\u1ee7i ro th\u1ea5p", "low risk", "an toan", "an to\u00e0n"]):
+            risk_level = "Low"
+        else:
+            risk_level = "Medium"
+
+        # Build CLEAN prose for the HTML card. Do NOT reuse the chat-facing
+        # synthesized text: it contains the "Master," greeting, a [MARKET_DATA]
+        # dump and email-status meta that must never leak into the report body.
+        def _clean_prose(raw: str) -> str:
+            import re as _re
+            s = raw or ""
+            # Drop bracketed tags like [MARKET_DATA], [EMAIL], [COGNITION].
+            s = _re.sub(r"\[[A-Z_]+\]", " ", s)
+            # Drop email-status / send meta lines.
+            drop = ("send_gmail", "message id", "tr\u1ea1ng th\u00e1i g\u1eedi", "ch\u01b0a th\u1ec3 g\u1eedi",
+                    "ch\u01b0a \u0111\u01b0\u1ee3c th\u1ef1c thi", "email sent", "\u0111\u00e3 g\u1eedi",
+                    "b\u00e1o c\u00e1o \u0111\u00e3 s\u1eb5n s\u00e0ng", "vui l\u00f2ng y\u00eau c\u1ea7u")
+            kept = []
+            for ln in s.splitlines():
+                low_ln = ln.lower()
+                if any(d in low_ln for d in drop):
+                    continue
+                kept.append(ln)
+            s = "\n".join(kept)
+            # Strip leading greeting.
+            s = _re.sub(r"^\s*master[,:\s]*", "", s, flags=_re.IGNORECASE)
+            s = _re.sub(r"[ \t]+", " ", s)
+            s = _re.sub(r"\n{3,}", "\n\n", s).strip()
+            return s
+
+        clean = _clean_prose(synthesized)
+        risk_factors = (clean[:600] or "N/A")
+        conclusion = (clean[:800] or "N/A")
+
+        return build_market_report_html(
+            report_date=str(date.today()),
+            btc_price=btc_price,
+            btc_change_pct=btc_change,
+            btc_rsi=btc_rsi,
+            btc_trend=btc_trend,
+            xau_price=xau_price,
+            xau_change_pct="N/A",
+            xau_trend="N/A",
+            risk_level=risk_level,
+            risk_factors=risk_factors,
+            conclusion=conclusion,
+            xau_rsi="N/A",
+        )
+
     def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "") -> str:
         """Execute multiple tools sequentially and synthesize the result.
 
@@ -603,11 +728,12 @@ class CielCore:
         the final message body, then execute send with the synthesized body so the
         actual email contains the real content (not a placeholder from the initial plan).
         """
-        # Separate send_gmail_message if present (usually the last step for email requests)
+        # Separate the send step if present (usually the last step for email requests).
+        # Supports plain send_gmail_message and rich send_gmail_html_message.
         send_tool = None
         other_tools = []
         for t in tools:
-            if t.get("tool_name") == "send_gmail_message":
+            if t.get("tool_name") in ("send_gmail_message", "send_gmail_html_message"):
                 send_tool = t
             else:
                 other_tools.append(t)
@@ -640,30 +766,43 @@ User's request: {user_input}
 Hint: {response_hint}
 RULES:
 1. Be concise. Deliver a unified report without conversational filler.
-2. Always address the user as 'Master'.
+2. For chat or internal reports: address as 'Master'. For email body, do NOT include "Master" greeting or internal addressing — make it a clean professional email suitable for sending to the recipient.
 3. ONLY use facts present in the tool outputs above. NEVER invent data.
 4. If any tool returned an error, 'file not found', or empty result, report that honestly. Do NOT fabricate fake data, fake file contents, or fake execution output.
 5. NEVER disclose internal file paths (agent_output/, ciel_workspace/, etc.) in the final report or email body sent to external parties. Use only generic professional language such as 'the detailed evaluation has been prepared' or provide the content directly in the message. Do not reference storage locations.
 6. ONLY claim that an email was sent (e.g. "Đã gửi", "email sent", "Message sent") if there is a successful send_gmail_message tool result with a Message Id in the outputs above. If the send tool was not executed or failed, explicitly say the report is ready but do not claim it was emailed.
-7. When the report is for market data + evaluation + email, base the email body structure on the Market / Asset Report template in note.txt (not the unrelated content in email_template/Report.pdf). Follow the sections, use ONLY real data from the tool results in this run. Never leave [brackets] or invent numbers.
+7. For any email send (market or other), synthesize a professional email body based on the user's exact request and the real data from tools. Make it clear, well-structured, polite and useful like a proper sent email (use Vietnamese if appropriate). Do not force any specific dashboard template or HTML structure unless the user explicitly requested visual/dashboard style. Use ONLY real data from this run's tool results. Never leave [brackets], meta tags, or invent numbers.
+8. If this is an email send, your ENTIRE output IS the email body and will be sent verbatim. Output ONLY the email body — start directly with the subject/greeting. Do NOT include: chain-of-thought or "[COGNITION]"/"[MARKET_DATA]"-style tag prefixes; any statement that the email was/wasn't sent or any "Message Id"; any label like "Email body:", "Nội dung email:", "Lưu ý:"; any nested/duplicated copy of the email; any note about tools, file writes, or storage paths.
 """
         self._log_thought("WORKER", "multi_tool_format_task", format_task)
         formatted = self.worker.generate(format_task)
         self._log_thought("WORKER", "multi_tool_format_response", formatted)
 
-        # If there was a send_gmail_message planned, re-execute it with the synthesized formatted as the message
-        # This ensures the actual email gets the real content instead of the placeholder from the plan.
+        # Re-execute the send step with real content built after the data tools ran.
         if send_tool:
+            send_name = send_tool.get("tool_name", "send_gmail_message")
             send_args = dict(send_tool.get("tool_args", {}))
-            # Override message with the final synthesized content
-            send_args["message"] = formatted
-            log.tool(f"Re-executing send_gmail_message with synthesized body")
-            send_res = self.execute_tool("send_gmail_message", send_args, response_hint=response_hint, user_input=user_input)
-            self._log_thought("TOOL", "result_send_gmail_message", send_res)
-            results.append(f"--- Output from send_gmail_message ---\n{send_res}")
-            # If send succeeded with Message Id, append confirmation so final answer can claim sent correctly.
-            if "Message Id" in send_res or "Message sent" in send_res or "sent" in send_res.lower():
-                formatted = formatted.rstrip() + "\n\n📧 Email đã gửi thành công (Message Id có trong log tool)."
+
+            # The display copy `formatted` (which Master sees) keeps persona markers;
+            # the outbound body is sanitized centrally in execute_tool, so just pass
+            # the synthesized content through as-is here.
+            if send_name == "send_gmail_html_message":
+                # Use the synthesized professional content as HTML body (synthesis already made it clean/professional)
+                # Only use special dashboard builder if explicitly planned with build_market_report_html earlier
+                send_args["html_body"] = formatted
+                send_args.pop("message", None)
+            else:
+                send_args["message"] = formatted
+
+            log.tool(f"Re-executing {send_name} with real content")
+            send_res = self.execute_tool(send_name, send_args, response_hint=response_hint, user_input=user_input)
+            self._log_thought("TOOL", f"result_{send_name}", send_res)
+            results.append(f"--- Output from {send_name} ---\n{send_res}")
+            # Claim sent ONLY when a real Message Id is present (no loose 'sent' substring).
+            if "Message Id" in send_res:
+                formatted = formatted.rstrip() + "\n\n[EMAIL] Sent successfully (Message Id in tool log)."
+            else:
+                formatted = formatted.rstrip() + "\n\n[EMAIL] Report prepared but NOT confirmed sent (no Message Id returned)."
 
         return formatted
 
@@ -722,6 +861,19 @@ RULES:
         if not safe_result:
             safe_result = "No output returned."
 
+        # DETERMINISTIC FLOOR (runs BEFORE the LLM): an obviously-failed result
+        # (error message, empty, "not found") must always trigger self-correction.
+        # Doing this here — not after json.loads — means a malformed Brain response
+        # (which lands in the except branch) can never rubber-stamp an error as satisfied.
+        if self._is_failure_result(result):
+            self._log_thought("BRAIN", "evaluate_override",
+                              "Result matches a failure signal — forcing self-correction.")
+            return {"satisfied": False,
+                    "reasoning": "Result is an error, empty, or not-found response.",
+                    "action": "chat",
+                    "task": ("Honestly explain to the Master that the previous attempt "
+                             "did not return usable data, and suggest a next step.")}
+
         eval_request = (
             f"User's request: {user_input}\n"
             f"Tool used: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n"
@@ -755,6 +907,141 @@ RULES:
         except (json.JSONDecodeError, Exception) as e:
             self._log_thought("BRAIN", "evaluate_result_error", str(e))
             return {"satisfied": True}  # Fail-safe: assume satisfied if evaluation fails
+
+    @staticmethod
+    def _is_failure_result(result: str) -> bool:
+        """Deterministic detector for obviously-failed tool results (error/empty/not-found).
+
+        Unicode-robust: normalizes to NFC and strips diacritics so Vietnamese error
+        strings ("Lỗi", "không tồn tại") match regardless of NFC/NFD encoding.
+        """
+        text = (result or "").strip()
+        if not text:
+            return True
+        # NFC-normalize, then strip combining marks → ASCII-fold for robust matching.
+        nfkd = unicodedata.normalize("NFKD", text)
+        ascii_fold = "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+        # Diacritic-free markers (match against the folded text).
+        failure_markers = (
+            "loi:", "loi ", "error", "traceback", "[tool_error]", "execution_error",
+            "khong ton tai", "khong tim thay", "not found", "does not exist",
+            "no such file", "no search results", "unavailable", "file not found",
+        )
+        head = ascii_fold[:150]
+        return any(m in head for m in failure_markers)
+
+    @staticmethod
+    def _sanitize_outbound_email(body: str) -> str:
+        """Strip internal/meta content from a synthesized email body before sending.
+
+        Removes chain-of-thought (`[COGNITION]`), persona structural tag prefixes,
+        self-referential "email sent / Message Id / email body:" scaffolding, notes
+        about internal tooling, and internal file paths — none of which belong in an
+        email delivered to an external recipient. Operates line-by-line so the real
+        report content (prices, evaluation, greeting) is preserved.
+        """
+        if not body:
+            return body
+
+        # 1a) Remove entire [COGNITION] paragraphs (internal chain-of-thought): from the
+        #     tag through the end of its paragraph (up to the next blank line).
+        text = re.sub(r"(?ms)^[^\n]*\[COGNITION\].*?(?=\n\s*\n|\Z)", "", body)
+
+        # 1b) Remove remaining persona structural tag prefixes: "📊 [MARKET_DATA]", "📈 [TECHNICAL]", etc.
+        text = re.sub(r"[\U0001F300-\U0001FAFF☀-➿]*\s*\[[A-Z_]+\]\s*", "", text)
+
+        # Diacritic-insensitive helper for matching Vietnamese meta phrases.
+        def _fold(s: str) -> str:
+            nfkd = unicodedata.normalize("NFKD", s)
+            return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+        # Internal file paths: strip just the path TOKEN (keep the rest of the line),
+        # so a legitimate sentence that merely mentions a path is not lost entirely.
+        path_re = re.compile(r"\b(?:agent_output|ciel_workspace)/[\w./\-]+")
+
+        # 2) Drop lines that are purely internal meta / self-reference.
+        drop_markers = (
+            "message id", "email sent", "email da duoc", "da gui den", "email da gui",
+            "da duoc soan va gui", "chua duoc gui", "khong co tool", "no tool available",
+            "noi dung email la",
+        )
+        # Label / scaffold lines to drop: nested-email labels, internal notes, and a
+        # redundant "Subject:" line (the real subject is a separate header field).
+        label_re = re.compile(r"^\**\s*(email body|email tom tat|noi dung email|luu y|subject|chu de)\b\s*:?", re.IGNORECASE)
+
+        kept = []
+        for line in text.splitlines():
+            line = path_re.sub("", line)                 # remove internal path tokens
+            line = re.sub(r"[ \t]{2,}", " ", line)       # tidy gaps left behind
+            folded = _fold(line)
+            if any(m in folded for m in drop_markers):
+                continue
+            if label_re.match(folded):
+                continue
+            kept.append(line)
+
+        # 3) Collapse leftover blank runs and leading separators/blank lines.
+        cleaned = "\n".join(kept)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = re.sub(r"^\s*(-{3,}\s*\n)+", "", cleaned)
+        return cleaned.strip()
+
+    # Phrases indicating the user wants a PRIOR response sent, not new content
+    # (e.g. "gửi thông tin này", "gửi cái vừa rồi", "send this", "send that report").
+    _REFERENTIAL_SEND_PATTERNS = (
+        r"th[oô]ng tin (n[aà]y|đ[oó]|v[uừ]a r[oồ]i)",
+        r"(c[aá]i|n[oộ]i dung|b[aá]o c[aá]o|email|thư) (n[aà]y|đ[oó]|v[uừ]a r[oồ]i)",
+        r"v[uừ]a (r[oồ]i|n[aã]y)",
+        r"như (tr[eê]n|đ[aã] (n[oó]i|b[aà]n))",
+        r"\bthis (info|information|email|report|content)\b",
+        r"\bthat (info|information|email|report|content)\b",
+        r"\bwhat we (just )?(discussed|talked about)\b",
+        r"\bthe above\b",
+        r"\bsend (this|that|it)\b",
+    )
+
+    @staticmethod
+    def _is_referential_send(user_input: str) -> bool:
+        """True if the request refers to previously-generated content ("send this/
+        that") rather than asking for a fresh report. Used to stop the Brain from
+        re-authoring (and potentially fabricating) content it only saw truncated
+        to 200 chars in the router's history window (see router.py route())."""
+        lowered = (user_input or "").lower()
+        return any(re.search(p, lowered) for p in CielCore._REFERENTIAL_SEND_PATTERNS)
+
+    def _last_ai_message_text(self) -> str:
+        """Full (untruncated) text of the most recent Ciel response in chat history.
+        Router.route() truncates history to 200 chars per message for its own
+        context window, but self.chat_history itself always holds the full text."""
+        for msg in reversed(self.chat_history.messages):
+            if msg.type == "ai":
+                return msg.content
+        return ""
+
+    @staticmethod
+    def _plaintext_to_html(text: str) -> str:
+        """Render a clean plain-text/markdown email body into simple HTML so line
+        breaks and paragraphs survive (send_gmail_message transmits as text/html)."""
+        import html as _html
+        if not text:
+            return text
+        # Already HTML? leave it (e.g. a dashboard body).
+        if re.search(r"<(?:p|br|div|table|h[1-6]|ul|ol)\b", text, re.IGNORECASE):
+            return text
+        esc = _html.escape(text)
+        esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)  # markdown bold
+        blocks = re.split(r"\n\s*\n", esc.strip())
+        paras = []
+        for b in blocks:
+            b = b.strip().replace("\n", "<br>")
+            if b:
+                paras.append(f'<p style="margin:0 0 12px">{b}</p>')
+        inner = "\n".join(paras)
+        return (
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+            f'line-height:1.55;color:#222">{inner}</div>'
+        )
 
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""
@@ -810,7 +1097,7 @@ RULES:
             # Proactive bypass for email sends: avoid calling the Brain router at all
             # when the request is clearly about sending email. This prevents the
             # Vilao content filter from ever being triggered on the routing call.
-            if any(kw in lowered for kw in ["gửi email", "send email", "gửi thư", "gửi mail", "email đến", "send to", "gửi cho"]):
+            if any(kw in lowered for kw in self._EMAIL_INTENT_KEYWORDS):
                 log.system("Email send request detected — bypassing Brain router to avoid content filter.")
                 decision = self._fallback_direct_action(user_input)
             else:
@@ -829,6 +1116,22 @@ RULES:
                 tool_name = decision.get("tool_name", "")
                 tool_args = decision.get("tool_args", {})
                 hint = decision.get("response_hint", "")
+
+                # REFERENTIAL EMAIL SEND ("gửi cái vừa rồi" / "send this info"):
+                # the Router only sees a 200-char-truncated history slice, so the
+                # Brain may fabricate plausible-looking data to fill in what it
+                # couldn't see (observed: inventing whole stock indices). When the
+                # request is clearly referential, deterministically replace the
+                # Brain-composed body with the exact prior Ciel response instead.
+                body_key = self._EMAIL_BODY_ARGS.get(tool_name)
+                if body_key and self._is_referential_send(user_input):
+                    last_text = self._last_ai_message_text()
+                    if last_text:
+                        tool_args = dict(tool_args)
+                        tool_args[body_key] = last_text
+                        self._log_thought("BRAIN", "referential_send_override",
+                                          f"Replaced Brain-composed '{body_key}' with the verbatim prior response for {tool_name} (referential send detected).")
+
                 response = self.execute_tool(tool_name, tool_args, hint, user_input)
 
                 # SELF-CORRECTION: Brain evaluates if result is satisfactory
@@ -844,6 +1147,35 @@ RULES:
             elif action == "multi_tool":
                 tools = decision.get("tools", [])
                 hint = decision.get("response_hint", "")
+
+                # WORKFLOW SAFEGUARD: don't rely solely on the Brain to remember the
+                # terminal send step. Observed failure: the user asked to search the
+                # web AND email the result ("...sau đó gửi qua kxctran@gmail.com"),
+                # but the Brain's plan only included data-gathering tools — the report
+                # was drafted and shown to the user, but never actually sent, with no
+                # error surfaced. If the request clearly signals email intent and the
+                # plan lacks a send step, append one deterministically so the report
+                # is actually delivered instead of silently staying a draft.
+                # Deliberately broader than _EMAIL_INTENT_KEYWORDS (which requires exact
+                # fixed phrases like "qua gmail" — missed by e.g. "gửi qua x@gmail.com",
+                # the wording that triggered this bug). A concrete email address plus
+                # any send verb is a reliable, low-false-positive signal on its own.
+                has_send_step = any(t.get("tool_name") in ("send_gmail_message", "send_gmail_html_message") for t in tools)
+                to_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+                send_verb_present = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
+
+                if not has_send_step and to_match and send_verb_present:
+                    tools = list(tools) + [{
+                        "tool_name": "send_gmail_message",
+                        "tool_args": {
+                            "to": to_match.group(0),
+                            "subject": "Báo cáo từ Ciel",
+                            "message": "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]",
+                        },
+                    }]
+                    self._log_thought("BRAIN", "multi_tool_send_step_added",
+                                      f"Plan was missing a send step despite explicit email intent — appended send_gmail_message to {to_match.group(0)}.")
+
                 response = self.execute_multi_tool(tools, hint, user_input)
 
             else:
@@ -868,39 +1200,66 @@ RULES:
         lowered = user_input.lower()
 
         # Gmail / email send intent (very common trigger for content filter on Brain)
-        if any(kw in lowered for kw in ["gửi email", "send email", "gửi thư", "gửi mail", "email đến", "send to", "gửi cho"]):
+        if any(kw in lowered for kw in self._EMAIL_INTENT_KEYWORDS):
             # Extract recipient email if present, otherwise default to the known test address
             import re
             match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
             to_addr = match.group(0) if match else "kxctran@gmail.com"
 
-            # Build a sensible subject
+            # Detect which assets the user ACTUALLY named — do not hardcode XAU/BTC.
+            # Each entry: (keywords, display label, price symbol, crypto symbol or None).
+            # crypto symbol enables 24h stats + technical analysis (Binance); None = price only.
+            asset_catalog = [
+                (("vàng", "vang", "gold", "xauusd", "xau"), "XAU/USD", "XAU/USD", None),
+                (("bạc", "bac", "silver", "xagusd", "xag"), "XAG/USD", "XAG/USD", None),
+                (("bitcoin", "btc"),                         "BTC/USD", "BTC/USD", "BTCUSDT"),
+                (("ethereum", "eth"),                        "ETH/USD", "ETH/USD", "ETHUSDT"),
+                (("eurusd", "eur/usd", "eur"),               "EUR/USD", "EUR/USD", None),
+                (("gbpusd", "gbp/usd", "gbp"),               "GBP/USD", "GBP/USD", None),
+                (("usdjpy", "jpy"),                          "USD/JPY", "USD/JPY", None),
+            ]
+            detected = [(lbl, price, crypto) for keys, lbl, price, crypto in asset_catalog
+                        if any(k in lowered for k in keys)]
+
+            # Market intent = a concrete asset was named, or an explicit market word used.
+            strong_market_words = ("thị trường", "market", "forex", "crypto", "chứng khoán", "cổ phiếu")
+            is_market_email = bool(detected) or any(w in lowered for w in strong_market_words)
+
+            # Build a sensible subject (non-market heuristics first; market overrides dynamically).
             if "đá bóng" in lowered or "bóng đá" in lowered:
                 subject = "Nhắc nhở: Lịch tập đá bóng"
             elif "lịch" in lowered:
                 subject = "Thông báo lịch"
-            elif any(m in lowered for m in ["xau", "btc", "giá", "tình hình", "đánh giá", "rủi ro", "thị trường", "gold", "bitcoin", "crypto", "technical"]):
-                subject = "Báo cáo thị trường XAUUSD & BTC – Đánh giá rủi ro"
             else:
                 subject = "Email từ Ciel"
 
-            # For market data + eval + send (main problematic case), return MULTI_TOOL plan.
-            # This makes execute_multi_tool run data tools first, synth proper body with real facts + template, THEN re-execute send.
-            # Prevents sending early placeholder body generated before any tool data.
-            is_market_email = any(m in lowered for m in ["xau", "btc", "giá", "tình hình", "đánh giá", "rủi ro", "thị trường", "gold", "bitcoin", "crypto", "technical", "phân tích"])
             if is_market_email:
-                tools_plan = [
-                    {"tool_name": "get_market_price", "tool_args": {"symbol": "XAU/USD"}},
-                    {"tool_name": "get_market_price", "tool_args": {"symbol": "XAUUSD"}},
-                    {"tool_name": "get_market_price", "tool_args": {"symbol": "BTC/USD"}},
-                    {"tool_name": "get_crypto_stats", "tool_args": {"symbol": "BTCUSDT"}},
-                    {"tool_name": "analyze_crypto_technical", "tool_args": {"symbol": "BTCUSDT", "interval": "1d"}},
-                    {"tool_name": "send_gmail_message", "tool_args": {"to": to_addr, "subject": subject, "message": "[SYNTHESIZED_BODY_TO_BE_FILLED_BY_WORKER_AFTER_DATA]"}}
-                ]
+                # No specific asset but general market intent → a broad snapshot.
+                if not detected:
+                    detected = [("XAU/USD", "XAU/USD", None), ("BTC/USD", "BTC/USD", "BTCUSDT")]
+
+                labels = " & ".join(lbl for lbl, _, _ in detected)
+                subject = f"Báo cáo thị trường {labels} – Đánh giá rủi ro"
+
+                # Build the data-tool plan for EXACTLY the detected assets.
+                tools_plan = []
+                for _lbl, price_sym, crypto_sym in detected:
+                    tools_plan.append({"tool_name": "get_market_price", "tool_args": {"symbol": price_sym}})
+                    if crypto_sym:
+                        tools_plan.append({"tool_name": "get_crypto_stats", "tool_args": {"symbol": crypto_sym}})
+                        tools_plan.append({"tool_name": "analyze_crypto_technical", "tool_args": {"symbol": crypto_sym, "interval": "1d"}})
+                tools_plan.append({"tool_name": "send_gmail_message", "tool_args": {"to": to_addr, "subject": subject, "message": "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]"}})
+
                 return {
                     "action": "multi_tool",
                     "tools": tools_plan,
-                    "response_hint": "Gather real prices, stats, technicals first. Synthesize professional Vietnamese market report + risk evaluation email body ONLY from tool facts. Use correct template structure. Fill placeholders with actual numbers. Re-execute the send with the final good body."
+                    "response_hint": ("Gather real prices, stats, and technicals first using the data tools. "
+                                      "Then synthesize a clean professional email body that directly answers the user's request "
+                                      "using ONLY the real data collected. Report ONLY the assets that were actually queried — "
+                                      "never attribute one asset's technicals (RSI/MA) to a different asset, and if an asset has no "
+                                      "technical data, say so honestly instead of borrowing another's. Make it clear, well-structured, "
+                                      "polite, and useful like a proper sent email. Use Vietnamese if the request is in Vietnamese. "
+                                      "Never use placeholders, meta tags, or internal paths. Send via the send tool. Never claim sent without a real Message Id.")
                 }
 
             # Non-market or simple email: original Worker body gen + direct send
@@ -912,7 +1271,7 @@ RULES:
                     f"Địa chỉ người nhận nếu có trong yêu cầu thì giữ nguyên. "
                     f"Không thêm thông tin bịa đặt. "
                     f"QUAN TRỌNG: TUYỆT ĐỐI KHÔNG đề cập bất kỳ đường dẫn file nội bộ nào (agent_output/, ciel_workspace/...) trong email. Sử dụng ngôn ngữ chung chung chuyên nghiệp như 'báo cáo chi tiết đã được chuẩn bị' hoặc đưa nội dung trực tiếp vào email. Nếu cần, đề cập file dưới dạng 'file đính kèm' mà không tiết lộ vị trí lưu trữ nội bộ. "
-                    f"Chọn template: nếu là market data + evaluation + email, dùng cấu trúc từ email_template/Report.pdf . Điền chỉ dữ liệu thật từ tools."
+                    f"If this is market data + evaluation, follow the Market Report structure in note.txt. Fill ONLY with real tool data; never invent numbers."
                 )
                 generated_body = self.worker.generate(body_task)
             except Exception:
@@ -926,7 +1285,7 @@ RULES:
                     "subject": subject,
                     "message": generated_body
                 },
-                "response_hint": "Email đã được gửi thành công với nội dung đàng hoàng."
+                "response_hint": "Confirm the email ONLY if the send tool returned a real Message Id. Otherwise say the email was prepared but not confirmed sent. Never claim it was sent without a Message Id."
             }
 
         # Default fallback: let it go to normal chat path
