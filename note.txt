@@ -263,38 +263,64 @@
 
 ---
 
-## Ciel 2.0 Current Status (as of July 2026)
+## Ciel 2.0 Current Status (as of July 4, 2026)
 
 This project (Ciel 2.0) has the following active configuration and recent focus:
 
 - Brain: Vilao (alic/qwen3.7-max) with permissive settings
 - Worker: DeepSeek (deepseek-chat)
-- SAFETY_OPEN=true, VILAO_SAFETY_BYPASS=true, DISABLE_SAFETY_GATE=true (open for normal use)
-- Safety kept specifically for: violent text, info leaks, harm, big/destructive changes
-- File writing: System now always asks for explicit path (ciel_workspace/ or agent_output/) unless already specified in the user query
-- Proactive bypasses and fallbacks in place to avoid upstream CONTENT_FILTERED errors on legitimate tasks such as Gmail sends
-- Router prompt lightened; system tools updated to support paths in both target directories
-- Backtest/logs cleaned of old artifacts
+- SAFETY MODEL (IMPORTANT — decoupled July 2026): two INDEPENDENT flags.
+  - SAFETY_OPEN=true, VILAO_SAFETY_BYPASS=true → relax Brain CONTENT-filtering only.
+  - DISABLE_SAFETY_GATE=false (DEFAULT) → the destructive-tool confirmation gate is ACTIVE.
+    The six high-risk tools (delete_file, execute_shell_command, send_gmail_message,
+    trash_email, git_confirm_push, vision_act) require Master's Y/N. Do NOT re-couple the
+    two flags — that previously made a denied confirmation still delete the file.
+- Safety kept specifically for: violent text, info leaks, harm, big/destructive changes.
+- File writing: System asks for explicit path (ciel_workspace/ or agent_output/) unless the
+  query already names one. Absolute paths inside those two zones are now accepted.
+- Proactive bypasses and fallbacks avoid upstream CONTENT_FILTERED errors on legitimate tasks.
 
-Recent emphasis (late June / July 2026):
-- Made complex real-world flows work reliably: "check XAUUSD/BTC situation + evaluate + send report email to kxctran@gmail.com" (or similar).
-- Implemented email intent bypass that plans full data collection (market prices for XAU variants + BTC, stats, technical analysis) before any send step.
-- Non-send tools run first; Worker then synthesizes a clean, structured body; send_gmail_message is re-executed using the synthesized content.
-- Email bodies must use the concrete Market / Asset Report structure defined in this note.txt. Only real live data from tools; honest notes when data missing; no placeholders, no invented numbers, no internal path leaks.
-- Strong rules enforced across prompts and execution: claim success only on actual Message Id; keep bodies free of meta tags / worker tags / file paths.
-- Expanded dedicated test suite (backtest/test_hard_special.py) with many hard cases (email bypass, mixed language, partial tool failure, explicit path ask, self-correction, harmful requests). Tests run repeatedly and results analyzed (hard_special_results.txt). Multiple runs confirmed data-filled bodies are now prepared and re-sent.
-- Market/Asset Report template (section below) is the active reference. The unrelated content in email_template/Report.pdf is explicitly not used for these reports.
-- User verification of actual inbox is the final check (multiple test emails sent to kxctran@gmail.com during development).
+Core capabilities & flows (validated July 2026):
+- MARKET report+email: dynamic per-asset plan (XAU/BTC/ETH/EUR/silver...) — only the assets the
+  user names are queried; one asset's RSI/MA is never mislabeled as another's; subject is dynamic.
+- RESEARCH/NEWS email (e.g. "tổng hợp tin kinh tế / World Cup ... gửi ..."): stealth_search FIRST,
+  then synthesize the body from REAL results (never a hollow "đã đính kèm... [Your Name]" shell).
+- DOCUMENT email: read_document reads a PDF/DOCX FIRST, then summarizes into the email body.
+- Every outbound email passes ONE sanitizer: no [COGNITION]/tags, no meta ("email sent/Message Id"),
+  no internal paths, no [Your Name]/[Ký tên] (→ "Ciel"), no leftover "Subject:" line; body is sent
+  as HTML so line breaks/paragraphs render correctly.
+- Anti-fabrication: claim "sent" only on a real Message Id; referential sends ("gửi cái vừa rồi")
+  reuse the exact prior reply instead of the Brain re-inventing data; never invent prices/numbers.
+- WORKFLOW SAFEGUARDS (deterministic, not Brain-dependent): if the plan is missing the terminal
+  send step (email intent + address) or the file-write step (explicit path + write verb), it is
+  auto-appended so the email is actually sent / the file actually written with real content.
+- TIME-AWARE search: Router knows today's date; a stale year the Brain injects into a query is
+  bumped to the current year; stealth_search auto-applies a recency window for "latest/mới nhất".
 
-See README.md and the July 2026 Gmail Delivery & Market Report Flows section in architect.md (Changelog) for details.
+Testing: backtest/test_hard_special.py (email bypass, mixed language, partial failure, explicit
+path, self-correction, harmful intent) + backtest/test_integration.py (safety gate, self-healing,
+self-correction). User verification of the actual inbox (kxctran@gmail.com) remains the final check.
 
-When working on Ciel, prioritize the selective/open safety model and explicit path handling for writes.
+See the July 4, 2026 "Reliability Hardening" entry in architect.md (Changelog) for full details.
+
+When working on Ciel: keep the content-filter flag and the destructive-tool gate SEPARATE; prefer
+deterministic workflow safeguards over trusting the Brain to remember/judge; gather real data
+(market/search/document) BEFORE composing any email body.
 
 ## Recommended Email Templates
 
 These templates are for use when Ciel prepares and sends emails (via send_gmail_message or similar). The model must choose the appropriate template based on the request type, gather real data from tools FIRST, fill the placeholders with live facts only, and use the resulting content as the email body. Never use internal paths in the email. Never leave placeholders like [Worker: ...] or invent data. For market reports, always follow the filled Market / Asset Report structure below.
 
 Progress note: Market/Asset Report is now actively referenced and has been validated through repeated backtests and live runs for XAUUSD + BTC + risk evaluation + send-email flows. Other templates remain for future use / user fill-in.
+
+Two more send flows are now active and follow the SAME rules (gather real data first, clean body,
+sign as Ciel, no placeholders/paths/meta, body sent as HTML):
+- RESEARCH / NEWS email: any "tổng hợp / tin tức / tình hình ... + gửi" with no market asset and no
+  file. Ciel runs stealth_search FIRST (recency-windowed, current-year), then writes the body from
+  the actual findings. If search fails, it says so honestly — it never sends a hollow shell.
+- DOCUMENT email: "đọc file X.pdf/.docx ... rồi gửi ...". Ciel runs read_document FIRST to extract the
+  text, then summarizes the ACTUAL content into the email. If the file is unreadable (e.g. scanned
+  image PDF with no text), it reports that honestly instead of sending an empty report.
 
 User will fill the actual template content below.
 

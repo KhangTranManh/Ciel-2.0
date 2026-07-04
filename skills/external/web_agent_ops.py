@@ -21,22 +21,43 @@ def get_web_tools() -> dict:
     try:
         tools = []
         
-        def stealth_search(query: str, max_results: int = 5) -> str:
-            """Search the internet for current information, news, or documentation."""
+        def stealth_search(query: str, max_results: int = 5, timelimit: str = "") -> str:
+            """Search the internet for current information, news, or documentation.
+
+            timelimit restricts results by recency: 'd' (day), 'w' (week), 'm' (month),
+            'y' (year). Leave empty for all-time. When the query signals a "latest/recent/
+            news" intent and no timelimit is given, a recent window is applied automatically
+            so results reflect NOW, not stale indexed pages.
+            """
+            from datetime import datetime
             try:
                 from ddgs import DDGS
+
+                # Auto-apply a recency window for "latest news" style queries.
+                q_low = query.lower()
+                recency_terms = ("latest", "recent", "news", "today", "now", "breaking", "update",
+                                 "mới nhất", "hiện tại", "cập nhật", "hôm nay", "gần đây", "tin tức")
+                if not timelimit and any(t in q_low for t in recency_terms):
+                    timelimit = "m"  # past month
+
+                kwargs = {"max_results": max_results}
+                if timelimit:
+                    kwargs["timelimit"] = timelimit
+
                 with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
-                
+                    results = list(ddgs.text(query, **kwargs))
+
+                today = datetime.now().strftime("%Y-%m-%d")
                 if not results:
-                    return f"No results found for '{query}'."
-                
-                output = f"Search Results for '{query}':\n"
+                    return f"No results found for '{query}' (as of {today}, timelimit={timelimit or 'all'})."
+
+                window = {"d": "past day", "w": "past week", "m": "past month", "y": "past year"}.get(timelimit, "all time")
+                output = f"Search Results for '{query}' (as of {today}, recency: {window}):\n"
                 for i, res in enumerate(results):
                     output += f"{i+1}. Title: {res.get('title')}\n"
                     output += f"   URL: {res.get('href')}\n"
                     output += f"   Snippet: {res.get('body')}\n\n"
-                
+
                 output += "[SYSTEM HINT: If you need the full live data (like exact current weather, prices, or article text), use 'smart_scrape' on the most relevant URL above!]"
                 return output
             except ImportError:

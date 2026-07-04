@@ -71,7 +71,15 @@ class Router:
     def route(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
         base_prompt = f"{self.persona}\n\n{CIEL_ROUTER_PROMPT}" if self.persona else CIEL_ROUTER_PROMPT
         prompt = base_prompt.format(tool_list=tool_list_str)
-        messages = [SystemMessage(content=prompt)]
+        # Anchor the model to the real current date — its training data is older, so it
+        # otherwise assumes a past year and searches e.g. "latest AI news 2024" in 2026.
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        cur_year = datetime.now().year
+        date_note = (f"\n\nCURRENT DATE: {today}. The current year is {cur_year}. "
+                     f"When the user asks for 'latest'/'recent'/'mới nhất' information or builds a web "
+                     f"search query, use {cur_year} (or no year) — NEVER default to an older year.")
+        messages = [SystemMessage(content=prompt + date_note)]
         
         if chat_history.messages:
             for msg in chat_history.messages[-6:]:

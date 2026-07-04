@@ -12,6 +12,7 @@ import re
 import json
 import traceback
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -371,6 +372,23 @@ class CielCore:
         if tool_name not in self._tool_map:
             log.error(f"Tool not found: {tool_name}")
             return f"[TOOL_ERROR] Tool '{tool_name}' not found."
+
+        # STALE-YEAR FIX for web search: the Brain is trained on older data and often
+        # injects a past year into "latest news" queries (observed: user asked for the
+        # latest AI news in 2026, Brain searched "...breakthroughs 2024" → stale results).
+        # If the query carries a past year the user never mentioned, bump it to the
+        # current year so "latest" actually means now.
+        if tool_name in ("stealth_search", "smart_scrape") and isinstance(tool_args.get("query"), str):
+            cur_year = datetime.now().year
+            def _bump_year(m):
+                y = m.group(0)
+                return str(cur_year) if int(y) < cur_year and y not in (user_input or "") else y
+            new_q = re.sub(r"\b(20[0-3]\d)\b", _bump_year, tool_args["query"])
+            if new_q != tool_args["query"]:
+                self._log_thought("TOOL", "query_year_fixed",
+                                  f"stale year in search query bumped to {cur_year}: {tool_args['query']!r} -> {new_q!r}")
+                tool_args = dict(tool_args)
+                tool_args["query"] = new_q
 
         # OUTBOUND EMAIL SANITIZATION (single choke-point): every email-sending path
         # — multi_tool synthesis, direct Brain send, content-filter fallback, replies,
@@ -1002,7 +1020,11 @@ RULES:
             "Ciel", text, flags=re.IGNORECASE)
 
         # Diacritic-insensitive helper for matching Vietnamese meta phrases.
+        # NOTE: "đ"/"Đ" are distinct letters, not composed diacritics, so NFKD does
+        # NOT reduce them to "d" — map them explicitly, otherwise "Chủ đề" folds to
+        # "chu đe" and never matches the "chu de" marker (leaving a "Subject:" line).
         def _fold(s: str) -> str:
+            s = s.replace("đ", "d").replace("Đ", "D")
             nfkd = unicodedata.normalize("NFKD", s)
             return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 

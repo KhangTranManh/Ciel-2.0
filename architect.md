@@ -18,8 +18,8 @@ Ciel 2.0 uses a **Modular Brain-Worker** architecture where responsibilities are
 - **Tool registry/execution | Kho công cụ & thực thi:** `core/tool_manager.py` loads internal + external tool packs, stitches tool manuals, executes by tool name.
 - **Agent system | Hệ thống agent:** `agent_system/` contains the Brain and Worker LLM models, provider config, LangGraph pipeline, and buffer writer tool.
 - **Tool packs | Các gói kỹ năng:**
-  - Internal: workspace/file ops (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py` — standalone, no external dependency)
-  - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`), Telegram notifications (`skills/external/telegram_ops.py`)
+  - Internal: workspace/file ops + PDF/DOCX reader (`skills/internal/system_ops.py`), host OS control (`skills/internal/os_ops.py`), fact tools (`skills/internal/memory_ops.py` — standalone), productivity/todos/utilities (`skills/internal/productivity_ops.py`), vision/UI (`skills/internal/vision_ops.py`)
+  - External: Gmail toolkit/extensions (`skills/external/gmail_ops.py`), crypto/trading toolkit (`skills/external/trading_ops.py`), Telegram notifications (`skills/external/telegram_ops.py`), Git manager (`skills/external/github_ops.py`), web search/scrape (`skills/external/web_agent_ops.py`)
 - **Testing scripts | Script kiểm thử:** `backtest/test_integration.py` (full 17+ test pipeline), `backtest/test_brain_worker.py` (multi-step/multi-file workflow tests), `backtest/test_rag_memory.py` (45-prompt amnesia stress test for hybrid memory), `backtest/test_hard_special.py` + results (hard cases for email bypass, market+send flows, path handling, partial failures, self-correction, mixed language).
 - **Workspace sandbox | Vùng workspace:** `ciel_workspace/` contains files created/tested by tools.
 
@@ -40,11 +40,14 @@ User Input → CielCore.process()
   → Router (Brain LLM) classifies intent → JSON decision
   → Based on action:
       "chat"       → Worker generates natural response
-      "tool"       → Optional safety gate (controlled by SAFETY_OPEN / DISABLE_SAFETY_GATE).
-                     When open: high-risk tools (send_gmail_message, delete, shell, etc.) execute without Y/N.
-                     Protections remain for violent text, leaks, harm, and big/destructive changes.
+      "tool"       → Safety gate (controlled ONLY by DISABLE_SAFETY_GATE; default active).
+                     High-risk tools (send_gmail_message, delete_file, execute_shell_command,
+                     trash_email, git_confirm_push, vision_act) require Master's Y/N.
+                     ↳ Outbound email bodies sanitized + rendered to HTML here (single choke-point).
+                     ↳ stealth_search/smart_scrape queries get stale-year bump + recency window.
                      ToolManager executes → Worker formats result (if needed)
-                     ↳ Brain Self-Correction: evaluates result. If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
+                     ↳ Brain Self-Correction: evaluates result (with deterministic failure-floor).
+                       If unsatisfied, autonomously retries with different tool/args (max 2 attempts)
       "code"       → Worker generates code → buffer_writer flushes to user-specified or clarified path (agent_output/ or ciel_workspace/)
       "multi_tool" → Sequential tool execution (data tools first) → Worker synthesizes combined report (for email sends: synthesis happens before final send re-execution so body contains real filled data)
   → Self-Healing Loop (if error detected):
@@ -73,8 +76,10 @@ Ciel 2.0/
 ├── .env                          # API keys, model names, provider config
 ├── .gitignore
 ├── architect.md                  # This file — full project map
+├── note.txt                      # Project status + email templates (grounding for prompts)
 ├── credentials.json              # Google OAuth credentials
-├── main.py                       # CLI entry point
+├── main.py                       # CLI entry point (input loop + safety callback)
+├── main_api.py                   # FastAPI/WebSocket backend for Flutter HUD
 ├── requirements.txt              # Python dependencies
 │
 ├── core/                         # Main orchestration layer
@@ -104,22 +109,25 @@ Ciel 2.0/
 │   └── utils/
 │       └── logger.py             # Colored console logger
 │
-├── skills/                       # Tool packs
+├── skills/                       # Tool packs (auto-discovered by ToolManager via get_*_tools())
 │   ├── internal/
 │   │   ├── memory_ops.py         # Fact vault tools (standalone JSON-based)
 │   │   ├── os_ops.py             # Shell, screenshot, app launcher
-│   │   ├── system_ops.py         # Workspace file CRUD + Python runner
+│   │   ├── system_ops.py         # Workspace file CRUD + Python runner + read_document (PDF/DOCX)
+│   │   ├── productivity_ops.py   # Todos, time, weather, calculate, grep_in_workspace
 │   │   └── vision_ops.py         # Vision & UI Interaction (grid overlay + Gemini Vision + PyAutoGUI)
 │   └── external/
 │       ├── github_ops.py         # Git repo manager (status, diff, commit, push)
-│       ├── gmail_ops.py          # Gmail toolkit + custom ops
+│       ├── gmail_ops.py          # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
 │       ├── telegram_ops.py       # Telegram Bot API notifications
-│       └── trading_ops.py        # Crypto price, TA, Forex/Metals
+│       ├── trading_ops.py        # Crypto price, TA, Forex/Metals + build_market_report_html
+│       └── web_agent_ops.py      # stealth_search (DuckDuckGo, recency-aware) + smart_scrape (Jina)
 │
 ├── persona/                      # Personality fragments
 │   ├── directives.txt
 │   ├── format.txt
-│   └── identity.txt
+│   ├── identity.txt
+│   └── official_ciel_personality.txt  # Loaded at startup (Ultimate Sage identity)
 │
 ├── backtest/                     # Test suites
 │   ├── test_integration.py       # 17+ test full pipeline validation
@@ -181,6 +189,16 @@ Ciel 2.0/
 - **RAG / Vector Memory**
   - `chromadb`
   - `sentence-transformers` (model: `all-MiniLM-L6-v2`)
+- **Web Search & Scraping**
+  - `ddgs` (DuckDuckGo search — powers `stealth_search`, with recency `timelimit`)
+  - `requests` (used by `smart_scrape` via Jina Reader)
+- **Document Reading**
+  - `pypdf` (PDF text extraction)
+  - `python-docx` (Word .docx text extraction)
+- **Web Server & Communication**
+  - `fastapi`, `uvicorn`, `websockets` (Flutter HUD backend `main_api.py`)
+- **Vision & UI Interaction**
+  - `pyautogui`, `pyperclip`, `google-genai`
 - **Scheduling**
   - `schedule`
 
@@ -194,9 +212,9 @@ Ciel supports multiple LLM providers, configurable independently for Brain and W
 
 Supported providers include Gemini, DeepSeek, Ollama, and Vilao (OpenAI-compatible). Provider selection is done with `BRAIN_PROVIDER` / `WORKER_PROVIDER` and corresponding keys (e.g., `VILAO_KEY`, `VILAO_URL`).
 
-Safety behavior is controlled by:
-- `SAFETY_OPEN=true` (permissive for most operations)
-- `DISABLE_SAFETY_GATE=true` (skips Y/N confirms for high-risk tools)
+Safety behavior is controlled by **two INDEPENDENT flags** (decoupled July 2026 — see Changelog):
+- `SAFETY_OPEN=true` — governs **Brain LLM content-filtering** only (reduces over-blocking of normal tasks like email). Does NOT affect the destructive-tool gate.
+- `DISABLE_SAFETY_GATE` — governs the **destructive-tool confirmation gate** only. Default **`false`** (gate ACTIVE / fail-safe): the six high-risk tools require Y/N approval. Set `true` only for fully unattended automation.
 - Targeted protections retained for violent text, leaks, harm, and destructive actions.
 
 ### 4.3 Key runtime services / credentials
@@ -246,7 +264,8 @@ The Router uses the Brain LLM to classify user input into one of four action typ
 **Prompt Roles Embedded:**
 - **Chain-of-Thought (CoT) Audit:** Enforces output of `hidden_thought` (observation, reasoning, risk) before `action` to ensure debuggability and logical routing.
 - **WINDOWS SYSTEM ARCHITECT:** Forces absolute paths in double quotes, `python -m` prefix, and `taskkill` suggestions for locked files.
-- **Anti-hallucination:** Explicit rule: `NEVER output "action": "shell_command"` — must use `"tool"` with `"execute_shell_command"`.
+- **Anti-hallucination:** Explicit rule: `NEVER output "action": "shell_command"` — must use `"tool"` with `"execute_shell_command"`. Also: never invent numbers/prices for email bodies — reuse only facts already in history, else route to `multi_tool` to fetch.
+- **Current-date anchor (July 2026):** The Router system message injects today's date + current year, so the Brain uses the real year for "latest/mới nhất" searches instead of defaulting to a stale training-data year.
 
 ### 5.2 Recovery Manager (`core/recovery_manager.py`)
 
@@ -306,6 +325,11 @@ Pure text/code generator. No tools, no routing. Features:
 - `_format_fact_result(self, tool_name, result_text)` - Convert raw fact vault tool output into clean user-facing sentences while keeping raw data in `thoughts.log`.
 - `_refine_recalled_context(self, recalled)` - Tier-2 Worker compression for long recalled RAG context after zero-token cleanup.
 - `_request_confirmation(self, tool_name, tool_args)` - **Safety Gate.** Build preview of high-risk tool action and call `confirm_callback`. Logs `[SAFETY]` entries to `thoughts.log`. Returns `True` (approved) or `False` (denied).
+- `_is_failure_result(result)` *(staticmethod)* - Deterministic detector for obviously-failed tool results (error/empty/not-found). Unicode-robust (NFKD + đ→d fold). Forces self-correction even when the Brain rubber-stamps an error.
+- `_sanitize_outbound_email(body, keep_paths=False)` *(staticmethod)* - Strip internal/meta content from a synthesized body: `[COGNITION]` line, persona tag prefixes, signature placeholders (`[Your Name]`/`[Ký tên]`→"Ciel"), "email sent/Message Id" scaffolding, redundant `Subject:`/`Chủ đề:` lines. `keep_paths=False` (email) also strips internal paths; `keep_paths=True` (file report) keeps them.
+- `_plaintext_to_html(text)` *(staticmethod)* - Render clean plain/markdown body → simple HTML (`<p>`/`<br>`/`<strong>`) so `send_gmail_message` (which transmits as text/html) preserves line breaks.
+- `_is_referential_send(user_input)` *(staticmethod)* - True when the user wants a PRIOR response resent ("gửi cái vừa rồi"/"send it"). Excludes "email đó" (recipient address ≠ content).
+- `_last_ai_message_text(self)` - Full (untruncated) text of the most recent Ciel reply from chat history (Router truncates history to 200 chars; this reads the real thing).
 - `execute_chat(self, task)` - Worker generates natural language response.
 - `execute_tool(self, tool_name, tool_args, response_hint)` - **Safety gate check → ** Execute tool with self-healing loop (up to 3 attempts), clean fact output formatting, and optional Worker formatting.
 - `execute_code(self, task, filename)` - Worker generates code → buffer_writer → flush to disk.
@@ -376,8 +400,9 @@ Pure text/code generator. No tools, no routing. Features:
 - `_is_safe_path(target_path)` - Enforce Quarantine Zone path safety.
 - `get_system_tools()` - Build and return internal filesystem/workspace tools + prompt.
 - `list_workspace()` *(nested)* - Recursively list workspace files/folders.
-- `read_file(filename)` *(nested)* - Read file in sandbox.
-- `write_file(filename, content)` *(nested)* - Overwrite/create file. Respects user-specified prefix (`ciel_workspace/` or `agent_output/`) or clarified path. Sandbox rules apply per prefix.
+- `read_file(filename)` *(nested)* - Read a plain-text file (.txt/.md/.json/.py...) in sandbox.
+- `read_document(filename)` *(nested)* - Extract text from **PDF (`pypdf`)** or **DOCX (`python-docx`)**. Use instead of `read_file` for binary docs. Same sandbox; graceful message if lib missing or scanned/image PDF has no extractable text.
+- `write_file(filename, content)` *(nested)* - Overwrite/create file. Respects user-specified prefix (`ciel_workspace/` or `agent_output/`) or clarified path. **Absolute paths (e.g. `D:\Ciel-2.0\agent_output\x.txt`) are accepted if they resolve inside an allowed zone** (fixed July 2026). Sandbox rules apply per prefix.
 - `append_file(filename, content)` *(nested)* - Append line/text to file.
 - `delete_file(filename)` *(nested)* - Delete file/folder in sandbox.
 - `get_file_info(filename)` *(nested)* - Return file type + size.
@@ -408,6 +433,16 @@ Pure text/code generator. No tools, no routing. Features:
 ### `skills/external/telegram_ops.py`
 
 - `send_telegram_message(message)` - Send a message via Telegram Bot API. Reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from `.env`. Returns `True`/`False`.
+
+### `skills/external/web_agent_ops.py`
+
+- `get_web_tools()` - Build web tools + prompt.
+- `stealth_search(query, max_results=5, timelimit="")` *(nested)* - DuckDuckGo search via `ddgs`. **Recency-aware:** for "latest/news/mới nhất..." queries it auto-applies `timelimit="m"` (past month); output is stamped with the current date so the Worker knows the reference "now". `timelimit` accepts `d/w/m/y`.
+- `smart_scrape(url)` *(nested)* - Read full page content as clean Markdown via Jina Reader (`r.jina.ai`).
+
+### `skills/internal/productivity_ops.py`
+
+- `get_productivity_tools()` - Todos (`add_todo`/`list_todos`/`complete_todo`), `get_current_time`, `get_weather`, `calculate`, `grep_in_workspace`.
 
 ### `core/rag_manager.py`
 
@@ -485,6 +520,45 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 ---
 
 ## 8) Changelog | Nhật ký thay đổi
+
+### Reliability Hardening — Safety, Email Integrity, Documents & Time-Aware Search (July 4, 2026)
+
+A large deterministic-safeguards pass. The throughline: **do not rely on the Brain LLM to remember or judge correctly for things that can be checked in code.** Each fix adds a deterministic backstop at the workflow layer.
+
+**Safety Gate decoupled from content-filtering**
+- **Bug:** `SAFETY_OPEN` (a Brain content-filter flag, default `true`) was `OR`-ed into the destructive-tool gate in `llm_connector.py`, `main.py`, and `agent_system/config.py`, so the gate was silently OFF by default. A denied confirmation still deleted the file.
+- **Fix:** The tool gate is now controlled ONLY by `DISABLE_SAFETY_GATE` (default `false` = active). `SAFETY_OPEN` no longer touches it. `.env` set to `DISABLE_SAFETY_GATE=false`.
+
+**Self-Correction deterministic failure-floor**
+- **Bug:** `_evaluate_result()` trusted the Brain's `satisfied` verdict; the Brain sometimes rubber-stamped an obvious error ("Lỗi: … không tồn tại") as satisfactory, so no correction ran.
+- **Fix:** `_is_failure_result()` runs BEFORE the LLM call — error/empty/not-found results always force correction. Unicode-robust (NFKD + explicit `đ→d`) so Vietnamese errors match.
+
+**Outbound email integrity (single choke-point in `execute_tool`)**
+- `_sanitize_outbound_email()` cleans EVERY email path (multi_tool, direct send, fallback, reply, draft) — strips `[COGNITION]`, persona tag prefixes, `Subject:`/`Chủ đề:` lines, "email sent/Message Id" meta, internal paths; replaces `[Your Name]`/`[Ký tên]` → "Ciel".
+- `_plaintext_to_html()` converts the plain body to HTML (`send_gmail_message` transmits text/html, so raw `\n` collapsed into a wall of text). Applied after the confirmation preview so the preview stays readable.
+- **Hard block:** an unsynthesized `[…_TO_BE_SYNTHESIZED]` placeholder body is refused before sending.
+- **Anti-fabrication:** referential sends ("gửi cái vừa rồi") deterministically reuse the verbatim prior reply (Router only sees 200-char-truncated history, so the Brain used to invent data to fill the gap — observed: fabricated Dow/Nasdaq/S&P indices).
+
+**Dynamic market reports (no more hardcoded XAU/BTC)**
+- `_fallback_direct_action()` detects the assets the user actually named (`asset_catalog`: gold/BTC/ETH/EUR/silver/…) and builds the tool plan + subject dynamically. A pure-XAUUSD request no longer runs BTC technicals or mislabels BTC's RSI as gold's.
+
+**Workflow safeguards for dropped terminal steps**
+- If the request clearly implies email intent (address + send verb) but the Brain's `multi_tool` plan lacks a send step → a `send_gmail_message` step is appended.
+- If the request names an explicit write path (`agent_output/…`/`ciel_workspace/…`) with a write verb but the plan lacks a write step → a **deferred `write_file`** is appended and filled with the synthesized report (fixes "claimed the file was created but never wrote it").
+- Research/news emails with no market asset and no file (e.g. "tổng hợp tin kinh tế/World Cup … gửi …") → plan `stealth_search` FIRST, then synthesize from real results (fixes hollow "báo cáo đã đính kèm … [Your Name]" shells).
+
+**Document reading (PDF/DOCX)**
+- **Added** `read_document(filename)` in `system_ops.py` (`pypdf` + `python-docx`). Enables read-a-document → summarize → email. Sandbox honored; absolute-path resolution bug fixed (absolute paths inside `agent_output/`/`ciel_workspace/` were wrongly rejected).
+
+**Time-aware search (fixes stale-year results)**
+- **Router date anchor:** the Brain is told today's date so "latest AI news" doesn't become "…2024" in 2026.
+- **Deterministic year-bump** in `execute_tool`: a past year the user never mentioned is bumped to the current year in `stealth_search`/`smart_scrape` queries (user-specified years preserved).
+- **`stealth_search` recency:** auto-applies `timelimit="m"` for latest/news queries and stamps results with the current date.
+
+**Housekeeping**
+- Installed `ddgs` (search was erroring on every call), `pypdf`, `python-docx`; added to `requirements.txt`.
+- Shared `_EMAIL_INTENT_KEYWORDS` constant (deduped across 3 sites).
+- Softened over-broad heuristics: football "bóng đá"→"Lịch tập" subject now requires schedule/practice words; market keyword detection requires a real asset or strong market word.
 
 ### Memory Recall & Debug Log Polish (May 21, 2026)
 
@@ -615,8 +689,9 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 - Write paths are no longer forced to `agent_output/`. The system asks for destination unless specified in the request. Both `ciel_workspace/` and `agent_output/` are supported.
 - The system supports hot-swapping providers via `.env` without code changes.
 - Keep `thoughts.log` raw and chronological. Use `scripts/format_thoughts_log.py` to generate readable local views when debugging.
-- Safety model: open/permissive by default (SAFETY_OPEN, gate disabled) for normal use; protections kept for violent text, info leaks, harm, and big/destructive changes.
-- Gmail + market data flows: Early bypass + data-first multi-tool + Worker synthesis + re-execution now used so that emails contain filled real data (prices, analysis) based on the Market/Asset Report template in note.txt. Internal paths and placeholders are blocked at multiple layers. Actual inbox verification by user is required to confirm delivery. Backtest/test_hard_special.py covers these scenarios.
+- Safety model (updated July 2026): **content-filtering** (`SAFETY_OPEN`) and the **destructive-tool gate** (`DISABLE_SAFETY_GATE`) are now INDEPENDENT. The gate is ACTIVE by default (`DISABLE_SAFETY_GATE=false`) — the six high-risk tools require Y/N. `SAFETY_OPEN=true` only relaxes Brain content-filtering. Protections kept for violent text, info leaks, harm, and destructive changes.
+- Gmail + market data flows: Early bypass + data-first multi-tool + Worker synthesis + re-execution so emails contain filled real data. Now also covers **research/news emails** (search-first) and **document emails** (read PDF/DOCX first). Every outbound body passes a single sanitizer (no `[COGNITION]`, no meta, no leaked paths, no `[Your Name]`) and is sent as HTML for correct formatting. Internal paths/placeholders blocked at multiple layers; fabricated numbers blocked (referential resend + anti-hallucination rules). Actual inbox verification by the user is still the final check. `backtest/test_hard_special.py` covers these scenarios.
+- Time awareness: searches use the real current date/year (Router date anchor + deterministic year-bump + `stealth_search` recency window), so "latest news" reflects now, not a stale training-data year.
 
 ---
 
