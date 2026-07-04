@@ -377,6 +377,15 @@ class CielCore:
         # drafts — funnels through here, so cleaning the body once covers them all.
         body_key = self._EMAIL_BODY_ARGS.get(tool_name)
         if body_key and isinstance(tool_args.get(body_key), str):
+            # HARD BLOCK: never let an unsynthesized plan placeholder go out as a real
+            # email. This marker is only meant to be replaced by execute_multi_tool's
+            # synthesis step; reaching here means the plan skipped synthesis.
+            if "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]" in tool_args[body_key]:
+                self._log_thought("SAFETY", "email_placeholder_blocked",
+                                  f"{tool_name}: body still contains the synthesis placeholder — send blocked.")
+                return (f"Lỗi: nội dung email chưa được tổng hợp (vẫn còn placeholder) — đã CHẶN gửi. "
+                        f"Cần thu thập dữ liệu thật và tổng hợp nội dung trước khi gửi.")
+
             cleaned = self._sanitize_outbound_email(tool_args[body_key])
             if cleaned != tool_args[body_key]:
                 tool_args = dict(tool_args)
@@ -730,11 +739,18 @@ class CielCore:
         """
         # Separate the send step if present (usually the last step for email requests).
         # Supports plain send_gmail_message and rich send_gmail_html_message.
+        # Also separate a DEFERRED WRITE step: a write_file/append_file whose content
+        # is a synthesis marker — it must run AFTER the report is synthesized so the
+        # file receives the real report, not the placeholder.
         send_tool = None
+        deferred_write = None
         other_tools = []
         for t in tools:
-            if t.get("tool_name") in ("send_gmail_message", "send_gmail_html_message"):
+            name = t.get("tool_name")
+            if name in ("send_gmail_message", "send_gmail_html_message"):
                 send_tool = t
+            elif name in ("write_file", "append_file") and "_TO_BE_SYNTHESIZED]" in str(t.get("tool_args", {}).get("content", "")):
+                deferred_write = t
             else:
                 other_tools.append(t)
 
@@ -767,7 +783,9 @@ Hint: {response_hint}
 RULES:
 1. Be concise. Deliver a unified report without conversational filler.
 2. For chat or internal reports: address as 'Master'. For email body, do NOT include "Master" greeting or internal addressing — make it a clean professional email suitable for sending to the recipient.
-3. ONLY use facts present in the tool outputs above. NEVER invent data.
+3. ONLY use facts present in the tool outputs above. NEVER invent data. NEVER copy any
+   numbers, prices, or values from the persona/system-prompt EXAMPLES — those are
+   illustrative placeholders. Every number in your output must come from a tool result in THIS run.
 4. If any tool returned an error, 'file not found', or empty result, report that honestly. Do NOT fabricate fake data, fake file contents, or fake execution output.
 5. NEVER disclose internal file paths (agent_output/, ciel_workspace/, etc.) in the final report or email body sent to external parties. Use only generic professional language such as 'the detailed evaluation has been prepared' or provide the content directly in the message. Do not reference storage locations.
 6. ONLY claim that an email was sent (e.g. "Đã gửi", "email sent", "Message sent") if there is a successful send_gmail_message tool result with a Message Id in the outputs above. If the send tool was not executed or failed, explicitly say the report is ready but do not claim it was emailed.
@@ -777,6 +795,25 @@ RULES:
         self._log_thought("WORKER", "multi_tool_format_task", format_task)
         formatted = self.worker.generate(format_task)
         self._log_thought("WORKER", "multi_tool_format_response", formatted)
+
+        # The pure synthesized report — used for the file write and the email body.
+        # `formatted` accumulates [FILE]/[EMAIL] status notes for the Master's display
+        # only; those notes must never end up inside the written file or sent email.
+        report_body = formatted
+
+        # Re-execute the deferred write step with the synthesized report, so the
+        # file the user asked for actually receives real content. Clean it first:
+        # strip [COGNITION]/tag prefixes and signature placeholders (keep internal
+        # paths — harmless inside a local workspace file).
+        if deferred_write:
+            w_name = deferred_write.get("tool_name", "write_file")
+            w_args = dict(deferred_write.get("tool_args", {}))
+            w_args["content"] = self._sanitize_outbound_email(report_body, keep_paths=True)
+            log.tool(f"Re-executing {w_name} with synthesized report content")
+            w_res = self.execute_tool(w_name, w_args, response_hint=response_hint, user_input=user_input)
+            self._log_thought("TOOL", f"result_{w_name}", w_res)
+            results.append(f"--- Output from {w_name} ---\n{w_res}")
+            formatted = formatted.rstrip() + f"\n\n[FILE] {w_res}"
 
         # Re-execute the send step with real content built after the data tools ran.
         if send_tool:
@@ -789,10 +826,10 @@ RULES:
             if send_name == "send_gmail_html_message":
                 # Use the synthesized professional content as HTML body (synthesis already made it clean/professional)
                 # Only use special dashboard builder if explicitly planned with build_market_report_html earlier
-                send_args["html_body"] = formatted
+                send_args["html_body"] = report_body
                 send_args.pop("message", None)
             else:
-                send_args["message"] = formatted
+                send_args["message"] = report_body
 
             log.tool(f"Re-executing {send_name} with real content")
             send_res = self.execute_tool(send_name, send_args, response_hint=response_hint, user_input=user_input)
@@ -932,24 +969,37 @@ RULES:
         return any(m in head for m in failure_markers)
 
     @staticmethod
-    def _sanitize_outbound_email(body: str) -> str:
-        """Strip internal/meta content from a synthesized email body before sending.
+    def _sanitize_outbound_email(body: str, keep_paths: bool = False) -> str:
+        """Strip internal/meta content from a synthesized body.
 
         Removes chain-of-thought (`[COGNITION]`), persona structural tag prefixes,
-        self-referential "email sent / Message Id / email body:" scaffolding, notes
-        about internal tooling, and internal file paths — none of which belong in an
-        email delivered to an external recipient. Operates line-by-line so the real
-        report content (prices, evaluation, greeting) is preserved.
+        signature placeholders, and self-referential "email sent / Message Id /
+        email body:" scaffolding. Operates line-by-line so the real report content
+        (prices, evaluation, greeting) is preserved.
+
+        keep_paths=False (default, for outbound EMAIL): also strips internal file
+        paths — they must never leak to external recipients.
+        keep_paths=True (for synthesized FILE reports written into the workspace):
+        internal paths are harmless inside a local file, so they are left intact.
         """
         if not body:
             return body
 
-        # 1a) Remove entire [COGNITION] paragraphs (internal chain-of-thought): from the
-        #     tag through the end of its paragraph (up to the next blank line).
-        text = re.sub(r"(?ms)^[^\n]*\[COGNITION\].*?(?=\n\s*\n|\Z)", "", body)
+        # 1a) Remove the [COGNITION] LINE only (tag + any same-line reasoning). We do
+        #     NOT consume following lines: the Worker often uses [COGNITION] as a bare
+        #     header immediately followed by real report data (prices, dates), and the
+        #     old paragraph-wide removal ate that data. Rule 8 of the synthesis prompt
+        #     already discourages multi-line reasoning here.
+        text = re.sub(r"(?m)^[^\n]*\[COGNITION\][^\n]*\n?", "", body)
 
         # 1b) Remove remaining persona structural tag prefixes: "📊 [MARKET_DATA]", "📈 [TECHNICAL]", etc.
         text = re.sub(r"[\U0001F300-\U0001FAFF☀-➿]*\s*\[[A-Z_]+\]\s*", "", text)
+
+        # 1c) Replace signature placeholders the Worker/Brain sometimes leaves in
+        #     ("[Your Name]", "[Ký tên]") with the actual sender name.
+        text = re.sub(
+            r"\[\s*(?:your name|k[yý] t[eê]n|ch[uữ] k[yý]|t[eê]n c[uủ]a b[aạ]n|name|signature|sender)\s*\]",
+            "Ciel", text, flags=re.IGNORECASE)
 
         # Diacritic-insensitive helper for matching Vietnamese meta phrases.
         def _fold(s: str) -> str:
@@ -958,7 +1008,8 @@ RULES:
 
         # Internal file paths: strip just the path TOKEN (keep the rest of the line),
         # so a legitimate sentence that merely mentions a path is not lost entirely.
-        path_re = re.compile(r"\b(?:agent_output|ciel_workspace)/[\w./\-]+")
+        # Skipped entirely for file reports (keep_paths=True).
+        path_re = None if keep_paths else re.compile(r"\b(?:agent_output|ciel_workspace)/[\w./\-]+")
 
         # 2) Drop lines that are purely internal meta / self-reference.
         drop_markers = (
@@ -972,8 +1023,9 @@ RULES:
 
         kept = []
         for line in text.splitlines():
-            line = path_re.sub("", line)                 # remove internal path tokens
-            line = re.sub(r"[ \t]{2,}", " ", line)       # tidy gaps left behind
+            if path_re is not None:
+                line = path_re.sub("", line)             # remove internal path tokens
+                line = re.sub(r"[ \t]{2,}", " ", line)   # tidy gaps left behind
             folded = _fold(line)
             if any(m in folded for m in drop_markers):
                 continue
@@ -989,16 +1041,19 @@ RULES:
 
     # Phrases indicating the user wants a PRIOR response sent, not new content
     # (e.g. "gửi thông tin này", "gửi cái vừa rồi", "send this", "send that report").
+    # NOTE: "email"/"thư"/"mail" are deliberately EXCLUDED — "gửi qua email đó" means
+    # "send to THAT email ADDRESS" (recipient), not "resend the previous content".
+    # Including them mis-fired the referential override and sent stale content.
     _REFERENTIAL_SEND_PATTERNS = (
         r"th[oô]ng tin (n[aà]y|đ[oó]|v[uừ]a r[oồ]i)",
-        r"(c[aá]i|n[oộ]i dung|b[aá]o c[aá]o|email|thư) (n[aà]y|đ[oó]|v[uừ]a r[oồ]i)",
+        r"(c[aá]i|n[oộ]i dung|b[aá]o c[aá]o|k[eế]t qu[aả]) (n[aà]y|đ[oó]|v[uừ]a r[oồ]i)",
         r"v[uừ]a (r[oồ]i|n[aã]y)",
         r"như (tr[eê]n|đ[aã] (n[oó]i|b[aà]n))",
-        r"\bthis (info|information|email|report|content)\b",
-        r"\bthat (info|information|email|report|content)\b",
+        r"\bthis (info|information|report|content|summary)\b",
+        r"\bthat (info|information|report|content|summary)\b",
         r"\bwhat we (just )?(discussed|talked about)\b",
         r"\bthe above\b",
-        r"\bsend (this|that|it)\b",
+        r"\bsend it\b",
     )
 
     @staticmethod
@@ -1176,6 +1231,27 @@ RULES:
                     self._log_thought("BRAIN", "multi_tool_send_step_added",
                                       f"Plan was missing a send step despite explicit email intent — appended send_gmail_message to {to_match.group(0)}.")
 
+                # Same class of safeguard for FILE WRITES: the Brain routinely plans
+                # only the data tools and drops the "viết báo cáo vào <path>" step,
+                # then the response claims the file was created (observed in Hard 5 /
+                # Special 5/6/9 backtests). If the request names an explicit target
+                # path with a write verb and the plan has no write step, append a
+                # deferred write that execute_multi_tool fills with the synthesized report.
+                has_write_step = any(t.get("tool_name") in ("write_file", "append_file") for t in tools)
+                path_match = re.search(r'((?:[A-Za-z]:[\\/](?:[\w .-]+[\\/])*)?(?:agent_output|ciel_workspace)[\\/][\w.\\/ -]*[\w-]\.\w+)', user_input)
+                write_verb_present = any(v in lowered for v in (
+                    "viết", "ghi", "write", "save", "lưu", "tạo", "create", "make", "generate", "note", "tao file", "tạo file"))
+                if not has_write_step and path_match and write_verb_present:
+                    tools = list(tools) + [{
+                        "tool_name": "write_file",
+                        "tool_args": {
+                            "filename": path_match.group(1),
+                            "content": "[REPORT_CONTENT_TO_BE_SYNTHESIZED]",
+                        },
+                    }]
+                    self._log_thought("BRAIN", "multi_tool_write_step_added",
+                                      f"Plan was missing a write step despite explicit target path — appended write_file to {path_match.group(1)}.")
+
                 response = self.execute_multi_tool(tools, hint, user_input)
 
             else:
@@ -1225,10 +1301,15 @@ RULES:
             strong_market_words = ("thị trường", "market", "forex", "crypto", "chứng khoán", "cổ phiếu")
             is_market_email = bool(detected) or any(w in lowered for w in strong_market_words)
 
-            # Build a sensible subject (non-market heuristics first; market overrides dynamically).
-            if "đá bóng" in lowered or "bóng đá" in lowered:
+            # Build a sensible subject (market/research branches override this below).
+            # The football-practice subject only applies to an actual schedule/reminder
+            # request — NOT to news like "tổng hợp tin World Cup" (which contains "bóng đá"
+            # but is a news summary, not a practice reminder).
+            is_practice_reminder = (("đá bóng" in lowered or "bóng đá" in lowered)
+                                    and any(w in lowered for w in ("lịch", "tập", "luyện", "nhắc", "buổi", "practice", "training")))
+            if is_practice_reminder:
                 subject = "Nhắc nhở: Lịch tập đá bóng"
-            elif "lịch" in lowered:
+            elif "lịch" in lowered and not any(w in lowered for w in ("tổng hợp", "tổng kết", "tin tức", "báo cáo", "phân tích")):
                 subject = "Thông báo lịch"
             else:
                 subject = "Email từ Ciel"
@@ -1260,6 +1341,63 @@ RULES:
                                       "technical data, say so honestly instead of borrowing another's. Make it clear, well-structured, "
                                       "polite, and useful like a proper sent email. Use Vietnamese if the request is in Vietnamese. "
                                       "Never use placeholders, meta tags, or internal paths. Send via the send tool. Never claim sent without a real Message Id.")
+                }
+
+            # DOCUMENT-BASED EMAIL: the request references a concrete file ("đọc file
+            # X.pdf và gửi báo cáo..."). Observed failure: the old direct-send branch
+            # composed a polite shell email WITHOUT ever reading the file, so the
+            # recipient got "báo cáo đã được chuẩn bị... [Your Name]" with no content.
+            # Plan the read step first, then let multi_tool synthesis fill the body
+            # from the document's actual text before the send re-executes.
+            file_match = re.search(
+                r'((?:[A-Za-z]:[\\/])?[\w.\\/ -]*?[\w-]+\.(pdf|docx|txt|md|json|csv|log))\b',
+                user_input, re.IGNORECASE)
+            if file_match:
+                fname = file_match.group(1).strip()
+                ext = file_match.group(2).lower()
+                read_tool = "read_document" if ext in ("pdf", "docx") else "read_file"
+                return {
+                    "action": "multi_tool",
+                    "tools": [
+                        {"tool_name": read_tool, "tool_args": {"filename": fname}},
+                        {"tool_name": "send_gmail_message", "tool_args": {"to": to_addr, "subject": subject, "message": "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]"}},
+                    ],
+                    "response_hint": ("Read the document FIRST, then synthesize a professional email that reports the "
+                                      "document's ACTUAL content (summary, key points, data). If reading failed or the file "
+                                      "has no extractable text, say so honestly instead of sending an empty shell email. "
+                                      "Match the language of the request. Never leave placeholders like [Your Name] — sign as Ciel."),
+                }
+
+            # RESEARCH-BASED EMAIL: a summary/report/news request with no market asset
+            # and no file. Observed failure (thoughts.log): the direct-send branch below
+            # asked the Worker to "write an email" from a request that contains NO data,
+            # so it produced a hollow shell ("báo cáo đã chuẩn bị và đính kèm... [Your Name]")
+            # and sent it. Instead, gather real data via stealth_search first, then let
+            # multi_tool synthesis build the body from actual results (or report honestly
+            # if search failed) before sending.
+            research_words = ("tổng kết", "tình hình", "báo cáo", "cập nhật", "tin tức", "phân tích",
+                              "tổng hợp", "summary", "report", "situation", "news", "update", "analysis", "overview")
+            # Skip when referential ("gửi báo cáo VỪA RỒI") — that means resend prior
+            # content, handled by the referential-send override in process(), not a fresh search.
+            if any(w in lowered for w in research_words) and not self._is_referential_send(user_input):
+                # Build a search query from the request minus the send/recipient noise.
+                query = re.sub(r'[\w.\-]+@[\w.\-]+\.\w+', '', user_input)
+                query = re.split(r'\b(?:và |sau đó |rồi |then |and )?(?:gửi|gởi|send|email|mail)\b', query, 1, re.IGNORECASE)[0].strip()
+                query = query or user_input
+                # Topic-based subject beats the generic/football default for a news summary.
+                topic = re.sub(r'^(vậy|hãy|please|xin|làm ơn)\s+', '', query, flags=re.IGNORECASE).strip()
+                research_subject = f"Tổng hợp thông tin: {topic[:70]}" if topic else subject
+                return {
+                    "action": "multi_tool",
+                    "tools": [
+                        {"tool_name": "stealth_search", "tool_args": {"query": query, "max_results": 5}},
+                        {"tool_name": "send_gmail_message", "tool_args": {"to": to_addr, "subject": research_subject, "message": "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]"}},
+                    ],
+                    "response_hint": ("Search the web FIRST, then synthesize a professional email that reports the ACTUAL "
+                                      "findings from the search results (facts, figures, key points with brief context). "
+                                      "If the search returned an error or no usable results, say so honestly and do NOT send "
+                                      "an empty shell email claiming a report is 'attached' or 'prepared'. Never claim a file is "
+                                      "attached — put the content directly in the body. Match the request's language. Sign as Ciel."),
                 }
 
             # Non-market or simple email: original Worker body gen + direct send

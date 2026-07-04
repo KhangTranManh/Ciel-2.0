@@ -1,1 +1,28 @@
-Báo cáo chi tiết đánh giá rủi ro XAUUSD và BTC...
+Chủ đề: Báo cáo thị trường nhanh – BTC & XAUUSD
+
+Kính gửi anh/chị,
+
+Dưới đây là bản tóm tắt đánh giá thị trường dựa trên dữ liệu mới nhất:
+
+**1. Bitcoin (BTC/USD)**
+- Giá hiện tại: 62,549.99 USD
+- Biến động 24h: +1.66%
+- Cao nhất / Thấp nhất 24h: 62,979.86 / 61,248.86
+- RSI (1 ngày): 47.58 (vùng trung tính)
+- MA(5): 60,603.78 | MA(30): 62,462.35
+- Xu hướng: Giảm (Bearish) – giá đang dưới MA(30) và RSI trung tính nhưng nghiêng về yếu.
+- Đánh giá rủi ro: Trung bình-cao. Vùng hỗ trợ gần nhất cần theo dõi là 61,200 (đáy 24h). Nếu mất vùng này, rủi ro giảm sâu hơn sẽ gia tăng.
+
+**2. Vàng (XAU/USD)**
+- Giá hiện tại: 4,174.84 USD
+- Dữ liệu kỹ thuật (RSI, MA): Không có đủ dữ liệu từ công cụ phân tích để đưa ra đánh giá chi tiết.
+- Đánh giá rủi ro: Chưa thể xác định do thiếu chỉ báo kỹ thuật. Khuyến nghị theo dõi thêm các phiên giao dịch tới.
+
+**Tổng quan rủi ro thị trường:**
+- BTC đang trong xu hướng giảm ngắn hạn, rủi ro ở mức trung bình-cao.
+- XAUUSD chưa có đủ dữ liệu để đánh giá, cần cập nhật thêm.
+
+Bản đánh giá chi tiết đã được chuẩn bị sẵn sàng. Nếu cần thêm thông tin hoặc phân tích chuyên sâu, vui lòng phản hồi email này.
+
+Trân trọng,
+Ciel

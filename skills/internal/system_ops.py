@@ -32,8 +32,24 @@ AGENT_OUTPUT_DIR = BASE_DIR / "agent_output"
 AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def _resolve_target_path(target_path: str) -> Path:
-    """Resolve path allowing both ciel_workspace and agent_output based on prefix."""
+    """Resolve path allowing both ciel_workspace and agent_output based on prefix.
+
+    Absolute paths are accepted IF they resolve inside one of the two allowed
+    zones. Previously an absolute path fell into the relative-default branch,
+    where pathlib's `base / "D:/..."` discards `base` entirely — so absolute
+    paths into agent_output/ were wrongly rejected while absolute paths into
+    ciel_workspace/ passed only by coincidence (the Brain routinely produces
+    absolute Windows paths per its WINDOWS SYSTEM ARCHITECT rules).
+    """
     target_path = target_path.strip().replace("\\", "/")
+
+    if Path(target_path).is_absolute():
+        resolved = Path(target_path).resolve()
+        for base in (AGENT_OUTPUT_DIR.resolve(), WORKSPACE_DIR.resolve()):
+            if resolved.is_relative_to(base):
+                return resolved
+        raise PermissionError(f"[CẢNH BÁO BẢO MẬT] Truy cập bị từ chối. Lệnh '{target_path}' nhắm ra ngoài vùng cho phép.")
+
     if target_path.startswith("agent_output/"):
         rel = target_path[len("agent_output/"):].lstrip("/")
         base = AGENT_OUTPUT_DIR

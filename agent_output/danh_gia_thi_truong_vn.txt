@@ -1,0 +1,17 @@
+Master,
+
+📊 [MARKET_DATA]  
+- XAU/USD: 4,174.91 USD  
+- BTC/USD: 62,562.25 USD (4h khung)  
+
+📈 [BTC TECHNICAL]  
+- RSI (4h): 66.74 (TRUNG TÍNH)  
+- MA5: 62,093.89 | MA30: 60,354.26  
+- Xu hướng: TĂNG  
+- Biến động 24h: Cao 62,979.86 – Thấp 61,248.86  
+- Thay đổi: +1.65%  
+
+🧠 [COGNITION]  
+Vàng đang ở mức 4,174.91 USD, không có dữ liệu kỹ thuật chi tiết từ tool. BTC duy trì xu hướng tăng với RSI trung tính, chưa quá mua. Thị trường có tín hiệu tích cực nhưng cần theo dõi thêm.
+
+Báo cáo đã được tổng hợp và sẵn sàng.
