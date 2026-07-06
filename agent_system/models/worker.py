@@ -22,6 +22,7 @@ from ..config import (
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
+    LLM_REQUEST_TIMEOUT,
 )
 from ..utils.logger import log
 
@@ -105,6 +106,7 @@ class Worker:
                 api_key=DEEPSEEK_API_KEY,
                 base_url="https://api.deepseek.com",
                 temperature=WORKER_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (DeepSeek)")
         elif WORKER_PROVIDER.lower() == "gemini":
@@ -114,6 +116,7 @@ class Worker:
                 model=WORKER_MODEL,
                 google_api_key=GEMINI_API_KEY,
                 temperature=WORKER_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (Gemini)")
         else:
@@ -122,6 +125,7 @@ class Worker:
                 base_url=OLLAMA_BASE_URL,
                 temperature=WORKER_TEMPERATURE,
                 num_ctx=WORKER_NUM_CTX,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} @ {OLLAMA_BASE_URL}")
 

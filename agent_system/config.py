@@ -39,6 +39,31 @@ WORKER_MODEL = os.getenv("CODER_MODEL", "gemini-2.5-flash")
 WORKER_TEMPERATURE = 0.2
 WORKER_NUM_CTX = 8192
 
+# --- Middleware (verifier/finalizer for outbound email/report content) ---
+# Third tier: reviews Worker output for relevance/consistency/plausible-grounding
+# before it leaves the system (e.g. an email send). Deliberately narrow-scoped —
+# see core/llm_connector.py's _middleware_review() for the choke-point and
+# instructionAI-style rationale (this is a semantic backstop on top of, not a
+# replacement for, the deterministic sanitizer/safeguards already in place).
+MIDDLEWARE_ENABLED = os.getenv("MIDDLEWARE_ENABLED", "false").lower() in ("true", "1", "yes")
+MIDDLEWARE_PROVIDER = os.getenv("MIDDLEWARE_PROVIDER", "gemini")
+MIDDLEWARE_MODEL = os.getenv("MIDDLEWARE_MODEL", "gemini-2.5-pro")
+MIDDLEWARE_TEMPERATURE = float(os.getenv("MIDDLEWARE_TEMPERATURE", "0.1"))
+# "email" = only send_gmail_message/send_gmail_html_message/reply_to_email/create_gmail_draft.
+# "external"/"all" are accepted but currently behave like "email" — chat-path and
+# non-email external channels are not wired into the review choke-point yet.
+MIDDLEWARE_SCOPE = os.getenv("MIDDLEWARE_SCOPE", "email").lower()
+MIDDLEWARE_MAX_PASSES = int(os.getenv("MIDDLEWARE_MAX_PASSES", "1"))
+
+# --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
+# Without this, a provider that stalls (accepts the connection but never replies —
+# different from an outright connection error) hangs the client forever, and the
+# tenacity retry logic below never engages because no exception is ever raised to
+# retry on. Observed: a live test run sat at 0% CPU for 10+ minutes on a single
+# Worker call with no error and no recovery. This bounds the wait so a stall raises
+# a real (retryable) timeout instead of hanging indefinitely.
+LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "90"))  # seconds
+
 # --- Retry: Gemini (cloud — fewer attempts, longer waits) ---
 GEMINI_RETRY_MAX_ATTEMPTS = 5
 GEMINI_RETRY_INITIAL_WAIT = 2   # seconds

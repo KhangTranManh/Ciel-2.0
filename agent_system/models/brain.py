@@ -30,6 +30,7 @@ from ..config import (
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
     ALLOWED_TOOL_NAMES,
+    LLM_REQUEST_TIMEOUT,
 )
 from ..utils.logger import log
 
@@ -145,11 +146,13 @@ class Brain:
                 base_url=OLLAMA_BASE_URL,
                 temperature=BRAIN_TEMPERATURE,
                 format="json",
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             self._reflect_llm = ChatOllama(
                 model=BRAIN_MODEL,
                 base_url=OLLAMA_BASE_URL,
                 temperature=BRAIN_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Brain initialized: {BRAIN_MODEL} (Ollama, dual-instance)")
         elif BRAIN_PROVIDER.lower() == "deepseek":
@@ -158,6 +161,7 @@ class Brain:
                 api_key=DEEPSEEK_API_KEY,
                 base_url="https://api.deepseek.com",
                 temperature=BRAIN_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {BRAIN_MODEL} (DeepSeek)")
@@ -174,6 +178,7 @@ class Brain:
                 "api_key": VILAO_API_KEY,
                 "base_url": VILAO_URL,
                 "temperature": BRAIN_TEMPERATURE,
+                "timeout": LLM_REQUEST_TIMEOUT,
             }
             if extra and "extra_body" in extra:
                 llm_kwargs["extra_body"] = extra["extra_body"]
@@ -188,6 +193,7 @@ class Brain:
                 api_key=GPT_API_KEY,
                 base_url=base,
                 temperature=BRAIN_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {BRAIN_MODEL} (GPT/OpenAI-compatible)")
@@ -196,6 +202,7 @@ class Brain:
                 model=BRAIN_MODEL,
                 google_api_key=GEMINI_API_KEY,
                 temperature=BRAIN_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
             )
             self._reflect_llm = self._router_llm  # Gemini handles both fine
             log.system(f"Brain initialized: {BRAIN_MODEL} (Gemini)")

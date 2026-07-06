@@ -28,7 +28,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent_system.models.brain import Brain
 from agent_system.models.worker import Worker
+from agent_system.models.middleware import Middleware
 from agent_system.utils.logger import log
+from agent_system.config import MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES
 
 load_dotenv()
 
@@ -104,7 +106,17 @@ class CielCore:
         self.router = Router(self.brain, self._log_thought, persona=self.ciel_persona)
         self.recovery = RecoveryManager(self.worker, self._log_thought)
 
-        log.system("CielCore initialized with Modular Brain-Worker architecture")
+        # Third tier: Middleware (semantic verifier/finalizer for outbound content).
+        # Lazily constructed only if enabled, so a disabled Middleware costs nothing
+        # (no extra LLM client, no API key requirement).
+        self.middleware = None
+        if MIDDLEWARE_ENABLED:
+            try:
+                self.middleware = Middleware()
+            except Exception as e:
+                log.error(f"Middleware failed to initialize, continuing without it: {e}")
+
+        log.system("CielCore initialized with Modular Brain-Middleware-Worker architecture")
 
         # SAFETY GATE: confirmation callback for high-risk tools
         # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
@@ -409,6 +421,14 @@ class CielCore:
                 tool_args = dict(tool_args)
                 tool_args[body_key] = cleaned
                 self._log_thought("TOOL", "email_sanitized", f"{tool_name}: stripped internal/meta content from '{body_key}'.")
+
+            # THIRD TIER — Middleware semantic review/finalize (relevance, consistency,
+            # plausible grounding). Runs BEFORE the safety-gate preview so the Master's
+            # Y/N prompt reflects the final body. No-op if MIDDLEWARE_ENABLED=false.
+            reviewed = self._middleware_review(user_input, tool_name, tool_args[body_key])
+            if reviewed != tool_args[body_key]:
+                tool_args = dict(tool_args)
+                tool_args[body_key] = reviewed
 
         # SAFETY GATE: require confirmation for high-risk tools.
         # Controlled ONLY by DISABLE_SAFETY_GATE (default OFF = gate active / fail-safe).
@@ -1060,6 +1080,63 @@ RULES:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         cleaned = re.sub(r"^\s*(-{3,}\s*\n)+", "", cleaned)
         return cleaned.strip()
+
+    # Tools covered by MIDDLEWARE_SCOPE="email" (also the current behavior for
+    # "external"/"all" until non-email channels and the chat path are wired in).
+    _MIDDLEWARE_EMAIL_TOOLS = frozenset(_EMAIL_BODY_ARGS.keys())
+
+    def _middleware_review(self, user_input: str, tool_name: str, body: str) -> str:
+        """Third-tier semantic check on outbound content (see agent_system/models/middleware.py).
+
+        Runs AFTER the deterministic sanitizer, BEFORE the safety-gate preview —
+        so if Middleware revises the body, the Master's Y/N prompt shows the final
+        version that will actually be sent, not a stale draft.
+
+        Fail-open by design: disabled, out-of-scope, or erroring Middleware all
+        return the body unchanged. This is a backstop ON TOP OF the deterministic
+        rules, never a replacement — a Middleware hiccup must not block delivery.
+        """
+        if not self.middleware or not body:
+            return body
+        if MIDDLEWARE_SCOPE in ("email", "external", "all") and tool_name not in self._MIDDLEWARE_EMAIL_TOOLS:
+            return body
+
+        max_passes = max(1, MIDDLEWARE_MAX_PASSES)
+        current = body
+        for attempt in range(max_passes):
+            pass_tag = f"{tool_name} (pass {attempt+1}/{max_passes})"
+            try:
+                verdict = self.middleware.review(user_input, current)
+            except Exception as e:
+                self._log_thought("MIDDLEWARE", "review_error", f"{pass_tag}: {e} — approving as-is (fail-open).\nBODY SENT UNCHANGED:\n{current}")
+                break
+
+            if verdict.get("approved", True):
+                # Always log, even on silent approval — otherwise "middleware ran and
+                # approved" is indistinguishable in thoughts.log from "middleware never
+                # ran" (disabled/out-of-scope), which defeats the point of an audit trail.
+                note = "approved, no changes." if attempt == 0 else f"approved after {attempt} revision(s)."
+                self._log_thought("MIDDLEWARE", "reviewed", f"{pass_tag}: {note}\nFINAL BODY SENT:\n{current}")
+                break
+
+            reasoning = verdict.get("reasoning", "no reason given")
+            revised = verdict.get("revised_body")
+            if revised:
+                # Full before/after diff so the audit trail can reconstruct exactly
+                # what Middleware changed and why — not just the one-line reasoning.
+                self._log_thought("MIDDLEWARE", "revised",
+                                  f"{pass_tag}: {reasoning}\n"
+                                  f"--- BEFORE ---\n{current}\n"
+                                  f"--- AFTER ---\n{revised}")
+                log.middleware(f"Revised {tool_name} body — {reasoning[:80]}")
+                current = revised
+            else:
+                self._log_thought("MIDDLEWARE", "flagged_unfixable",
+                                  f"{pass_tag}: {reasoning} — sending original (fail-open).\nBODY SENT UNCHANGED:\n{current}")
+                log.middleware(f"Flagged but could not auto-fix {tool_name} — sending as-is: {reasoning[:80]}")
+                break
+
+        return current
 
     # Phrases indicating the user wants a PRIOR response sent, not new content
     # (e.g. "gửi thông tin này", "gửi cái vừa rồi", "send this", "send that report").

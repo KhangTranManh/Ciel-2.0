@@ -1,17 +1,18 @@
-Master,
+**Giá vàng (XAU/USD):** 4,174.91 USD (không có thay đổi, khối lượng, hay phân tích kỹ thuật từ công cụ).
 
-📊 [MARKET_DATA]  
-- XAU/USD: 4,174.91 USD  
-- BTC/USD: 62,562.25 USD (4h khung)  
+**BTC/USD:** 62,733.98 – 62,795.01 USD  
+- Biến động 24h: +0.389%  
+- Cao nhất: 63,461.99 / Thấp nhất: 62,328.24  
+- RSI (1h): 50.14 (TRUNG TÍNH)  
+- MA5: 63,000.65 / MA30: 62,789.16  
+- Xu hướng ngắn hạn: TĂNG (Bullish), nhưng thiếu động lực rõ rệt.
 
-📈 [BTC TECHNICAL]  
-- RSI (4h): 66.74 (TRUNG TÍNH)  
-- MA5: 62,093.89 | MA30: 60,354.26  
-- Xu hướng: TĂNG  
-- Biến động 24h: Cao 62,979.86 – Thấp 61,248.86  
-- Thay đổi: +1.65%  
+**Đánh giá tổng quan:**
+- **Vàng:** Không có dữ liệu phân tích kỹ thuật hoặc xu hướng. Giá đang ở mức cao, cần thêm thông tin để đánh giá rủi ro/cơ hội.
+- **BTC:** Đang ở vùng trung tính, xu hướng tăng ngắn hạn nhưng chưa có xác nhận mạnh. Rủi ro sideway nếu không giữ trên MA30 (62,789). Cơ hội: nếu giá duy trì trên MA30, có thể tiếp tục tăng lên vùng kháng cự gần 63,462.
 
-🧠 [COGNITION]  
-Vàng đang ở mức 4,174.91 USD, không có dữ liệu kỹ thuật chi tiết từ tool. BTC duy trì xu hướng tăng với RSI trung tính, chưa quá mua. Thị trường có tín hiệu tích cực nhưng cần theo dõi thêm.
+**Khuyến nghị:**
+- Vàng: Theo dõi thêm dữ liệu kinh tế vĩ mô và biến động USD.
+- BTC: Có thể xem xét vị thế mua nếu giá giữ trên 62,789, đặt stop loss dưới 62,300. Chưa nên vào lệnh lớn do thiếu tín hiệu xác nhận.
 
-Báo cáo đã được tổng hợp và sẵn sàng.
+Đã tạo file báo cáo tại `agent_output/danh_gia_thi_truong_vn.txt` với nội dung chi tiết.

@@ -85,7 +85,21 @@ def fetch_crypto_technical(symbol: str, interval: str = "1h") -> str:
         if crsi >= 70: rsi_status = "QUÁ MUA (Overbought)"
         elif crsi <= 30: rsi_status = "QUÁ BÁN (Oversold)"
 
-        return f"Kỹ thuật {symbol} ({interval}): Giá {cp}, RSI: {crsi:.2f} ({rsi_status}), MA(5,30): {ma5:.2f}, {ma30:.2f}, Xu hướng: {trend}"
+        # Deterministic price-vs-MA facts, stated explicitly so the Worker never has
+        # to (mis-)infer this comparison itself when writing the narrative. Observed
+        # failure (caught by Middleware): the Worker repeatedly asserted "price is
+        # below MA5/MA30, confirming the bearish trend" when price was actually ABOVE
+        # both — an arithmetic error an LLM should never have to make when Python can
+        # state the fact for free. "Xu hướng" (MA5-vs-MA30 cross) and "vị trí giá"
+        # (price-vs-MA) are two DIFFERENT signals — labeled separately to avoid
+        # conflating them.
+        pos5 = "TRÊN" if cp > ma5 else ("DƯỚI" if cp < ma5 else "BẰNG")
+        pos30 = "TRÊN" if cp > ma30 else ("DƯỚI" if cp < ma30 else "BẰNG")
+
+        return (f"Kỹ thuật {symbol} ({interval}): Giá {cp}, RSI: {crsi:.2f} ({rsi_status}), "
+                f"MA(5,30): {ma5:.2f}, {ma30:.2f}, Xu hướng (MA5 vs MA30): {trend}. "
+                f"Vị trí giá (dùng câu này khi mô tả giá so với MA, đừng tự suy luận): "
+                f"giá hiện tại đang ở {pos5} MA5 và {pos30} MA30.")
     except Exception as e: return f"Lỗi tính toán: {e}"
 
 

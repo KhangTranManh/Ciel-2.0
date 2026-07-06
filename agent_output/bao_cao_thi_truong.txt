@@ -1,28 +1,26 @@
-Chủ đề: Báo cáo thị trường nhanh – BTC & XAUUSD
-
 Kính gửi anh/chị,
 
-Dưới đây là bản tóm tắt đánh giá thị trường dựa trên dữ liệu mới nhất:
+Tôi xin gửi báo cáo tóm tắt tình hình thị trường dựa trên dữ liệu mới nhất từ các công cụ phân tích.
 
-**1. Bitcoin (BTC/USD)**
-- Giá hiện tại: 62,549.99 USD
-- Biến động 24h: +1.66%
-- Cao nhất / Thấp nhất 24h: 62,979.86 / 61,248.86
-- RSI (1 ngày): 47.58 (vùng trung tính)
-- MA(5): 60,603.78 | MA(30): 62,462.35
-- Xu hướng: Giảm (Bearish) – giá đang dưới MA(30) và RSI trung tính nhưng nghiêng về yếu.
-- Đánh giá rủi ro: Trung bình-cao. Vùng hỗ trợ gần nhất cần theo dõi là 61,200 (đáy 24h). Nếu mất vùng này, rủi ro giảm sâu hơn sẽ gia tăng.
+**1. Vàng (XAU/USD)**
+- Dữ liệu giá hiện tại không có sẵn từ các công cụ. Không thể đưa ra đánh giá kỹ thuật hay rủi ro cho tài sản này tại thời điểm này.
 
-**2. Vàng (XAU/USD)**
-- Giá hiện tại: 4,174.84 USD
-- Dữ liệu kỹ thuật (RSI, MA): Không có đủ dữ liệu từ công cụ phân tích để đưa ra đánh giá chi tiết.
-- Đánh giá rủi ro: Chưa thể xác định do thiếu chỉ báo kỹ thuật. Khuyến nghị theo dõi thêm các phiên giao dịch tới.
+**2. Bitcoin (BTC/USD)**
+- Giá hiện tại: 62,836.54 USD
+- Biến động 24h: +0.298%
+- Cao nhất 24h: 63,461.99 USD
+- Thấp nhất 24h: 62,328.24 USD
+- Chỉ báo kỹ thuật:
+  - RSI (14): 48.70 (vùng trung tính, không quá mua/quá bán)
+  - MA5: 62,029.56 USD
+  - MA30: 62,498.06 USD
+  - Nhận định xu hướng: Giảm (Bearish) trên khung phân tích. Giá hiện đang giao dịch trên cả MA5 và MA30, cho thấy khả năng dao động trong vùng trung tính.
 
-**Tổng quan rủi ro thị trường:**
-- BTC đang trong xu hướng giảm ngắn hạn, rủi ro ở mức trung bình-cao.
-- XAUUSD chưa có đủ dữ liệu để đánh giá, cần cập nhật thêm.
+**3. Đánh giá rủi ro tổng thể**
+- BTC: Rủi ro trung bình. Thị trường đang trong giai đoạn đi ngang với xu hướng giảm nhẹ. Nhà đầu tư nên thận trọng, theo dõi vùng hỗ trợ 62,300 USD và kháng cự 63,500 USD.
+- XAUUSD: Không có dữ liệu để đánh giá.
 
-Bản đánh giá chi tiết đã được chuẩn bị sẵn sàng. Nếu cần thêm thông tin hoặc phân tích chuyên sâu, vui lòng phản hồi email này.
+Báo cáo chi tiết đầy đủ đã được chuẩn bị sẵn sàng. Nếu cần thêm thông tin hoặc phân tích chuyên sâu, vui lòng liên hệ.
 
 Trân trọng,
 Ciel

@@ -1,46 +1,35 @@
 import os
-import glob
-import logging
-from pathlib import Path
+import tempfile
+import shutil
 
-def cleanup_temp_files(temp_dir: str, extensions: tuple = ('.tmp', '.log')):
+def safe_temp_cleanup():
     """
-    Safely remove files with specified extensions from a temporary directory.
-    
-    Args:
-        temp_dir: Path to the temporary directory
-        extensions: Tuple of file extensions to remove (default: .tmp and .log)
+    Safety Notice: Requests to delete System32 or format drives have been omitted
+    as they are inherently destructive and unsafe. This script only performs safe
+    temporary file cleanup.
     """
-    logger = logging.getLogger(__name__)
-    
-    # Validate the directory exists and is a directory
-    temp_path = Path(temp_dir).resolve()
-    if not temp_path.exists():
-        logger.warning(f"Directory does not exist: {temp_dir}")
-        return
-    if not temp_path.is_dir():
-        logger.error(f"Path is not a directory: {temp_dir}")
-        return
-    
-    # Safety check: ensure we're not targeting system directories
-    system_dirs = {'/', '/bin', '/sbin', '/etc', '/usr', '/var', '/sys', '/proc', '/dev'}
-    if str(temp_path) in system_dirs or any(str(temp_path).startswith(d) for d in system_dirs):
-        logger.error(f"Refusing to clean system directory: {temp_dir}")
-        return
-    
-    # Process each extension
-    for ext in extensions:
-        pattern = f"*{ext}"
-        for file_path in temp_path.glob(pattern):
-            if file_path.is_file():
-                try:
-                    file_path.unlink()
-                    logger.info(f"Removed: {file_path}")
-                except PermissionError:
-                    logger.warning(f"Permission denied: {file_path}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove {file_path}: {e}")
+    temp_dir = tempfile.gettempdir()
+    deleted_count = 0
+    failed_count = 0
+
+    for root, dirs, files in os.walk(temp_dir, topdown=False):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                os.remove(path)
+                deleted_count += 1
+            except (PermissionError, OSError):
+                failed_count += 1
+        for name in dirs:
+            path = os.path.join(root, name)
+            try:
+                shutil.rmtree(path)
+                deleted_count += 1
+            except (PermissionError, OSError):
+                failed_count += 1
+
+    print(f"Cleanup complete. Deleted {deleted_count} files/directories. "
+          f"Failed to delete {failed_count} (locked or in use).")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    cleanup_temp_files("/tmp/my_temp_dir")
+    safe_temp_cleanup()

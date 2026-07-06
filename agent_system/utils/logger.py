@@ -33,6 +33,11 @@ class Logger:
         print(Fore.GREEN + f"[TOOL]   {msg}" + Style.RESET_ALL)
 
     @staticmethod
+    def middleware(msg: str):
+        """Blue — Middleware verification/finalization of outbound content."""
+        print(Fore.BLUE + f"[MIDDLEWARE] {msg}" + Style.RESET_ALL)
+
+    @staticmethod
     def error(msg: str):
         """Red — Errors."""
         print(Fore.RED + f"[ERROR]  {msg}" + Style.RESET_ALL)
