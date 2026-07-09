@@ -12,7 +12,7 @@ Three actors, three models, one loop:
 
 | Actor | Model | Role |
 |---|---|---|
-| **Simulated Master** | `deepseek-v4-pro` | Rotates through 21 capability categories, uses 3-task lookback to avoid repetition, generates single-scope tasks with explicit output specs |
+| **Simulated Master** | `deepseek-v4-pro` (task-gen) | Rotates through 21 capability categories, uses 3-task lookback to avoid repetition, generates single-scope tasks with explicit output specs. Sequential fallback pool (23 tasks) used when the API returns empty/invalid output. |
 | **Ciel (Brain + Worker)** | `gemini-2.5-pro` + `gemini-2.5-flash` | Executes the task end-to-end (routing, tool calls, code gen, response) |
 | **The Judge** | `deepseek-v4-pro` | Audits Worker responses for hallucination, conciseness, persona compliance. Produces critique + recommendations |
 
@@ -20,7 +20,8 @@ Three actors, three models, one loop:
 - **Entry point (testing):** `test_end_to_end.py` — immediate single-cycle test harness
 - **Task generation:** `task_generator.py` — calls DeepSeek to generate a task, then runs it through `AgentLoop`
 - **Judge audit + dataset:** `data_pipeline.py` — reads `ciel_data/logs/thoughts.log`, audits with DeepSeek Judge, augments fine-tune dataset, sends Telegram alerts
-- **State persistence:** `state.json` — tracks log seek cursor, cumulative metrics, scheduling timestamps
+- **Chaos injection:** `chaos_injector.py` — every 10th cycle, writes synthetic hard-scenario log entries instead of running a real task (see section 10)
+- **State persistence:** `state.json` — tracks log seek cursor, cumulative metrics, scheduling timestamps, chaos/fallback rotation indices
 
 ---
 
@@ -75,8 +76,9 @@ Same logic as production, but runs once immediately and exits.
 autonomous_pipeline/
 ├── architect.md                  # This file — subsystem architecture map
 ├── orchestrator.py               # Production daemon scheduler (VPS background process)
-├── task_generator.py             # Simulated Master: generates tasks via DeepSeek-v4-flash
+├── task_generator.py             # Simulated Master: generates tasks via DeepSeek-v4-pro
 ├── data_pipeline.py              # Judge audit, dataset augmentation, Telegram alerts
+├── chaos_injector.py             # ~23 adversarial scenarios injected every 10th cycle (see section 10)
 ├── test_end_to_end.py            # Manual single-cycle integration test
 ├── state.json                    # Persistent state: seek cursor, metrics, timestamps
 ├── thoughts.log                  # Judge-only audit log (DeepSeek prompts + responses)
