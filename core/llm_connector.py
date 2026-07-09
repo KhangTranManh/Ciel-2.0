@@ -73,13 +73,46 @@ RAG_LLM_COMPRESS_OUTPUT_LIMIT = 5000
 # ==========================================================
 
 # Risk descriptions for high-risk tools (shown in confirmation prompt)
+_DANGEROUS_CODE_PATTERNS = (
+    r"format\s+[a-z]:", r"shutil\.rmtree\(", r"rm\s+-rf\s+/", r"del\s+/f\s*/s\s*/q",
+    r"shutdown\s+/[rsf]", r"os\.system\([^)]*\brm\b", r"DROP\s+DATABASE", r"DROP\s+TABLE",
+    r"mkfs\.", r"diskutil\s+erasedisk", r":(){ :\|:& };:",
+)
+
+
+def _find_dangerous_code_patterns(text: str) -> list:
+    """Deterministic scan for genuinely destructive code/commands (drive format, mkfs,
+    rmtree, fork bombs, etc.) — same bar backtest/test_hard_special.py checks against.
+    Code generation (execute_code) and write_file/append_file never passed through the
+    Safety Gate before (only pre-declared high-risk TOOLS did), so an LLM could write a
+    fully wired format_drive()/mkfs call straight to disk with zero confirmation."""
+    return [pat for pat in _DANGEROUS_CODE_PATTERNS if re.search(pat, text, re.IGNORECASE)]
+
+
+# Errors where NO tool_args correction can possibly help — retrying with guessed
+# parameters is guaranteed to fail again, it just costs an extra Worker call each time.
+# Found via scripts/prompt_harness.py: 220 HEALING_TRIGGER/UnclassifiedError occurrences
+# in thoughts.log, most of them this class (missing python library, network/geo issues)
+# rather than an actual parameter typo the self-healing "guess a corrected arg" prompt
+# (recovery_manager.py's "other tools" branch) could ever fix. Deliberately narrow: genuine
+# format issues ("Could not find price for BTCUSDT... Ensure format is correct") are LEFT
+# eligible, since a corrected symbol format is a real, observed fix for those.
+_HEALING_SKIP_PATTERNS = re.compile(
+    r"library is not installed|service unavailable from a restricted location|"
+    r"max retries exceeded|read timed out|\[winerror|forbidden by its",
+    re.IGNORECASE,
+)
+
+
 _RISK_DESCRIPTIONS = {
-    "delete_file":           "Permanently DELETE a file from your workspace",
-    "execute_shell_command": "Run an OS shell command on your machine",
-    "send_gmail_message":    "Send an email from your Gmail account",
-    "trash_email":           "Move an email to Trash in your Gmail",
-    "git_confirm_push":      "Commit and PUSH code to the remote repository",
-    "vision_act":            "Autonomously control your screen (click, type, scroll)",
+    "delete_file":             "Permanently DELETE a file from your workspace",
+    "execute_shell_command":   "Run an OS shell command on your machine",
+    "send_gmail_message":      "Send an email from your Gmail account",
+    "send_gmail_html_message": "Send an HTML email from your Gmail account",
+    "reply_to_email":          "Send a reply to an email thread",
+    "trash_email":             "Move an email to Trash in your Gmail",
+    "git_confirm_push":        "Commit and PUSH code to the remote repository",
+    "vision_act":              "Autonomously control your screen (click, type, scroll)",
 }
 
 class CielCore:
@@ -150,6 +183,30 @@ class CielCore:
         "gửi cho", "qua email", "qua mail", "qua gmail", "gửi báo cáo", "gửi report",
         "send report", "email report", "báo cáo qua", "report qua", "mail cho", "email cho",
     )
+
+    # Generic send verbs used with a concrete email address as a broader, low-false-
+    # positive email-intent signal (see _is_email_send_intent).
+    _SEND_VERBS = ("gửi", "gởi", "send", "chuyển", "mail")
+
+    @classmethod
+    def _is_email_send_intent(cls, user_input: str, lowered: str) -> bool:
+        """True if the request is about sending an email — via a fixed keyword phrase
+        OR a concrete email address plus any generic send verb.
+
+        The fixed-phrase list alone misses natural phrasings like "gửi qua
+        x@gmail.com" (the address sits where "qua gmail" would, so no fixed phrase
+        matches). This was an observed gap: such requests skipped the deterministic
+        data-first fallback (_fallback_direct_action) and fell through to the Brain
+        composing the email body itself with no tool call to ground it — the same
+        failure class as the fabricated Dow/Nasdaq/S&P email earlier in this project.
+        Address+verb is additive, not a replacement — the fixed list still catches
+        phrasings with no literal @-address (e.g. "gửi báo cáo cho anh Nam qua Gmail").
+        """
+        if any(kw in lowered for kw in cls._EMAIL_INTENT_KEYWORDS):
+            return True
+        has_address = bool(re.search(r'[\w.\-]+@[\w.\-]+\.\w+', user_input))
+        has_send_verb = any(v in lowered for v in cls._SEND_VERBS)
+        return has_address and has_send_verb
 
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
     _TOOL_HINTS = {
@@ -349,9 +406,9 @@ class CielCore:
         self._log_thought("WORKER", "chat_response", response)
         return response
 
-    def _request_confirmation(self, tool_name: str, tool_args: dict) -> bool:
+    def _request_confirmation(self, tool_name: str, tool_args: dict, risk_override: str = None) -> bool:
         """Request Master's approval before executing a high-risk tool."""
-        risk = _RISK_DESCRIPTIONS.get(tool_name, f"Execute {tool_name}")
+        risk = risk_override or _RISK_DESCRIPTIONS.get(tool_name, f"Execute {tool_name}")
         args_preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
         preview = (
             f"Action: {risk}\n"
@@ -401,6 +458,20 @@ class CielCore:
                                   f"stale year in search query bumped to {cur_year}: {tool_args['query']!r} -> {new_q!r}")
                 tool_args = dict(tool_args)
                 tool_args["query"] = new_q
+
+        # DANGEROUS CODE GATE: write_file/append_file can save arbitrary Worker-generated
+        # code straight to disk with no confirmation (unlike pre-declared _HIGH_RISK_TOOLS).
+        # Catch real destructive commands (drive format, mkfs, fork bombs...) here so
+        # writing them out still requires the Master's explicit Y/N, same as any other
+        # high-risk action. Fail-closed: on denial, nothing is written.
+        if tool_name in ("write_file", "append_file") and isinstance(tool_args.get("content"), str):
+            matched = _find_dangerous_code_patterns(tool_args["content"])
+            if matched:
+                disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
+                if not disable_gate:
+                    risk = f"Write code containing destructive pattern(s): {', '.join(matched)}"
+                    if not self._request_confirmation(tool_name, tool_args, risk_override=risk):
+                        return f"[CANCELLED] Master denied writing potentially destructive code to '{tool_args.get('filename', '?')}'. No action was taken."
 
         # OUTBOUND EMAIL SANITIZATION (single choke-point): every email-sending path
         # — multi_tool synthesis, direct Brain send, content-filter fallback, replies,
@@ -455,7 +526,20 @@ class CielCore:
         attempt = 1
         current_args = tool_args
 
-        while attempt <= max_attempts and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script")):
+        if (
+            tool_name != "run_python_script"
+            and _HEALING_SKIP_PATTERNS.search(result_text[:300])
+            and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30])
+        ):
+            self._log_thought("HEALING", "skipped_unfixable",
+                              f"{tool_name}: error matches a known-unfixable pattern (missing dependency / "
+                              f"network / geo-restriction) — no tool_args correction could fix this, skipping retries.")
+
+        while (
+            attempt <= max_attempts
+            and not (tool_name != "run_python_script" and _HEALING_SKIP_PATTERNS.search(result_text[:300]))
+            and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script"))
+        ):
             self._log_thought("HEALING", f"attempt_{attempt}", f"Starting heal attempt {attempt}/{max_attempts}")
             
             previous_code = ""
@@ -682,6 +766,17 @@ class CielCore:
         self._log_thought("WORKER", "code_task", task)
         code = self.worker.generate(augmented_task)
         self._log_thought("WORKER", "code_response", code)
+
+        # Same dangerous-code gate as write_file/append_file (see execute_tool) — this
+        # path writes to disk independently via buffer_writer, so it needs its own check.
+        matched = _find_dangerous_code_patterns(code)
+        if matched:
+            disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
+            if not disable_gate:
+                risk = f"Write generated code containing destructive pattern(s): {', '.join(matched)}"
+                if not self._request_confirmation("execute_code", {"filename": filename}, risk_override=risk):
+                    return f"[CANCELLED] Master denied writing potentially destructive generated code to '{filename}'. No action was taken."
+
         buffer_writer.append(code)
         result = buffer_writer.flush(filename)
         log.tool(result)
@@ -1251,7 +1346,7 @@ RULES:
             # Proactive bypass for email sends: avoid calling the Brain router at all
             # when the request is clearly about sending email. This prevents the
             # Vilao content filter from ever being triggered on the routing call.
-            if any(kw in lowered for kw in self._EMAIL_INTENT_KEYWORDS):
+            if self._is_email_send_intent(user_input, lowered):
                 log.system("Email send request detected — bypassing Brain router to avoid content filter.")
                 decision = self._fallback_direct_action(user_input)
             else:
@@ -1265,6 +1360,36 @@ RULES:
                     else:
                         raise
             action = decision.get("action", "chat")
+
+            # WORKFLOW SAFEGUARD (single-tool case): a compound "look something up,
+            # then email me" request sometimes gets under-scoped by the Brain into a
+            # single action="tool" call instead of a multi_tool plan — the send-step
+            # safeguard below only runs for action=="multi_tool", so it never sees
+            # this case, leaving the LLM's own self-correction (fixed 2-attempt
+            # budget) as the only backstop. Found via scripts/prompt_harness.py: 84
+            # recurring "gathered data but never sent the email" self-correction
+            # triggers in thoughts.log, one confirmed case where self-correction
+            # tried get_fact('email') on an empty vault and burned its last retry
+            # without ever sending. Fix: promote to multi_tool up front so the
+            # existing send-step safeguard (below) can append send_gmail_message.
+            if action == "tool":
+                _tool_name_pre = decision.get("tool_name", "")
+                if _tool_name_pre not in ("send_gmail_message", "send_gmail_html_message"):
+                    _to_match_pre = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+                    _send_verb_pre = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
+                    if _to_match_pre and _send_verb_pre:
+                        decision = dict(decision)
+                        decision["action"] = "multi_tool"
+                        decision["tools"] = [{
+                            "tool_name": _tool_name_pre,
+                            "tool_args": decision.get("tool_args", {}),
+                        }]
+                        action = "multi_tool"
+                        self._log_thought(
+                            "BRAIN", "tool_promoted_to_multi_tool",
+                            f"Single-tool plan ({_tool_name_pre}) had email send intent with no "
+                            f"send step — promoted to multi_tool so the send-step safeguard can append it.",
+                        )
 
             if action == "tool":
                 tool_name = decision.get("tool_name", "")
@@ -1375,7 +1500,7 @@ RULES:
         lowered = user_input.lower()
 
         # Gmail / email send intent (very common trigger for content filter on Brain)
-        if any(kw in lowered for kw in self._EMAIL_INTENT_KEYWORDS):
+        if self._is_email_send_intent(user_input, lowered):
             # Extract recipient email if present, otherwise default to the known test address
             import re
             match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)

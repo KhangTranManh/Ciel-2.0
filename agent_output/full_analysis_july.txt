@@ -1,10 +1,17 @@
-Chủ nhân.
+📊 **BÁO CÁO PHÂN TÍCH THỊ TRƯỜNG – BTC & XAU (Tháng 7)**
 
-BTC: 62,804.97 USDT (+0.449%), High 63,461.99, Low 62,328.24. XAU/USD: 4,174.91. Không có dữ liệu RSI hay xu hướng từ tool. File btc_calc.py có lỗi cố ý (giá 999999) và phần sửa dùng giá thật 62,800.01. Sẽ viết script và báo cáo.
+**1. Tổng quan thị trường**
 
-**BTC/USDT:** 62,804.97 USDT (+0.449%) | 24h Range: 62,328.24 – 63,461.99
-**XAU/USD:** 4,174.91
+- **Bitcoin (BTC/USDT):** Giá hiện tại 63.030,00 USD. Biến động 24h: +1,416%. Cao nhất 24h: 63.283,26 USD, thấp nhất 24h: 61.544,56 USD. Chỉ số RSI ở mức 49,25 (trung tính). Đường MA5 (63.275,20) nằm trên MA30 (62.648,29) cho thấy xu hướng tăng ngắn hạn. Giá hiện đang giao dịch dưới MA5 nhưng trên MA30, phản ánh trạng thái điều chỉnh nhẹ trong xu hướng tăng.
 
-**Script:** agent_output/btc_calc.py đã được tạo với lỗi cố ý (giá 999999) và phần sửa dùng giá thật 62,800.01.
+- **Vàng (XAU/USD):** Dữ liệu giá và phân tích kỹ thuật hiện không khả dụng từ các công cụ. Chỉ có giá tham chiếu 4.114,38 USD/oz từ một nguồn không đầy đủ. Không thể đưa ra đánh giá chi tiết về xu hướng, kháng cự hay hỗ trợ cho vàng tại thời điểm này.
 
-**Báo cáo chi tiết:** agent_output/full_analysis_july.txt đã được tạo với dữ liệu chính xác từ tool.
+**2. Đánh giá chiến lược**
+
+- **BTC:** Tín hiệu trung lập đến tích cực. RSI trung tính cho thấy thị trường chưa quá mua hay quá bán. Xu hướng MA5/MA30 vẫn duy trì tín hiệu tăng. Vùng giá 61.544 – 63.283 là biên độ giao dịch chính trong 24h qua. Cần theo dõi khả năng bứt phá trên MA5 (63.275) để xác nhận đà tăng tiếp.
+
+- **XAU:** Không đủ dữ liệu để phân tích. Khuyến nghị thu thập thêm số liệu giá, thống kê 24h và chỉ báo kỹ thuật trước khi đưa ra nhận định.
+
+**3. Kết luận**
+
+Báo cáo chi tiết đã được tổng hợp dựa trên dữ liệu thực tế từ các công cụ. Đối với vàng, cần bổ sung dữ liệu để hoàn thiện phân tích. Mọi quyết định giao dịch nên dựa trên đánh giá rủi ro cá nhân.

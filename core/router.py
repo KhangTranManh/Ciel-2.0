@@ -1,6 +1,6 @@
 ﻿import json
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_any
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
 from agent_system.models.brain import Brain, TRANSIENT_ERRORS
 from agent_system.utils.logger import log
@@ -80,15 +80,17 @@ class Router:
                      f"When the user asks for 'latest'/'recent'/'mới nhất' information or builds a web "
                      f"search query, use {cur_year} (or no year) — NEVER default to an older year.")
         messages = [SystemMessage(content=prompt + date_note)]
-        
-        if chat_history.messages:
-            for msg in chat_history.messages[-6:]:
-                content = msg.content[:200]
-                if msg.type == "human":
-                    messages.append(HumanMessage(content=content))
-                else:
-                    messages.append(AIMessage(content=content))
-                    
+
+        # `chat_history` is intentionally NOT fed into the routing call (removed July
+        # 2026). Classifying the CURRENT request's action doesn't need prior turns, and
+        # including the last few raw messages let the Brain conflate an old unresolved
+        # request (e.g. "create a todo script" left pending on a missing path) with a
+        # LATER, unrelated request — observed producing an extra, unrequested file once
+        # a usable path appeared in the new turn. Genuine cross-turn continuity is
+        # already handled by two safer, more deliberate mechanisms: RAG recall (semantic-
+        # relevance-gated, injected into `user_input` itself before this call) and
+        # `_is_referential_send()` (deterministic "send that/gửi cái vừa rồi" handling).
+        # The `chat_history` parameter is kept only for call-site/signature compatibility.
         messages.append(HumanMessage(content=user_input))
 
         self.log_thought("USER", "request", user_input)

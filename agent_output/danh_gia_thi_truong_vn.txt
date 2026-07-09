@@ -1,18 +1,43 @@
-**Giá vàng (XAU/USD):** 4,174.91 USD (không có thay đổi, khối lượng, hay phân tích kỹ thuật từ công cụ).
+📊 BÁO CÁO ĐÁNH GIÁ THỊ TRƯỜNG
+Ngày: Hôm nay
 
-**BTC/USD:** 62,733.98 – 62,795.01 USD  
-- Biến động 24h: +0.389%  
-- Cao nhất: 63,461.99 / Thấp nhất: 62,328.24  
-- RSI (1h): 50.14 (TRUNG TÍNH)  
-- MA5: 63,000.65 / MA30: 62,789.16  
-- Xu hướng ngắn hạn: TĂNG (Bullish), nhưng thiếu động lực rõ rệt.
+---
 
-**Đánh giá tổng quan:**
-- **Vàng:** Không có dữ liệu phân tích kỹ thuật hoặc xu hướng. Giá đang ở mức cao, cần thêm thông tin để đánh giá rủi ro/cơ hội.
-- **BTC:** Đang ở vùng trung tính, xu hướng tăng ngắn hạn nhưng chưa có xác nhận mạnh. Rủi ro sideway nếu không giữ trên MA30 (62,789). Cơ hội: nếu giá duy trì trên MA30, có thể tiếp tục tăng lên vùng kháng cự gần 63,462.
+I. TỔNG QUAN GIÁ
 
-**Khuyến nghị:**
-- Vàng: Theo dõi thêm dữ liệu kinh tế vĩ mô và biến động USD.
-- BTC: Có thể xem xét vị thế mua nếu giá giữ trên 62,789, đặt stop loss dưới 62,300. Chưa nên vào lệnh lớn do thiếu tín hiệu xác nhận.
+1. Vàng (XAU/USD):
+   - Giá hiện tại: 4,114.72 USD/oz
+   - Ghi chú: Dữ liệu chỉ có giá spot, không có biến động chi tiết.
 
-Đã tạo file báo cáo tại `agent_output/danh_gia_thi_truong_vn.txt` với nội dung chi tiết.
+2. Bitcoin (BTC/USD):
+   - Giá hiện tại: 63,050.01 USD (nguồn: phân tích kỹ thuật)
+   - Biến động 24h: +1.524%
+   - Cao nhất 24h: 63,283.26 USD
+   - Thấp nhất 24h: 61,544.56 USD
+
+---
+
+II. PHÂN TÍCH KỸ THUẬT – BTC
+
+- RSI (14): 49.33 → TRUNG TÍNH, không quá mua cũng không quá bán.
+- MA5: 63,279.21 USD
+- MA30: 62,648.95 USD
+- Nhận xét: Giá đang giao dịch DƯỚI MA5 nhưng TRÊN MA30. Xu hướng MA5 vs MA30: TĂNG. Điều này cho thấy đà tăng ngắn hạn đang chững lại nhưng xu hướng trung hạn vẫn tích cực.
+
+---
+
+III. ĐÁNH GIÁ & NHẬN ĐỊNH
+
+- Vàng: Giá ở mức rất cao (4,114.72 USD). Không có dữ liệu biến động hay kỹ thuật để phân tích sâu hơn. Cần thận trọng nếu tham gia ở vùng giá này.
+- Bitcoin: Thị trường đang trong giai đoạn sideway tích lũy quanh vùng 63,000 USD. RSI trung tính cho thấy chưa có tín hiệu đảo chiều rõ ràng. Xu hướng trung hạn vẫn tăng (MA30 < MA5). Vùng hỗ trợ gần nhất: 62,648 USD (MA30). Vùng kháng cự: 63,279 USD (MA5).
+
+---
+
+IV. KHUYẾN NGHỊ
+
+- Vàng: Chưa đủ dữ liệu để đưa ra khuyến nghị cụ thể. Khuyến nghị theo dõi thêm biến động và tin tức kinh tế vĩ mô.
+- Bitcoin: Có thể xem xét mua vào khi giá test lại vùng hỗ trợ MA30 (~62,648 USD) với kỳ vọng tiếp tục xu hướng tăng. Cắt lỗ dưới 61,500 USD (đáy 24h). Mục tiêu: vùng 64,000 – 65,000 USD.
+
+---
+
+*Báo cáo được tổng hợp từ dữ liệu thị trường hiện tại. Đây không phải lời khuyên tài chính.*

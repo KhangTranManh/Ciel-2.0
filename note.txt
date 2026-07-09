@@ -263,7 +263,7 @@
 
 ---
 
-## Ciel 2.0 Current Status (as of July 4, 2026)
+## Ciel 2.0 Current Status (as of July 6, 2026)
 
 This project (Ciel 2.0) has the following active configuration and recent focus:
 
@@ -272,9 +272,16 @@ This project (Ciel 2.0) has the following active configuration and recent focus:
 - SAFETY MODEL (IMPORTANT — decoupled July 2026): two INDEPENDENT flags.
   - SAFETY_OPEN=true, VILAO_SAFETY_BYPASS=true → relax Brain CONTENT-filtering only.
   - DISABLE_SAFETY_GATE=false (DEFAULT) → the destructive-tool confirmation gate is ACTIVE.
-    The six high-risk tools (delete_file, execute_shell_command, send_gmail_message,
-    trash_email, git_confirm_push, vision_act) require Master's Y/N. Do NOT re-couple the
-    two flags — that previously made a denied confirmation still delete the file.
+    Eight high-risk tools (delete_file, execute_shell_command, send_gmail_message,
+    send_gmail_html_message, reply_to_email, trash_email, git_confirm_push, vision_act)
+    require Master's Y/N. Do NOT re-couple the two flags — that previously made a denied
+    confirmation still delete the file.
+  - DANGEROUS-CODE GATE (added July 6, 2026): write_file/append_file and execute_code() also
+    require Y/N when the content matches a real destructive pattern (drive format, mkfs,
+    shutil.rmtree, fork bomb...) — found live via a "format the drive but only if safe" test:
+    the Worker's own idea of "safe" was a dry_run flag that still wired a real subprocess
+    format/mkfs call, gated only against the OS system drive (not e.g. D:\, where Ciel lives).
+    Same confirm flow/UX as the eight tools above; bypassed only by DISABLE_SAFETY_GATE=true.
 - Safety kept specifically for: violent text, info leaks, harm, big/destructive changes.
 - File writing: System asks for explicit path (ciel_workspace/ or agent_output/) unless the
   query already names one. Absolute paths inside those two zones are now accepted.
@@ -301,11 +308,127 @@ Testing: backtest/test_hard_special.py (email bypass, mixed language, partial fa
 path, self-correction, harmful intent) + backtest/test_integration.py (safety gate, self-healing,
 self-correction). User verification of the actual inbox (kxctran@gmail.com) remains the final check.
 
-See the July 4, 2026 "Reliability Hardening" entry in architect.md (Changelog) for full details.
+THIRD TIER — Middleware (added July 5, 2026, disabled by default via MIDDLEWARE_ENABLED):
+- A semantic verifier/finalizer for outbound email/report bodies ONLY (MIDDLEWARE_SCOPE=email).
+  Runs after the deterministic sanitizer, before the safety-gate preview.
+- Catches what regex/rules cannot: topic mismatch (asked about X, body is about Y), internal
+  numeric contradictions (says "Bearish" but the stated price is above both moving averages),
+  and templated shells with no real content ("báo cáo đã chuẩn bị và đính kèm" with nothing in it).
+- Acts as a FINALIZER: edits the body in place when it finds a fixable problem, rather than just
+  blocking. Capped at MIDDLEWARE_MAX_PASSES (default 1). Fail-open on every failure mode (disabled,
+  out-of-scope, provider error, or unfixable flag) — a Middleware hiccup must never block a send.
+- IMPORTANT constraint in its prompt: it may ONLY flag numbers that contradict each other within
+  the SAME body — never reject a number just because it looks unfamiliar against its own training
+  knowledge (it once wrongly rejected a genuine live gold price as "unrealistic" before this rule
+  was added; real-world/live data can and will differ from any model's training-era priors).
+- Full audit trail in thoughts.log under actor MIDDLEWARE: REVIEWED (even silent approvals — so
+  "ran and approved" is distinguishable from "never ran"), REVISED (full before/after diff),
+  FLAGGED_UNFIXABLE, REVIEW_ERROR.
+
+REQUEST TIMEOUT (added July 5, 2026): all three tiers (Brain/Worker/Middleware) now set an explicit
+LLM_REQUEST_TIMEOUT (default 90s) on every LLM client. Previously NONE of them had a timeout, so a
+provider that stalled (accepted the connection but never replied) hung the whole pipeline forever —
+found live during test runs (0% CPU for 10+ minutes on one stuck call). Now a stall raises a
+catchable timeout instead.
+
+TRADING TOOL FIX (July 5, 2026): analyze_crypto_technical's raw output now explicitly states whether
+price is above/below MA5 and MA30 (a deterministic Python comparison), separate from the MA5-vs-MA30
+"Xu hướng" cross signal. The Worker used to infer the price-vs-MA comparison itself when writing
+narrative and got it backwards on multiple observed occasions — now it just copies the stated fact.
+
+TEST SUITE REWRITE (July 5, 2026): test_hard_special.py now asserts REAL behavior (file actually on
+disk, email actually has a Gmail Message Id, no dangerous code actually present) instead of matching
+substrings in the response text, which produced many false failures unrelated to real bugs. Each test
+attaches its own thoughts.log slice and the run ends with a BUG DASHBOARD listing every Middleware
+catch / tool error / healing trigger / failed check in one place. Structured .json log saved per run
+to backtest/logs/hard_special_<timestamp>.json.
+
+GAPS FIXED July 6, 2026 (previously listed here as open — see architect.md Changelog for detail):
+1. "gửi qua <email>" routing gap — FIXED. `_is_email_send_intent()` (llm_connector.py) now treats
+   a real email address + any generic send verb (gửi/gởi/send/chuyển/mail) as send-intent, not just
+   the fixed keyword-phrase list. Verified: the exact previously-broken sentence now routes through
+   the data-first fallback (stealth_search) instead of the Brain composing content directly.
+2. Cross-request contamination — FIXED. `Router.route()` (router.py) no longer feeds the Brain the
+   last 6 raw chat_history messages at all — routing now judges only the current turn. Cross-turn
+   continuity still works via RAG recall (semantic, gated) and `_is_referential_send()` (deterministic
+   "gửi cái vừa rồi" handling). Verified live: the exact Special-1→Special-2 repro sequence ("create a
+   todo script" no path, then unrelated "write hello world to X.py") no longer creates the stray file.
+   Regression-checked against market+email, VN market+path+email, and 2-turn chat continuity — all pass.
+
+OTHER FIXES same session (see architect.md Changelog for detail):
+3. trading_ops.py: 4 raw `requests.get()` calls (Binance/TwelveData) had no `timeout=` — same
+   hang-forever class as the earlier LLM timeout bug. Fixed: timeout=10 on all four.
+4. productivity_ops.py `calculate()`: a logic bug made it reject EVERY function call (including
+   `abs()`/`round()`/`sqrt()` advertised in its own docstring) — the isinstance check could never be
+   true. Rewritten with a real whitelist; verified against both valid calls and injection attempts
+   (`__import__`, subclass traversal, `open()`, `exec()` all still correctly rejected).
+5. Safety Gate gap: `send_gmail_html_message` and `reply_to_email` send real email but were missing
+   from `_RISK_DESCRIPTIONS` — they could fire with zero Y/N confirmation (unlike send_gmail_message).
+   Added both to the high-risk set; verified deny blocks the send, approve still sends normally.
+6. Dangerous-code gate (new): write_file/append_file and execute_code() previously wrote ANY
+   LLM-generated content straight to disk with no review. Found live via test_hard_special.py
+   "Special 3" — the Worker wrote a fully wired drive-format function guarded only against the OS
+   system drive. Added `_find_dangerous_code_patterns()` + Safety-Gate confirmation before either
+   write path commits dangerous-looking code to disk.
+
+Full suite re-run after fixes 1-6: test_integration.py 27/28 (1 non-functional routing-type mismatch,
+content was correct), test_hard_special.py 15/16 (the 1 failure was gap #6 above, now fixed).
+
+PROMPT-REWRITE HARNESS (added July 6, 2026): `scripts/prompt_harness.py` mines thoughts.log for
+RECURRING failure patterns (Middleware corrections, tool errors, healing triggers, self-correction
+retries), tags them by root cause via regex (not an LLM call), and points at which prompt/file to
+patch. Never edits a prompt itself — output is a dated report under backtest/logs/ for human review.
+Run: `python -m scripts.prompt_harness --min-count 3`.
+
+7. First real finding from the harness — single-tool email-send gap: the existing multi_tool
+   "auto-append send_gmail_message if the plan forgot it" safeguard (llm_connector.py, added July 4)
+   only fires inside the `action == "multi_tool"` branch. When the Brain under-scopes a compound
+   "search X, then email me" request into a single `action: "tool"` call instead, that safeguard
+   never runs, leaving only the 2-attempt self-correction loop as backstop. Confirmed live in the
+   log: a "summarize World Cup news and email it" turn routed as single-tool stealth_search, the
+   Worker asked the user for their email instead of sending, self-correction tried `get_fact('email')`
+   on an empty vault, and burned its last retry without ever sending. This was the single largest
+   harness cluster (~84 recurring "gathered data but never finished the request" triggers).
+   Fixed: right after the route decision, a single-tool call with a real email address + send verb
+   and no existing send step is promoted to a multi_tool plan (original tool + appended
+   send_gmail_message), reusing the existing multi_tool safeguard instead of duplicating it.
+   Verified deterministically against the real failing input plus 5 edge cases (no address, no send
+   verb, tool already is a send tool). Re-ran full suite (2026-07-09): test_integration.py 27/28
+   (same pre-existing non-functional fail, no new regressions), test_hard_special.py 14/16 — Hard 2/5
+   and Special 4 (the email+data combo cases that exercise this exact fix) all passed with real
+   Gmail Message Ids. The 2 test_hard_special fails are unrelated to this fix: Hard 6 is a checker
+   false-positive (Ciel correctly refused; regex matched the refusal's own prose), Special 3 is a
+   real pre-existing Worker issue (generated `shutil.rmtree(` for a "safe cleanup" code-gen request)
+   that the dangerous-code gate would normally catch — but that suite runs with
+   DISABLE_SAFETY_GATE=true by design, so the gate never got a chance to intercept it here.
+
+8. Healing skip-list for unfixable errors (added July 9, 2026): the self-healing trigger
+   (llm_connector.py) fired for ANY tool whose result started with "Error" in the first 30
+   chars, not just run_python_script — including errors no parameter guess can ever fix
+   (missing python library, network timeout, geo-restriction, OS socket errors). The
+   "other tools" healing branch (recovery_manager.py) has no way to say "unfixable," so it
+   always burned an extra Worker call guessing new args that were guaranteed to fail again.
+   Found via prompt_harness.py: 220 HEALING_TRIGGER/UnclassifiedError occurrences in
+   thoughts.log. Fixed: added `_HEALING_SKIP_PATTERNS` — deliberately narrow, only skips
+   patterns with zero possible param fix (library not installed, max retries exceeded, read
+   timed out, WinError socket errors, geo-restriction) — genuine format issues ("Could not
+   find price for BTCUSDT... Ensure format is correct") stay eligible since that IS a real,
+   observed fix. Verified against the full historical log: 94/269 (34.9%) of all past
+   healing triggers would have been skipped by this, each saving one guaranteed-to-fail
+   Worker call. Regex-verified against 10 real historical error strings (6 skip, 4 keep) —
+   all correct.
+
+ENV NAMING TRAP (documented here only — .env intentionally not modified): agent_system/config.py's
+WORKER_MODEL constant actually reads os.getenv("CODER_MODEL", ...). A .env entry literally named
+WORKER_MODEL has NO effect on which model the Worker uses — set CODER_MODEL instead.
+
+See the July 4, 2026 "Reliability Hardening" and July 5-6, 2026 "Three-Tier Architecture..." entries
+in architect.md (Changelog) for full details.
 
 When working on Ciel: keep the content-filter flag and the destructive-tool gate SEPARATE; prefer
 deterministic workflow safeguards over trusting the Brain to remember/judge; gather real data
-(market/search/document) BEFORE composing any email body.
+(market/search/document) BEFORE composing any email body; keep Middleware scoped and fail-open —
+it is a backstop for what code cannot judge, never a replacement for a deterministic check that can.
 
 ## Recommended Email Templates
 

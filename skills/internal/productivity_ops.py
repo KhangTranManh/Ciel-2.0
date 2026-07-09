@@ -1,6 +1,7 @@
 import json
 import re
 import ast
+import math
 from pathlib import Path
 from datetime import datetime
 import urllib.request
@@ -39,6 +40,18 @@ def _load_todos():
 def _save_todos(todos):
     with open(TODO_FILE, "w", encoding="utf-8") as f:
         json.dump(todos, f, indent=2, ensure_ascii=False)
+
+_CALC_FUNCS = {
+    "abs": abs, "round": round, "min": min, "max": max,
+    "sum": sum, "len": len, "int": int, "float": float, "pow": pow,
+    "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+    "log": math.log, "log10": math.log10, "log2": math.log2, "exp": math.exp,
+}
+_CALC_ALLOWED_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.USub, ast.UAdd, ast.Call, ast.Load, ast.Tuple, ast.List,
+)
 
 def get_productivity_tools() -> dict:
     try:
@@ -127,19 +140,17 @@ def get_productivity_tools() -> dict:
 
         def calculate(expression: str) -> str:
             try:
-                # Safe eval using ast
                 tree = ast.parse(expression, mode='eval')
-                # Only allow safe nodes
                 for node in ast.walk(tree):
-                    if isinstance(node, (ast.Call, ast.Attribute, ast.NameConstant, ast.Subscript, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp, ast.Lambda)):
-                        if not (isinstance(node, ast.Name) and node.id in ('abs', 'round', 'min', 'max', 'sum', 'len', 'int', 'float', 'pow', 'sqrt')):
-                            return "Error: unsafe expression"
-                # Add safe builtins
-                safe_dict = {
-                    "__builtins__": {},
-                    "abs": abs, "round": round, "min": min, "max": max,
-                    "sum": sum, "len": len, "int": int, "float": float, "pow": pow
-                }
+                    if isinstance(node, ast.Call):
+                        if not (isinstance(node.func, ast.Name) and node.func.id in _CALC_FUNCS):
+                            return "Error: unsafe function call"
+                    elif isinstance(node, ast.Name):
+                        if node.id not in _CALC_FUNCS:
+                            return f"Error: unknown name '{node.id}'"
+                    elif not isinstance(node, _CALC_ALLOWED_NODES):
+                        return "Error: unsafe expression"
+                safe_dict = {"__builtins__": {}, **_CALC_FUNCS}
                 result = eval(compile(tree, '<string>', 'eval'), safe_dict)
                 return str(result)
             except Exception as e:

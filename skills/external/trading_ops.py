@@ -36,7 +36,7 @@ def fetch_market_price(symbol: str) -> str:
             sym = symbol.replace("/", "").replace("-", "")
             if not sym.endswith("USDT"): sym += "USDT"
             try:
-                data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}").json()
+                data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}", timeout=10).json()
                 if "price" in data: return f"Giá {sym}: {data['price']} USDT (via Binance free tier)."
             except: pass
         return "Error: Missing TWELVEDATA_API_KEY in .env. Get a free API key at https://twelvedata.com/ (Supports Forex, XAU, Stocks, Crypto)."
@@ -47,7 +47,7 @@ def fetch_market_price(symbol: str) -> str:
             symbol = f"{symbol[:3]}/{symbol[3:]}"
         
         url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={API_KEY}"
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=10).json()
         if "price" in data: return f"Giá {symbol}: {data['price']}"
         return f"Error: Could not find price for {symbol}. Ensure format is correct (e.g. EUR/USD, XAU/USD, AAPL)."
     except Exception as e: return f"API Error: {e}"
@@ -58,7 +58,7 @@ def fetch_crypto_stats(symbol: str) -> str:
     try:
         symbol = symbol.upper().replace("/", "").replace("-", "")
         if not symbol.endswith("USDT"): symbol += "USDT"
-        data = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}").json()
+        data = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=10).json()
         if "lastPrice" in data: return f"Stats {symbol}: Price={data['lastPrice']}, Change={data['priceChangePercent']}%, High={data['highPrice']}, Low={data['lowPrice']}"
         return "Error fetching stats."
     except Exception as e: return f"API Error: {e}"
@@ -69,7 +69,7 @@ def fetch_crypto_technical(symbol: str, interval: str = "1h") -> str:
     try:
         symbol = symbol.upper().replace("/", "").replace("-", "")
         if not symbol.endswith("USDT"): symbol += "USDT"
-        data = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100").json()
+        data = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100", timeout=10).json()
         if isinstance(data, dict) and "code" in data: return f"API Error: {data['msg']}"
 
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'vol', 'ct', 'qav', 'nt', 'tbv', 'tqv', 'ig'])
