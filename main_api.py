@@ -34,6 +34,33 @@ app.add_middleware(
 ciel_agent = None
 thoughts_log_path = Path(__file__).resolve().parent / "ciel_data" / "logs" / "thoughts.log"
 
+
+@app.get("/health")
+async def health():
+    """Liveness/readiness probe for the UI to poll before opening the WebSocket."""
+    return {"status": "ok", "ready": ciel_agent is not None}
+
+
+@app.get("/skills")
+async def get_skills():
+    """Dynamic manifest of loaded skills. The UI renders its skill panels from THIS —
+    so dropping a new skills/*.py file into the backend surfaces in the UI with no
+    frontend or API edits. Never hardcode a skill list on either side."""
+    if ciel_agent is None:
+        return {"ready": False, "skills": [], "totals": {"modules": 0, "tools": 0}}
+    try:
+        manifest = ciel_agent.core.tool_manager.get_skills_manifest()
+    except Exception as e:
+        return {"ready": True, "skills": [], "totals": {"modules": 0, "tools": 0}, "error": str(e)}
+    return {
+        "ready": True,
+        "skills": manifest,
+        "totals": {
+            "modules": len(manifest),
+            "tools": sum(s.get("tool_count", 0) for s in manifest),
+        },
+    }
+
 # SAFETY GATE: shared state for WebSocket confirmation
 _confirm_event = threading.Event()
 _confirm_result = {"approved": False}
@@ -161,52 +188,48 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
             except Exception:
                 vram_used = 3.2 # Fallback mock
                 
-            # 2. Determine active armories by reading the last few thoughts
-            web_active = False
-            git_active = False
-            trade_active = False
-            vision_active = False
-            
+            # 2. Which loaded skills fired recently — DYNAMIC from the skills manifest,
+            #    so any new skill lights up automatically without editing this file.
+            skills_activity = []
             try:
+                recent = ""
                 if thoughts_log_path.exists():
                     with open(thoughts_log_path, "r", encoding="utf-8") as f:
-                        # Read last 30 lines
-                        lines = f.readlines()[-30:]
-                        text_block = "\\n".join(lines).lower()
-                        
-                        # Look for recent tool calls
-                        if "stealth_search" in text_block or "smart_scrape" in text_block:
-                            web_active = True
-                        if "git_" in text_block:
-                            git_active = True
-                        if "get_market_price" in text_block or "crypto" in text_block:
-                            trade_active = True
-                        if "vision_act" in text_block or "vision_describe" in text_block:
-                            vision_active = True
+                        recent = "".join(f.readlines()[-40:]).lower()
+                manifest = ciel_agent.core.tool_manager.get_skills_manifest() if ciel_agent else []
+                for skill in manifest:
+                    tool_names = [t["name"].lower() for t in skill.get("tools", [])]
+                    skills_activity.append({
+                        "module": skill["module"],
+                        "category": skill.get("category", ""),
+                        "tool_count": skill.get("tool_count", 0),
+                        "active": any(tn in recent for tn in tool_names),
+                    })
             except Exception:
                 pass
-                
-            # 3. Token estimation (dummy for now, based on log size)
-            token_cost = 0.0
+
+            # 3. Real per-tier LLM call counts for this session (replaces the old fake
+            #    "log-size * 0.0001" estimate — now backed by the [LLM_CALL] counter).
+            llm_calls = {"BRAIN": 0, "WORKER": 0, "MIDDLEWARE": 0}
+            middleware_on = False
             try:
-                if thoughts_log_path.exists():
-                    size_kb = thoughts_log_path.stat().st_size / 1024
-                    token_cost = min(round((size_kb * 0.0001), 2), 1.0)
-            except:
+                if ciel_agent:
+                    llm_calls = dict(ciel_agent.core.llm_call_counts)
+                    middleware_on = ciel_agent.core.middleware is not None
+            except Exception:
                 pass
 
             vitals = {
                 "vram_used": vram_used,
                 "vram_total": vram_total,
-                "token_cost": token_cost,
-                "armories": {
+                "llm_calls": llm_calls,
+                "llm_calls_total": sum(llm_calls.values()),
+                "tiers": {
                     "Brain (Router)": True,
                     "Worker (Synth)": True,
-                    "Web Agent": web_active,
-                    "Git Ops": git_active,
-                    "Trading Desk": trade_active,
-                    "Vision (Eyes)": vision_active
-                }
+                    "Middleware": middleware_on,
+                },
+                "skills": skills_activity,
             }
             
             async with send_lock:

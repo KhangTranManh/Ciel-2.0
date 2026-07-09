@@ -23,6 +23,7 @@ import sys
 import os
 import re
 import json
+from collections import Counter
 from pathlib import Path
 from datetime import datetime
 
@@ -60,7 +61,7 @@ def _log_slice(start_line: int) -> str:
 def _extract_signals(log_slice: str) -> dict:
     """Pull out the actor/action pairs an operator actually cares about from a log slice."""
     blocks = log_slice.split("-" * 60)
-    signals = {"middleware": [], "tool_errors": [], "healing": [], "safety_denied": []}
+    signals = {"middleware": [], "tool_errors": [], "healing": [], "safety_denied": [], "llm_calls": []}
     for block in blocks:
         block = block.strip()
         if not block:
@@ -73,6 +74,11 @@ def _extract_signals(log_slice: str) -> dict:
             signals["healing"].append(block)
         if "[SAFETY] [CONFIRM_DENIED]" in block:
             signals["safety_denied"].append(block)
+        # COST/USAGE: one [LLM_CALL] entry per actual LLM invocation (llm_connector.py's
+        # Worker.on_call / Middleware.on_call hooks + router.py's direct Brain log line).
+        m = re.search(r"\[(BRAIN|WORKER|MIDDLEWARE)\]\s*\[LLM_CALL\]", block)
+        if m:
+            signals["llm_calls"].append(m.group(1))
     return signals
 
 
@@ -197,6 +203,8 @@ def run_test(ciel, name: str, prompt: str, checks=None) -> dict:
         print(Fore.YELLOW + f"  [HEALING] {len(signals['healing'])} attempt(s) this test" + Style.RESET_ALL)
     if signals["safety_denied"]:
         print(Fore.MAGENTA + f"  [SAFETY] {len(signals['safety_denied'])} denial(s) this test" + Style.RESET_ALL)
+    if signals["llm_calls"]:
+        print(Fore.CYAN + f"  [COST] {len(signals['llm_calls'])} LLM call(s) this test" + Style.RESET_ALL)
 
     return {
         "name": name,
@@ -209,6 +217,7 @@ def run_test(ciel, name: str, prompt: str, checks=None) -> dict:
         "tool_errors": signals["tool_errors"],
         "healing": signals["healing"],
         "safety_denied": signals["safety_denied"],
+        "llm_calls": signals["llm_calls"],
         "log_slice": log_slice,
     }
 
@@ -324,7 +333,18 @@ def main():
     all_mw = [(r["name"], h) for r in results for h in r["middleware_hits"]]
     all_err = [(r["name"], h) for r in results for h in r["tool_errors"]]
     all_heal = [(r["name"], h) for r in results for h in r["healing"]]
+    all_calls = [c for r in results for c in r["llm_calls"]]
     failed = [r for r in results if not r["passed"]]
+
+    if all_calls:
+        by_actor = Counter(all_calls)
+        breakdown = ", ".join(f"{actor}={n}" for actor, n in by_actor.most_common())
+        print(Fore.CYAN + f"[COST: {len(all_calls)} LLM call(s) this run — {breakdown}]" + Style.RESET_ALL)
+        by_test = Counter(r["name"] for r in results for _ in r["llm_calls"])
+        top = by_test.most_common(3)
+        if top:
+            print("  Top consumers: " + ", ".join(f"{name} ({n})" for name, n in top))
+        print()
 
     if all_mw:
         print(Fore.BLUE + f"[MIDDLEWARE caught {len(all_mw)} issue(s) — bugs that almost shipped]" + Style.RESET_ALL)

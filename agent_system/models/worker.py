@@ -100,6 +100,13 @@ class Worker:
     """Local Ollama model for content/code generation. No tools attached."""
 
     def __init__(self):
+        # Cost/usage tracking hook (optional): the owner (CielCore) sets this to a
+        # callback logging "1 Worker call happened" into thoughts.log. Covers every
+        # caller of generate() for free — direct formatting calls in llm_connector.py
+        # AND recovery_manager.py's healing/syntax-check calls, since they all share
+        # this same Worker instance. None by default so Worker stays usable standalone.
+        self.on_call = None
+
         if WORKER_PROVIDER.lower() == "deepseek":
             self._llm = ChatOpenAI(
                 model=WORKER_MODEL,
@@ -150,6 +157,11 @@ class Worker:
         ]
 
         response = self._llm.invoke(messages)
+        if self.on_call:
+            try:
+                self.on_call(WORKER_MODEL)
+            except Exception:
+                pass
         content = response.content.strip()
 
         # Issue 3 fix: Robust markdown stripping

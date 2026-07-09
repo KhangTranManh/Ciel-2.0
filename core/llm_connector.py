@@ -134,6 +134,13 @@ class CielCore:
         # Initialize Brain and Worker from agent_system
         self.brain = Brain()
         self.worker = Worker()
+        # COST/USAGE TRACKING: log a [WORKER] [LLM_CALL] entry into thoughts.log every
+        # time anything invokes the Worker — covers direct formatting calls here AND
+        # recovery_manager.py's healing/syntax-check calls for free (same instance).
+        # Call-count only (not token-precise): the harness/dashboards care about WHICH
+        # mechanism causes extra calls (e.g. today's healing-waste finding), not exact
+        # token math, and this needs no changes to Worker's return type/callers.
+        self.worker.on_call = lambda model: self._log_thought("WORKER", "LLM_CALL", f"model={model}")
 
         # Modular Components
         self.router = Router(self.brain, self._log_thought, persona=self.ciel_persona)
@@ -146,6 +153,7 @@ class CielCore:
         if MIDDLEWARE_ENABLED:
             try:
                 self.middleware = Middleware()
+                self.middleware.on_call = lambda model: self._log_thought("MIDDLEWARE", "LLM_CALL", f"model={model}")
             except Exception as e:
                 log.error(f"Middleware failed to initialize, continuing without it: {e}")
 
@@ -155,6 +163,13 @@ class CielCore:
         # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
         # Signature: confirm_callback(tool_name: str, preview: str, tool_args: dict) -> bool
         self.confirm_callback = None
+
+        # Live per-tier LLM call counter — incremented at the single logging chokepoint
+        # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
+        # (via router), Worker, Middleware, and healing calls with no extra wiring.
+        # Cheap and accurate for the current session; the UI reads this instead of the
+        # old fake "log-size * 0.0001" cost estimate.
+        self.llm_call_counts = {"BRAIN": 0, "WORKER": 0, "MIDDLEWARE": 0}
 
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
@@ -234,6 +249,10 @@ class CielCore:
 
     def _log_thought(self, actor: str, action: str, content: str):
         """Append a record of the Brain/Worker thought process to the thoughts.log file."""
+        # Single chokepoint for the live LLM-call counter (see __init__): every tier's
+        # [LLM_CALL] entry passes through here, so counting here covers all of them.
+        if action.upper() == "LLM_CALL":
+            self.llm_call_counts[actor] = self.llm_call_counts.get(actor, 0) + 1
         log_file = self.base_dir / "ciel_data" / "logs" / "thoughts.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         import datetime

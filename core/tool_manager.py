@@ -11,6 +11,11 @@ class ToolManager:
         self.tools = []
         self.tool_map = {}
         self.system_prompts = []
+        # Dynamic manifest of what actually loaded — the single source of truth for any
+        # UI/monitoring layer. Everything here is discovered at import time, so adding a
+        # new skills/*.py file surfaces in the UI with ZERO frontend/API changes. Never
+        # hardcode a skill list against this; always read the manifest.
+        self.skills_manifest = []
 
         # Auto-discover and load all skill modules
         self._auto_load_skills("skills.internal", Path(__file__).resolve().parent.parent / "skills" / "internal")
@@ -52,6 +57,17 @@ class ToolManager:
                     self.tools.extend(tools)
                     if prompt:
                         self.system_prompts.append(prompt)
+                    # Record in the dynamic manifest (category = internal/external from the package name)
+                    self.skills_manifest.append({
+                        "module": modname,
+                        "category": package_name.rsplit(".", 1)[-1],
+                        "tool_count": len(tools),
+                        "tools": [
+                            {"name": t.name, "description": (getattr(t, "description", "") or "").strip()[:240]}
+                            for t in tools
+                        ],
+                        "has_prompt": bool(prompt),
+                    })
                     print(Fore.GREEN + f"[Ciel System] Loaded {modname}: {len(tools)} tool(s)." + Style.RESET_ALL)
                 else:
                     print(Fore.CYAN + f"[Ciel System] {modname} returned 0 tools." + Style.RESET_ALL)
@@ -63,6 +79,11 @@ class ToolManager:
         """Returns the list of validated tools to bind to the LLM."""
         self.tool_map = {tool.name.lower(): tool for tool in self.tools}
         return self.tools
+
+    def get_skills_manifest(self) -> list:
+        """Dynamic list of loaded skills (module, category, tools, has_prompt).
+        Consumed by the UI/API so new skills appear automatically — see __init__ note."""
+        return self.skills_manifest
 
     def get_dynamic_prompt(self) -> str:
         """Stitches all tool manuals together into one string."""

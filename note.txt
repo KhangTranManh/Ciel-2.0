@@ -418,6 +418,61 @@ Run: `python -m scripts.prompt_harness --min-count 3`.
    Worker call. Regex-verified against 10 real historical error strings (6 skip, 4 keep) —
    all correct.
 
+COST/USAGE TRACKING (added July 9, 2026 — Roadmap item, now partially closed): every real LLM
+invocation (Brain routing, Worker generation incl. healing/syntax-check, Middleware review) now
+logs a `[LLM_CALL] model=<name>` entry into thoughts.log. Implementation: `Worker`/`Middleware`
+gained an optional `on_call` hook (agent_system/models/worker.py, middleware.py) fired right after
+`self._llm.invoke(...)`; `CielCore.__init__` wires both hooks to `self._log_thought(...)`
+(core/llm_connector.py) — one wiring point covers ALL callers of `self.worker.generate()`,
+including recovery_manager.py's 3 internal call sites, with zero changes needed there. Brain/Router
+logs directly in `core/router.py` (already had `log_thought` injected). Call-count only, not
+token-precise — deliberate: what the investigation above actually needed was "which mechanism
+causes extra calls," not exact token math, and this needed no breaking changes to any return type.
+`test_hard_special.py`'s BUG DASHBOARD now has a `[COST: N LLM call(s) this run — BRAIN=x, WORKER=y,
+MIDDLEWARE=z]` line plus top-3 most expensive tests, built from these same log entries (`_extract_signals`
+gained an `llm_calls` signal). Verified live: 1 real chat request produced exactly 3 log entries
+(2 WORKER + 1 BRAIN) matching the console's actual `[WORKER] Generating`/`[BRAIN] Routed` lines
+1:1; caught and fixed a real bug in the dashboard's own parser during verification (`re.match` was
+anchored at the block's timestamp instead of the actor tag, so `llm_calls` silently came back empty
+— changed to `re.search`). Not yet verified against a live Middleware-triggering request (email
+send) — the hook is code-symmetric to Worker's (already verified), but hasn't been observed firing.
+
+**Verified live July 9, 2026 (real user email send):** `[MIDDLEWARE] [LLM_CALL]
+model=op/deepseek/deepseek-v4-pro` fired correctly. Cost/usage tracking is now fully verified
+across all 3 tiers (Brain/Worker/Middleware). The same real turn also showed Middleware working
+as designed on a genuine edge case: `stealth_search` returned no relevant political news that
+day, Worker honestly reported "no data available" instead of fabricating a report
+(anti-hallucination working correctly), Middleware flagged the resulting email
+`FLAGGED_UNFIXABLE` ("describes the search process, doesn't provide the actual report
+requested") but sent it unchanged per the fail-open policy. Not a bug — root cause was poor
+search results that day, not faulty Ciel logic. Possible future UX improvement (not
+implemented): when Middleware flags `FLAGGED_UNFIXABLE` specifically for "no real data to
+report" (vs. a fixable wording issue), ask the user before sending instead of auto-sending the
+honest-but-unhelpful email.
+
+UI FOUNDATION (added July 9, 2026): frontend is Tauri v2 + React, browser-first. Lives in `ui/`
+(see ui/README.md). React app + WS integration built and verified (npm build compiles clean). Tauri
+v2 desktop shell scaffolded in `ui/src-tauri/` (Rust 1.97 + Tauri CLI 2.11 installed same day);
+tauri.conf.json points devUrl→http://localhost:1420 and frontendDist→../dist so React code is
+identical in browser and desktop. Run desktop: `python main_api.py` then `cd ui && npm run tauri dev`.
+Two rules baked in:
+  1. ADD A SKILL → UI REFLECTS IT, ZERO FRONTEND EDITS. ToolManager now records a dynamic
+     `skills_manifest`; main_api.py exposes `GET /skills` + `GET /health`; `broadcast_vitals` no
+     longer hardcodes the skill list (the old trap) — it derives from the manifest. Verified live:
+     /skills returns 10 modules / 44 tools dynamically.
+  2. VOICE SEAM (per the "leave room for voice" ask). Frontend split so modalities plug in without
+     touching core: `ui/src/core/` (ws + typed event `bus` + protocol) is modality-agnostic;
+     `ui/src/io/input/` and `io/output/` are the swap points. Voice input = implement VoiceInput.tsx
+     (STT) → call the same `onSubmit(text)` the keyboard uses (backend unchanged). Voice output =
+     `enableSpeaker(browserSpeak)` one line in main.tsx → subscribes to the same bus 'response' events
+     the transcript uses. Both present as compiling stubs. Reserved backend extension points (not
+     built): `response_chunk` streaming frame + `lang` field on responses for VN/EN TTS.
+Real cost in vitals: `CielCore.llm_call_counts` incremented at the single _log_thought chokepoint on
+every [LLM_CALL]; vitals reports real per-tier counts instead of the old fake estimate.
+ENV DRIFT FOUND: the venv was missing `fastapi` (declared in requirements.txt but not installed) —
+installed fastapi 0.139.0 to run main_api.py. If main_api.py fails with ModuleNotFoundError on a
+fresh checkout, re-run `pip install -r requirements.txt`.
+
 ENV NAMING TRAP (documented here only — .env intentionally not modified): agent_system/config.py's
 WORKER_MODEL constant actually reads os.getenv("CODER_MODEL", ...). A .env entry literally named
 WORKER_MODEL has NO effect on which model the Worker uses — set CODER_MODEL instead.

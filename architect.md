@@ -87,7 +87,14 @@ Ciel 2.0/
 ├── note.txt                      # Project status + email templates (grounding for prompts)
 ├── credentials.json              # Google OAuth credentials
 ├── main.py                       # CLI entry point (input loop + safety callback)
-├── main_api.py                   # FastAPI/WebSocket backend for Flutter HUD
+├── main_api.py                   # FastAPI/WebSocket backend. WS /ws (chat+thoughts+vitals+confirm)
+│                                 # + REST GET /skills (dynamic manifest), /health. UI reads these.
+├── ui/                           # React frontend (browser-first) + Tauri v2 desktop shell — see ui/README.md
+│   ├── src/core/                 #   transport+protocol (ws, bus, types, http) — modality-agnostic
+│   ├── src/io/                   #   MODALITY LAYER: input/ (Text live, Voice stub), output/ (Transcript, speaker stub)
+│   ├── src/components/           #   SkillGrid (dynamic), ThoughtStream, VitalsBar, ConfirmDialog
+│   ├── src/hooks/useCiel.ts      #   bus <-> React bridge
+│   └── src-tauri/                #   Tauri v2 shell: tauri.conf.json (devUrl→:1420, dist→../dist), Cargo
 ├── requirements.txt              # Python dependencies
 │
 ├── core/                         # Main orchestration layer
@@ -417,14 +424,14 @@ Third tier: a semantic verifier/finalizer that runs on outbound email/report bod
 
 ### `agent_system/models/worker.py` (`class Worker`)
 
-- `__init__(self)` - Initialize LLM based on provider (Gemini/DeepSeek/Ollama). All clients now pass `timeout=LLM_REQUEST_TIMEOUT`.
-- `generate(self, task, context)` - Generate content for a single task. Strips markdown fences. Has tenacity retry.
+- `__init__(self)` - Initialize LLM based on provider (Gemini/DeepSeek/Ollama). All clients now pass `timeout=LLM_REQUEST_TIMEOUT`. Sets `self.on_call = None` — optional cost-tracking hook (July 9, 2026), see below.
+- `generate(self, task, context)` - Generate content for a single task. Strips markdown fences. Has tenacity retry. **July 9, 2026:** fires `self.on_call(WORKER_MODEL)` right after `self._llm.invoke(...)` if set — `CielCore.__init__` wires this to log a `[WORKER] [LLM_CALL]` entry into `thoughts.log`. Since `recovery_manager.py` calls `generate()` on this SAME shared `Worker` instance for healing/syntax-check, one wiring point covers all callers with no changes needed there.
 - `_strip_markdown_fences(content)` *(module-level)* - Robust markdown fence removal.
 
 ### `agent_system/models/middleware.py` (`class Middleware`) — July 2026
 
-- `__init__(self)` - Initialize LLM based on `MIDDLEWARE_PROVIDER` (mirrors Brain's branching: vilao/deepseek/gpt/ollama/gemini). All clients pass `timeout=LLM_REQUEST_TIMEOUT`.
-- `review(self, user_input, body)` - Send the body + original request to the Middleware LLM, parse and return its verdict dict (`approved`, `reasoning`, `revised_body`). Has tenacity retry on transient errors (reuses `Brain.TRANSIENT_ERRORS`).
+- `__init__(self)` - Initialize LLM based on `MIDDLEWARE_PROVIDER` (mirrors Brain's branching: vilao/deepseek/gpt/ollama/gemini). All clients pass `timeout=LLM_REQUEST_TIMEOUT`. Sets `self.on_call = None` (July 9, 2026) — same cost-tracking hook pattern as `Worker`.
+- `review(self, user_input, body)` - Send the body + original request to the Middleware LLM, parse and return its verdict dict (`approved`, `reasoning`, `revised_body`). Has tenacity retry on transient errors (reuses `Brain.TRANSIENT_ERRORS`). **July 9, 2026:** fires `self.on_call(MIDDLEWARE_MODEL)` after `self._llm.invoke(...)` if set.
 
 ### `agent_system/graph/` (LangGraph pipeline)
 
@@ -597,6 +604,32 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 ---
 
 ## 8) Changelog | Nhật ký thay đổi
+
+### React UI Foundation + Dynamic Skills Manifest (July 9, 2026)
+
+Started the UI/UX layer. Decision: **Tauri + React, browser-first**. The React app is built and developed against the existing FastAPI WebSocket backend in a browser (Vite dev server, port 1420); a thin **Tauri v2 desktop shell** (`ui/src-tauri/`) wraps the same code — its `tauri.conf.json` points `devUrl` at the Vite server and `frontendDist` at `../dist`, so the React code is identical in browser and desktop. Rust 1.97 + Tauri CLI v2.11 installed July 9, 2026; shell scaffolded via `npx tauri init`.
+
+**Two design rules baked in from the start** (both driven by the user's "easy to add skills" + "leave room for voice" asks):
+
+1. **Add a skill → UI reflects it, zero frontend edits.** `ToolManager` now records a dynamic `skills_manifest` (`core/tool_manager.py`) during its existing auto-discovery. New REST endpoints on `main_api.py`: `GET /skills` (the manifest) and `GET /health`. `broadcast_vitals` was rewritten to stop hardcoding the skill/"armory" list (the old maintainability trap — every new skill needed hand-editing both backend and frontend) and instead derive activity from the manifest. The React `SkillGrid` and `ThoughtStream` render whatever exists; unknown actors/tools get sensible default styling.
+
+2. **Modalities are pluggable (the voice seam).** Frontend is split so input/output modalities swap without touching core: `ui/src/core/` (ws + a typed event `bus` + protocol types) knows nothing about React or text/voice; `ui/src/io/input/` and `ui/src/io/output/` are the modality layer. Everything talks to the `bus`, never to the WebSocket directly. Voice input = implement `VoiceInput.tsx` (STT) calling the same `onSubmit(text)` the keyboard uses — backend unchanged. Voice output = `enableSpeaker(browserSpeak)` one-liner in `main.tsx`, subscribing to the same bus `response` events the transcript already uses. Both are present as compiling, documented stubs. Two additive backend extension points reserved for later (not built): a `response_chunk` streaming frame (speak-as-you-go) and a `lang` field on responses (VN/EN TTS voice selection).
+
+**Also, real cost in vitals:** a live per-tier `llm_call_counts` counter on `CielCore`, incremented at the single `_log_thought` chokepoint whenever an `[LLM_CALL]` is written (covers Brain/Worker/Middleware/healing). `broadcast_vitals` now reports these real counts instead of the old fake "log-size × 0.0001" estimate.
+
+**Verified:** frontend `npm run build` compiles clean (tsc strict + vite build, 42 modules). Backend live: booted `main_api.py`, `GET /health` → ready, `GET /skills` → 10 modules / 44 tools dynamically. **Env note:** the venv was missing `fastapi` (declared in `requirements.txt` but not installed — pre-existing drift, not from this work); installed `fastapi 0.139.0` to run the server. Not yet verified live: the WebSocket chat round-trip through the React UI (needs both servers up + a real request) and the vitals `llm_calls` over the wire (counter logic itself is verified at `_log_thought`).
+
+### Cost/Usage Tracking Foundation (July 9, 2026)
+
+Closed part of the long-open "cost monitoring" Roadmap item, made concrete by the healing-waste finding above. Two layers, both requested explicitly:
+
+**Layer 1 — record:** every real LLM invocation now logs a `[LLM_CALL] model=<name>` entry into `thoughts.log`, the project's existing single source of truth (same file the harness and every dashboard already read). `Worker` and `Middleware` gained an optional `on_call` hook (`agent_system/models/worker.py`, `middleware.py`), fired right after `self._llm.invoke(...)`. `CielCore.__init__` (`core/llm_connector.py`) wires both hooks to `self._log_thought(...)` — ONE wiring point per class covers every caller, including `recovery_manager.py`'s 3 internal `self.worker.generate()` call sites (healing code-fix, healing param-fix, syntax check), with zero changes needed in that file. Brain/Router logs directly in `core/router.py` (already had `log_thought` injected). Deliberately call-count only, not token-precise — matches what today's investigation actually needed (which mechanism causes extra calls) without a breaking change to any return type.
+
+**Layer 2 — surface:** `backtest/test_hard_special.py`'s BUG DASHBOARD gained a `[COST: N LLM call(s) this run — BRAIN=x, WORKER=y, MIDDLEWARE=z]` line plus a "top 3 most expensive tests" breakdown, built from the same `[LLM_CALL]` entries (`_extract_signals` gained an `llm_calls` signal; per-test `[COST] N LLM call(s)` also prints during the run itself).
+
+**Verified live:** ran one real chat request end-to-end — exactly 3 `[LLM_CALL]` entries appeared (2 WORKER + 1 BRAIN), matching the console's actual `[WORKER] Generating`/`[BRAIN] Routed` lines 1:1. This live check caught a real bug in the dashboard's OWN parser before it shipped: `_extract_signals` used `re.match` (anchored at the block's leading timestamp) instead of `re.search` (the actor tag comes after the timestamp), so `llm_calls` silently came back empty despite correct logging — fixed by switching to `re.search`.
+
+**Middleware hook verified live (July 9, 2026, real user email send):** `[MIDDLEWARE] [LLM_CALL] model=op/deepseek/deepseek-v4-pro` fired correctly — cost/usage tracking is now confirmed live across all 3 tiers. The same real turn incidentally demonstrated Middleware working as designed on a genuine edge case: `stealth_search` returned no relevant political news that day, Worker honestly reported "no data available" instead of fabricating a report, Middleware flagged the resulting email `FLAGGED_UNFIXABLE` ("describes the search process, doesn't provide the actual report requested") but sent it unchanged per the fail-open policy — not a bug, the root cause was that day's poor search results, not faulty Ciel logic. Possible future UX refinement (not implemented): route `FLAGGED_UNFIXABLE`-for-missing-data cases back to the user for confirmation instead of auto-sending the honest-but-unhelpful email.
 
 ### Healing Skip-List for Unfixable Errors (July 9, 2026)
 
@@ -823,7 +856,7 @@ A large deterministic-safeguards pass. The throughline: **do not rely on the Bra
 - **Add automated tests | Bổ sung test tự động:** convert smoke scripts to pytest with mocks for API/network calls.
 - **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
 - **Tool confirmation | Xác nhận tool:** ~~add user confirmation step before executing destructive tools (delete, shell).~~ ✅ **DONE** — Callback-based Y/N safety gate for 6 high-risk tools, with CLI and WebSocket handlers.
-- **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost.
+- **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost. 🟡 **PARTIALLY DONE (July 9, 2026)** — every real LLM call now logs `[LLM_CALL] model=<name>` to `thoughts.log` (call-count, not token-precise) and `test_hard_special.py`'s BUG DASHBOARD surfaces a per-run breakdown by actor + top-3 costliest tests. Still open: no live-session/production surfacing (only shows up in the test dashboard), no token-level precision, no cumulative-over-time view (would need the `scripts/cost_report.py` follow-up mentioned in Notes).
 - **RAG Recall Compression | Nén ngữ cảnh RAG:** ~~Add lightweight cleanup before recalled memories reach Brain.~~ ✅ **DONE** — Tier-1 regex/structural filtering + Tier-2 Worker compression only for large recalled context.
 - **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem beyond current compression filters.
 - **GitHub Manager | Quản lý GitHub:** ~~Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.~~ ✅ **DONE** — 5 tools with 2-step commit safety and deep repo scanner.
@@ -839,7 +872,8 @@ A large deterministic-safeguards pass. The throughline: **do not rely on the Bra
 - **Dangerous-code gate | Cổng chặn code nguy hiểm:** ~~write_file/append_file/execute_code could write genuinely destructive generated code (drive format, mkfs, rmtree) straight to disk with zero review.~~ ✅ **DONE (July 6, 2026)** — `_find_dangerous_code_patterns()` + Safety-Gate confirmation on both disk-write paths.
 - **Safety Gate coverage gap | Lỗ hổng phạm vi Safety Gate:** ~~`send_gmail_html_message` and `reply_to_email` sent real email with no Y/N confirmation, unlike `send_gmail_message`.~~ ✅ **DONE (July 6, 2026)** — both added to `_RISK_DESCRIPTIONS`.
 - **Test isolation | Cô lập test:** `test_hard_special.py` currently runs all 16 cases against ONE shared `AgentLoop`/`chat_history` session, which is what let the cross-request contamination bug above surface — but also means the suite cannot fully rule out other instances of it. Consider a fresh session per test or per logical group. (Still open — the contamination bug itself is fixed, but this structural risk in the test remains.)
-- **Cost monitoring | Giám sát chi phí:** still open (see below) — now more relevant with a third LLM tier (Middleware) and a longer multi-call pipeline (translate → route → tool → format → middleware-review → safety-gate).
+- **Healing skip-list | Bỏ qua lỗi không thể tự sửa:** ~~self-healing burned a guaranteed-to-fail Worker call on errors no parameter guess could fix (missing library, network timeout, geo-restriction).~~ ✅ **DONE (July 9, 2026)** — `_HEALING_SKIP_PATTERNS`; verified 94/269 (34.9%) of historical healing triggers would have been skipped.
+- **Cost monitoring | Giám sát chi phí:** 🟡 **PARTIALLY DONE (July 9, 2026)** — `[LLM_CALL]` logging + BUG DASHBOARD cost breakdown (see Changelog and Roadmap §9). Still no live-session surfacing or cumulative-over-time view.
 
 ---
 

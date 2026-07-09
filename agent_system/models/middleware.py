@@ -89,6 +89,9 @@ class Middleware:
     """Single-LLM semantic reviewer/finalizer. Mirrors Brain's provider selection."""
 
     def __init__(self):
+        # Cost/usage tracking hook (optional) — same pattern as Worker.on_call.
+        self.on_call = None
+
         provider = MIDDLEWARE_PROVIDER.lower()
         if provider == "vilao":
             model_name = MIDDLEWARE_MODEL or "alic/qwen3.7-max"
@@ -163,6 +166,11 @@ class Middleware:
             HumanMessage(content=f"User's original request: {user_input}\n\nContent to review:\n{body}"),
         ]
         response = self._llm.invoke(messages)
+        if self.on_call:
+            try:
+                self.on_call(MIDDLEWARE_MODEL)
+            except Exception:
+                pass
         raw = response.content
         if isinstance(raw, list):
             raw = "".join(c.text if hasattr(c, "text") else str(c) for c in raw)
