@@ -139,11 +139,11 @@ Ciel 2.0/
 │       ├── trading_ops.py        # Crypto price, TA, Forex/Metals + build_market_report_html
 │       └── web_agent_ops.py      # stealth_search (DuckDuckGo, recency-aware) + smart_scrape (Jina)
 │
-├── persona/                      # Personality fragments
-│   ├── directives.txt
-│   ├── format.txt
-│   ├── identity.txt
-│   └── official_ciel_personality.txt  # Loaded at startup (Ultimate Sage identity)
+├── persona/                      # Personality
+│   └── official_ciel_personality.txt  # The ONLY persona file loaded at startup (Ultimate Sage
+│                                 # identity + tone + behavioral logic + Operational Directives).
+│                                 # Legacy fragments (directives/format/identity.txt) were merged
+│                                 # into this file and removed on July 9, 2026 — see Changelog.
 │
 ├── backtest/                     # Test suites
 │   ├── test_integration.py       # 17+ test full pipeline validation
@@ -604,6 +604,28 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 ---
 
 ## 8) Changelog | Nhật ký thay đổi
+
+### Prompt Inventory (Step 1 of prompt refactor) + Dead Tool-Manual Finding (July 9, 2026)
+
+Decision on "should we redefine all prompts?": **no big-bang rewrite** (prompts are the highest-leverage/highest-risk surface, can't be cheaply unit-tested, and much verbose wording encodes past bug fixes). Instead: Step 1 = a read-only **`PROMPT_INVENTORY.md`** at repo root mapping every prompt in the project (18 files) — location, consuming model, and the runtime assembly chain (how persona + tier prompt + task prompts stack per turn). Step 2 (later) = rewrite individual prompts only when the harness/logs prove one is failing, each verified separately.
+
+Building the inventory surfaced a real drift finding: **the per-skill "weapon manuals" (`GMAIL_SYSTEM_PROMPT`, `TRADING_SYSTEM_PROMPT`, `SYSTEM_OPS_PROMPT`, … ~10 of them) are collected into `ToolManager.system_prompts` but never fed to any live LLM** — the only surfacing function, `ToolManager.get_dynamic_prompt()` (`core/tool_manager.py:88`), is never called anywhere in the project.
+
+**Investigated empirically** (see PROMPT_INVENTORY.md §4): what the Brain actually sees per tool is `name + tool.description[:80]` (truncated) + arg schema, plus `_TOOL_HINTS` — which currently has just ONE entry (`search_gmail`), so 43/44 tools ride on an 80-char docstring snippet + arg names. The manuals hold some unique guidance (e.g. gmail NL→query examples) but the essentials are already echoed in `_TOOL_HINTS`/docstrings, and the `WRONG_TOOL_CHOICE` harness cases are fallback-after-failure, not knowledge gaps. **Conclusion: low severity (organizational drift, not a bug) — do NOT wire the dead manuals back in (would bloat routing for little gain); the live lever for tool guidance is `_TOOL_HINTS` + docstrings.** Migrate a manual's key line into `_TOOL_HINTS` only if a specific tool shows real arg/selection errors in the logs.
+
+PROMPT_INVENTORY.md §5 adds a **"how to edit/maintain prompts" guide**: a "want to change X → edit Y → verify with Z" table plus the three traps (editing a dead manual; the persona rippling across 3 live call sites; editing the offline LangGraph/fine-tune copies by mistake).
+
+### Persona Consolidation — Merged & Removed Legacy Fragments (July 9, 2026)
+
+`persona/` held 4 files but code only ever loaded ONE (`official_ciel_personality.txt`, via `CielCore.__init__`). The other three (`directives.txt`, `format.txt`, `identity.txt`) were dead — unreferenced by any `.py`, so every rule in them was silently inert. Rather than delete outright, salvaged their still-valuable rules INTO the live persona (so they finally take effect), then removed the now-superseded files.
+
+**Selective merge (NOT a blind concat — parts conflicted with current behavior):**
+- **Excluded — `format.txt` entirely:** its `<THOUGHT>`/`<RESPONSE>` tag format conflicts with the current cyberpunk `[COGNITION]`/`[NETWORK_SCAN]` tags + Brain JSON `hidden_thought`.
+- **Excluded — directives.txt #4 "English by default":** conflicts with the current Language Adaptation rule (match the Master's language; VN in → VN out, verified in tests).
+- **Excluded — directives.txt #5/#6 ReAct `Action:`/`Observation` loop mechanics:** the architecture is Brain-routed JSON now, not a ReAct loop; the mechanics would mislead.
+- **Merged (new "5. OPERATIONAL DIRECTIVES" section in the official persona):** System Sentinel protectiveness; "you are NOT a Python library / never say 'Thư viện CIEL...'" identity guard; "already authenticated — never ask the Master for email/passwords, just call the tool" (directly reinforces the fixed "Worker asked user for their email" bug); "right tool for the domain, never fake results through the shell" (reinforces the harness's WRONG_TOOL_CHOICE cluster); "never fabricate tool activity"; and a carefully-scoped anti-refusal rule worded to NOT override the genuine safety gate / harmful-request declines.
+
+Also fixed a pre-existing bug in `official_ciel_personality.txt`: the "NEVER LEAK INTERNAL PATHS" paragraph was duplicated verbatim — removed the copy. Updated both directory-tree docs (`architect.md`, `instructionAI/architecture.md`). Net: `persona/` now holds exactly one file, the one that was always the only one loaded.
 
 ### React UI Foundation + Dynamic Skills Manifest (July 9, 2026)
 
