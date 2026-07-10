@@ -12,3 +12,10 @@ ciel_data/
 ciel_workspace/screenshots/
 ciel_output/
 
+# Secrets & runtime state — untracked July 9, 2026 (were committed before the ignore
+# rules existed; secrets in them must be considered exposed and rotated). Never re-add.
+credentials.json
+*.log
+autonomous_pipeline/thoughts.log
+autonomous_pipeline/*.log
+
