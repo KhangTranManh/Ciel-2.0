@@ -52,11 +52,9 @@ Ciel-2.0/
 │       ├── github_ops.py         # Git status, diff, commit, push
 │       └── web_agent_ops.py      # Web scraping / search
 │
-├── persona/                      # Personality fragments (loaded at startup)
-│   ├── identity.txt
-│   ├── directives.txt
-│   ├── format.txt
-│   └── official_ciel_personality.txt
+├── persona/                      # Personality
+│   └── official_ciel_personality.txt  # The only persona file loaded at startup. Legacy fragments
+│                                 # (identity/directives/format.txt) merged in + removed July 9, 2026.
 │
 ├── backtest/                     # Test suites
 │   ├── test_integration.py       # 21-test full pipeline validation
