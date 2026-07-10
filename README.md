@@ -12,6 +12,7 @@
 <p align="center">
   <a href="architect.md">Architecture</a> ·
   <a href="note.txt">Live Status</a> ·
+  <a href="PROMPT_INVENTORY.md">Prompts</a> ·
   <a href="ui/README.md">UI</a> ·
   <a href="autonomous_pipeline/architect.md">MLOps Pipeline</a>
 </p>
@@ -249,8 +250,9 @@ Ciel 2.0/
 
 | I want to... | Edit this |
 |---|---|
-| Change Ciel's persona / tone | `persona/` (`identity.txt`, `directives.txt`, `format.txt`) |
-| Add a new tool/capability | New file under `skills/internal/` or `skills/external/`, registered in `core/tool_manager.py` — the UI's skill grid updates automatically, no frontend changes needed |
+| Change Ciel's persona / tone | `persona/official_ciel_personality.txt` (the single persona file — legacy fragments were merged in and removed) |
+| Find which prompt to edit for any behavior | [`PROMPT_INVENTORY.md`](PROMPT_INVENTORY.md) — maps every prompt in the project, the runtime assembly chain, a "want to change X → edit Y → verify with Z" table, and the traps (e.g. the per-skill `*_SYSTEM_PROMPT` manuals are inert — edit `_TOOL_HINTS`/docstrings instead) |
+| Add a new tool/capability | New file under `skills/internal/` or `skills/external/` exposing a `get_*_tools()` factory — auto-discovered by `core/tool_manager.py`, and the UI's skill grid updates automatically (served from `GET /skills`), no frontend changes needed |
 | Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name (`BRAIN_MODEL`, `CODER_MODEL`) |
 | Add/remove a high-risk tool from the safety gate | `core/llm_connector.py` — `_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS` |
 | Tune what counts as "dangerous code" | `core/llm_connector.py` — `_find_dangerous_code_patterns()` |
