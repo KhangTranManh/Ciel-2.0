@@ -40,6 +40,7 @@ from ..config import (
     LLM_REQUEST_TIMEOUT,
 )
 from ..utils.logger import log
+from ..utils.usage import extract_usage
 from .brain import TRANSIENT_ERRORS  # same transient-error set used by Brain/Router
 
 
@@ -90,6 +91,7 @@ class Middleware:
 
     def __init__(self):
         # Cost/usage tracking hook (optional) — same pattern as Worker.on_call.
+        # Signature: on_call(model, usage) where usage is {"input","output","total"}.
         self.on_call = None
 
         provider = MIDDLEWARE_PROVIDER.lower()
@@ -168,7 +170,7 @@ class Middleware:
         response = self._llm.invoke(messages)
         if self.on_call:
             try:
-                self.on_call(MIDDLEWARE_MODEL)
+                self.on_call(MIDDLEWARE_MODEL, extract_usage(response))
             except Exception:
                 pass
         raw = response.content

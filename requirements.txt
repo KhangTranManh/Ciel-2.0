@@ -40,6 +40,21 @@ pyautogui
 pyperclip
 pillow
 
+# --- Voice input (CLI speech-to-text, see core/voice_input.py) ---
+sounddevice          # mic capture (bundles PortAudio; clean Windows install)
+SpeechRecognition    # default "google" STT backend (free, no API key, vi-VN)
+# Optional STT backends (install only if you switch STT_BACKEND):
+#   faster-whisper   # offline, best Vietnamese accuracy  (STT_BACKEND=whisper)
+#   gemini uses the already-present google-genai + GEMINI_API_KEY (STT_BACKEND=gemini)
+
+# --- Voice output (CLI text-to-speech, see core/speech_output.py) ---
+edge-tts             # default "edge" TTS backend (free neural voices, vi-VN, needs net)
+# Optional TTS backends (install only if you switch TTS_BACKEND):
+#   pyttsx3          # offline system voices                       (TTS_BACKEND=pyttsx3)
+#   gradio_client    # RVC character voice via a HF Space (mikuTTS) (TTS_BACKEND=space)
+#                    # EXPERIMENTAL: ~25s/utterance, Space may sleep — not a default.
+# MP3 playback uses the built-in Windows MCI (winmm) — no extra package needed.
+
 # --- Scheduler & Utilities ---
 schedule
 python-dotenv

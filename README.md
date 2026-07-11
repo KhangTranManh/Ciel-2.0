@@ -68,6 +68,7 @@ Every box above is a real module, not an aspiration — `core/router.py` (Router
 | **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only needed for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
 | **Google OAuth credentials** | Gmail tools | `credentials.json` + token — only needed if you use `search_gmail`/`send_gmail_message`/etc. |
 | **TwelveData / Telegram tokens** | Trading tools, proactive digest | Optional; those tool packs degrade gracefully without them. |
+| **Microphone + internet** | CLI voice I/O only | Default STT/TTS backends (`google`, `edge-tts`) are free and need no key, but do need a network connection. `sounddevice`/`SpeechRecognition`/`edge-tts` install with `requirements.txt`. |
 
 > **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a working PyTorch install. On some VPS environments PyTorch's `c10.dll` fails to initialize (missing VC++ Redistributable, or a CPU without AVX). Ciel detects this and disables RAG gracefully rather than crashing — you lose long-term memory, not the whole system.
 
@@ -137,6 +138,8 @@ python main.py
 
 Type a request at the `Master:` prompt. High-risk actions (file delete, shell exec, sending email, etc.) will ask for a `Y/N` confirmation unless `DISABLE_SAFETY_GATE=true`.
 
+**Voice (optional):** run `python main.py --voice` to speak your requests (press Enter on an empty line to talk, or type `:v` for a one-off capture) and `--speak` to have Ciel read replies aloud. Test the modalities standalone first — `python -m core.voice_input` (mic → text) and `python -m core.speech_output "Xin chào Master"` (text → speech). Backends are swappable via `.env` (`STT_BACKEND`, `TTS_BACKEND`, `TTS_VOICE`); the defaults (`google` STT, `edge-tts` TTS) are free, need no API key, and support Vietnamese. Nothing here uses your local GPU — the neural voices run on Microsoft's servers.
+
 ### 4. (Optional) Run the API server + UI
 
 **Bash / Zsh**
@@ -176,6 +179,7 @@ For the wrapped desktop app instead of the browser tab: `cd ui && npm run tauri 
 
 **Interface**
 - **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with zero code changes between the two. The skill list and live activity feed are 100% backend-driven.
+- **Voice I/O (CLI)** — talk to Ciel and have it talk back. Speech-to-text (`core/voice_input.py`, default free Google Web Speech, vi-VN) and text-to-speech (`core/speech_output.py`, default edge-tts neural voices) with swappable backends. A deterministic `to_speech()` normalizer strips markdown/emojis/tags before speaking, so the persona and text formatting are never dumbed down for voice. Run `python main.py --voice --speak`, or test each modality alone with `python -m core.voice_input` / `python -m core.speech_output "text"`.
 - **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction when no API/tool exists for a task.
 - **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider (Vilao, DeepSeek, Gemini, Ollama), swappable via `.env` with no code changes.
 
@@ -216,7 +220,10 @@ Ciel 2.0/
 │   ├── recovery_manager.py    # Self-healing with skip-list
 │   ├── rag_manager.py         # ChromaDB long-term memory
 │   ├── scheduler.py           # Proactive background tasks (e.g. daily digest)
-│   └── tool_manager.py        # Tool registry & execution
+│   ├── tool_manager.py        # Tool registry & execution
+│   ├── cost.py                # LLM pricing + cost estimation
+│   ├── voice_input.py         # CLI speech-to-text (swappable STT backends)
+│   └── speech_output.py       # CLI text-to-speech (normalizer + swappable TTS backends)
 │
 ├── agent_system/              # Brain/Worker LLM models + LangGraph pipeline
 │   ├── models/brain.py
@@ -261,6 +268,8 @@ Ciel 2.0/
 | Enable/scope the Middleware tier | `.env` — `MIDDLEWARE_ENABLED`, `MIDDLEWARE_SCOPE`, `MIDDLEWARE_MAX_PASSES` |
 | Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
 | Add a UI-side voice input/output modality | `ui/src/io/input/VoiceInput.tsx` or `ui/src/io/output/` — see [ui/README.md](ui/README.md) for the two design rules that make this a small change |
+| Change the CLI voice / STT / TTS backend or voice | `.env` — `STT_BACKEND` (google/whisper/gemini), `TTS_BACKEND` (edge/pyttsx3/space), `TTS_VOICE`, `TTS_RATE`/`TTS_PITCH`, and `RVC_*` for the experimental mikuTTS character-voice Space |
+| Tune what the TTS reads aloud (strip more/less) | `core/speech_output.py` — `to_speech()` normalizer |
 
 ---
 

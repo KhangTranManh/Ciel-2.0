@@ -4,6 +4,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
 from agent_system.models.brain import Brain, TRANSIENT_ERRORS
 from agent_system.utils.logger import log
+from agent_system.utils.usage import extract_usage, format_usage
 from agent_system.config import RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL
 
 CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
@@ -96,7 +97,7 @@ class Router:
         self.log_thought("USER", "request", user_input)
         
         response = self.brain._router_llm.invoke(messages)
-        self.log_thought("BRAIN", "LLM_CALL", f"model={BRAIN_MODEL}")
+        self.log_thought("BRAIN", "LLM_CALL", format_usage(BRAIN_MODEL, extract_usage(response)))
         # Gemini occasionally returns content as a list of parts instead of a plain string
         content = response.content
         if isinstance(content, list):

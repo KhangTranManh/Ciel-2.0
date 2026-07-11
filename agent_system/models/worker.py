@@ -25,6 +25,7 @@ from ..config import (
     LLM_REQUEST_TIMEOUT,
 )
 from ..utils.logger import log
+from ..utils.usage import extract_usage
 
 
 # Transient errors the Worker should retry on
@@ -101,10 +102,12 @@ class Worker:
 
     def __init__(self):
         # Cost/usage tracking hook (optional): the owner (CielCore) sets this to a
-        # callback logging "1 Worker call happened" into thoughts.log. Covers every
-        # caller of generate() for free — direct formatting calls in llm_connector.py
-        # AND recovery_manager.py's healing/syntax-check calls, since they all share
-        # this same Worker instance. None by default so Worker stays usable standalone.
+        # callback logging one Worker call + its token usage into thoughts.log. Covers
+        # every caller of generate() for free — direct formatting calls in
+        # llm_connector.py AND recovery_manager.py's healing/syntax-check calls, since
+        # they all share this same Worker instance. Signature: on_call(model, usage)
+        # where usage is {"input","output","total"}. None by default so Worker stays
+        # usable standalone.
         self.on_call = None
 
         if WORKER_PROVIDER.lower() == "deepseek":
@@ -159,7 +162,7 @@ class Worker:
         response = self._llm.invoke(messages)
         if self.on_call:
             try:
-                self.on_call(WORKER_MODEL)
+                self.on_call(WORKER_MODEL, extract_usage(response))
             except Exception:
                 pass
         content = response.content.strip()

@@ -104,7 +104,10 @@ Ciel 2.0/
 │   ├── router.py                 # Router: Brain-based intent classification
 │   ├── recovery_manager.py       # RecoveryManager: multi-attempt self-healing
 │   ├── scheduler.py              # Proactive background task scheduler
-│   └── tool_manager.py           # ToolManager: tool registry & execution
+│   ├── tool_manager.py           # ToolManager: tool registry & execution
+│   ├── cost.py                   # LLM pricing table + estimate_cost() (overridable via ciel_data/model_pricing.json)
+│   ├── voice_input.py            # CLI speech-to-text (sounddevice + google/whisper/gemini backends)
+│   └── speech_output.py          # CLI text-to-speech (to_speech() normalizer + edge/pyttsx3/space backends)
 │
 ├── agent_system/                 # Brain-Worker LLM subsystem
 │   ├── __init__.py
@@ -123,7 +126,8 @@ Ciel 2.0/
 │   ├── tools/
 │   │   └── buffer_writer.py      # In-memory code buffer with flush-to-disk
 │   └── utils/
-│       └── logger.py             # Colored console logger
+│       ├── logger.py             # Colored console logger
+│       └── usage.py              # extract_usage()/format_usage() — provider token counts for cost tracking
 │
 ├── skills/                       # Tool packs (auto-discovered by ToolManager via get_*_tools())
 │   ├── internal/
@@ -159,7 +163,8 @@ Ciel 2.0/
 │
 ├── scripts/                      # Maintenance/debug helper scripts
 │   ├── format_thoughts_log.py     # Generate readable Markdown + JSONL views from thoughts.log
-│   └── prompt_harness.py          # Mine thoughts.log for recurring failure patterns → propose prompt patches (never auto-applies)
+│   ├── prompt_harness.py          # Mine thoughts.log for recurring failure patterns → propose prompt patches (never auto-applies)
+│   └── cost_report.py             # Cumulative LLM cost/usage report from thoughts.log (by tier/model/day)
 │
 ├── ciel_data/                    # Runtime data
 │   ├── facts.json                # Fact vault
@@ -605,6 +610,27 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### Voice I/O on the CLI — STT + TTS with swappable backends (July 11, 2026)
+
+Brought the "voice seam" to the Python/CLI side (the UI already had stub seams). Both directions are standalone, swappable modules that can be tested ALONE before wiring into the agent, and the transcript feeds the SAME `AgentLoop.run_step()` the keyboard uses — nothing downstream knows the input arrived by voice.
+
+- **Speech-to-text** — `core/voice_input.py`. Mic capture via `sounddevice` (bundles PortAudio; clean Windows install, no PyAudio/compiler). Energy-based endpointing (auto-calibrates ambient noise, stops after ~1.3s silence, 15s cap). Backends via `STT_BACKEND`: `google` (SpeechRecognition free Web Speech, no key, vi-VN — default), `whisper` (faster-whisper offline, best VN accuracy, if installed), `gemini` (google-genai if `GEMINI_API_KEY` set). Standalone tester: `python -m core.voice_input`.
+- **Text-to-speech** — `core/speech_output.py`. **Deliberate design decision: the model prompts/persona are NOT made speech-friendly.** The text UI, HUD transcript, and outbound EMAIL all want the rich formatting (bold, headers, `[COGNITION]`/`[NETWORK_SCAN]` tags, bullets). Voice is one more output modality, so it gets its OWN deterministic normalizer `to_speech()` — the exact same pattern as `_sanitize_outbound_email()` — that strips markdown / emojis / ALL-CAPS bracket tags / code blocks / URLs before the text reaches the engine, preserving words and numbers. Backends via `TTS_BACKEND`: `edge` (edge-tts, free MS neural voices, `vi-VN-HoaiMyNeural`/`vi-VN-NamMinhNeural` — the only 2 VN neural voices — default), `pyttsx3` (offline SAPI), `space`/`rvc` (mikuTTS HF Space, experimental). MP3 playback uses the built-in Windows MCI (`winmm`) — no extra playback dep. Prosody via `TTS_RATE`/`TTS_PITCH`/`TTS_VOLUME`. Standalone tester: `python -m core.speech_output "text"` (`--show`/`--raw`).
+- **main.py wiring:** `--voice` (speech-default input; Enter-on-empty = speak, type to override; `:v`/`:voice` = one-off capture in any mode) and `--speak` (Ciel reads each reply through the normalizer; printed transcript unchanged). Also `INPUT_MODE=voice` / `SPEAK=true`. Both imports are LAZY + fail-open — missing audio deps or no mic never break the CLI.
+- **RVC / mikuTTS Space backend (experimental):** `TTS_BACKEND=space` calls `John6666/mikuTTS`'s Gradio `/tts` (edge-tts base speech → RVC conversion to a Hatsune Miku timbre). **Verified live: returns a real converted WAV but ~25s/utterance** on the free shared Space — good for trying a character voice, not a viable default. Fully env-configurable (`RVC_MODEL`, `RVC_TTS_VOICE`, `RVC_F0_UP`, `RVC_F0_METHOD`, `RVC_INDEX_RATE`, `RVC_PROTECT`, `RVC_SPACE`); `gradio_client` cached, fail-opens if the Space is asleep.
+- **GPU note:** none of these backends use the LOCAL GPU — edge-tts and the Space run on Microsoft/HF servers (your machine only does HTTP + playback), pyttsx3 is CPU. This machine's `torch` reports `CUDA available=False`, so a *locally downloaded* neural TTS/RVC model would fall back to CPU (slow); local RVC is only worth it with a real NVIDIA GPU + CUDA torch.
+- **`.env` fix:** both voice modules call `load_dotenv()` at import so `STT_*`/`TTS_*`/`RVC_*` are honored in every entry path — previously the standalone `python -m core.*` testers ignored `.env` and used code defaults. New deps: `sounddevice`, `SpeechRecognition`, `edge-tts` (`gradio_client` optional, only for `TTS_BACKEND=space`) — all in `requirements.txt`. **Verified:** normalizer on real Ciel output (emoji/tags/markdown/code/URL all stripped, numbers kept); edge-tts synth to a real 26 KB MP3; custom voice/rate/pitch pass-through; live mikuTTS Space round-trip (312 KB WAV, 25.5s); `.env` values (incl. spaces-around-`=` and parens in `RVC_MODEL`) parse correctly; all touched files compile. Live mic capture + audio playback are verified by the user on their machine (this dev box has no audio device).
+
+### Cost Monitoring — token-precise + live + cumulative (July 10, 2026)
+
+Closed the remaining open parts of the "Cost monitoring" Roadmap item (§9). The July 9 pass logged only a per-tier CALL COUNT (`[LLM_CALL] model=<name>`), surfaced only in the test BUG DASHBOARD. Three gaps remained: no token precision, no live-session surfacing, no cumulative-over-time view. All three now done:
+
+- **Token precision.** New `agent_system/utils/usage.py`:`extract_usage(response)` reads the provider's own token counts off the LangChain response (`usage_metadata`, with an OpenAI-style `response_metadata.token_usage` fallback), normalized to `{input, output, total}`; never raises (cost tracking must never break a real call). The `Worker.on_call`/`Middleware.on_call` hooks now pass usage through, and the Brain call in `router.py` logs it directly. The `[LLM_CALL]` content line became `model=<id> in=<n> out=<n> total=<n>` via `usage.format_usage()` — the `model=` token stays first/space-delimited so every existing `re.search(r"model=(\S+)")` consumer (test dashboard, format_thoughts_log) keeps working unchanged. Tokens are EXACT; only cost is estimated.
+- **Live surfacing.** `CielCore.__init__` gained `llm_token_counts` (per-tier input/output/total) and `llm_cost_usd` (per-tier), accumulated at the SAME single chokepoint (`_log_thought`, parsing the LLM_CALL line) that already counts calls — so any future actor logging `[LLM_CALL]` is covered with zero extra wiring. `main_api.py`'s `broadcast_vitals` now emits `llm_tokens`/`llm_tokens_total` and `llm_cost_usd`/`llm_cost_usd_total` alongside the existing call counts, so the UI shows real session tokens + estimated $ live.
+- **Cumulative view.** New `core/cost.py` holds the pricing table (USD per 1M tokens) — overridable WITHOUT code changes via `ciel_data/model_pricing.json`; unknown models fall back to $0 (calls/tokens still tracked). New `scripts/cost_report.py` mines `thoughts.log` for every `[LLM_CALL]`, aggregates by tier / model / day, applies `core.cost` pricing, and prints an over-time report (`--since-days N`, `--json`). Deterministic and read-only, same discipline as `prompt_harness.py`.
+
+**Verified:** unit tests for `extract_usage` (both metadata paths + empty), `format_usage` round-trip, and `estimate_cost` (incl. longest-prefix match so `op/deepseek/deepseek-v4-pro` → deepseek pricing); a live `CielCore` accumulation test (2 Worker + 1 Brain simulated calls → exact per-tier tokens, WORKER cost `$0.00109` matching hand-calc, BRAIN `$0` since Vilao has no price set); `cost_report.py` run against the real log (19 calls parsed — token totals 0 for pre-change entries, which is correct/honest, not a bug); all 8 touched files byte-compile and `CielCore` initializes clean. **Still open (minor):** Vilao/Brain price defaults to $0 until set in `model_pricing.json`; token data is not retroactive (pre-July-10 log entries have no counts).
+
 ### Prompt Inventory (Step 1 of prompt refactor) + Dead Tool-Manual Finding (July 9, 2026)
 
 Decision on "should we redefine all prompts?": **no big-bang rewrite** (prompts are the highest-leverage/highest-risk surface, can't be cheaply unit-tested, and much verbose wording encodes past bug fixes). Instead: Step 1 = a read-only **`PROMPT_INVENTORY.md`** at repo root mapping every prompt in the project (18 files) — location, consuming model, and the runtime assembly chain (how persona + tier prompt + task prompts stack per turn). Step 2 (later) = rewrite individual prompts only when the harness/logs prove one is failing, each verified separately.
@@ -878,7 +904,7 @@ A large deterministic-safeguards pass. The throughline: **do not rely on the Bra
 - **Add automated tests | Bổ sung test tự động:** convert smoke scripts to pytest with mocks for API/network calls.
 - **Streaming responses | Phản hồi streaming:** implement token-by-token streaming for better UX with cloud providers.
 - **Tool confirmation | Xác nhận tool:** ~~add user confirmation step before executing destructive tools (delete, shell).~~ ✅ **DONE** — Callback-based Y/N safety gate for 6 high-risk tools, with CLI and WebSocket handlers.
-- **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost. 🟡 **PARTIALLY DONE (July 9, 2026)** — every real LLM call now logs `[LLM_CALL] model=<name>` to `thoughts.log` (call-count, not token-precise) and `test_hard_special.py`'s BUG DASHBOARD surfaces a per-run breakdown by actor + top-3 costliest tests. Still open: no live-session/production surfacing (only shows up in the test dashboard), no token-level precision, no cumulative-over-time view (would need the `scripts/cost_report.py` follow-up mentioned in Notes).
+- **Cost monitoring | Giám sát chi phí:** track API token usage per request and surface cumulative cost. ✅ **DONE (July 10, 2026)** — token-precise (`agent_system/utils/usage.py` reads provider token counts into the `[LLM_CALL]` line), live-surfaced (`CielCore.llm_token_counts`/`llm_cost_usd` accumulated at the `_log_thought` chokepoint → `main_api.py` vitals emit `llm_tokens`/`llm_cost_usd`), and cumulative (`scripts/cost_report.py` aggregates the log by tier/model/day with `core/cost.py` pricing). Prices overridable via `ciel_data/model_pricing.json`. Minor leftover: Vilao/Brain price defaults to $0 until set; token data not retroactive.
 - **RAG Recall Compression | Nén ngữ cảnh RAG:** ~~Add lightweight cleanup before recalled memories reach Brain.~~ ✅ **DONE** — Tier-1 regex/structural filtering + Tier-2 Worker compression only for large recalled context.
 - **RAG Re-ranking | Xếp hạng lại RAG:** Add a local cross-encoder (e.g., `bge-reranker-base`) to re-score RAG results before sending to Brain. Deferred until memory noise becomes a measurable problem beyond current compression filters.
 - **GitHub Manager | Quản lý GitHub:** ~~Add `skills/external/github_ops.py` for `git_status`, `git_diff`, `git_commit_and_push` with mandatory user approval before push.~~ ✅ **DONE** — 5 tools with 2-step commit safety and deep repo scanner.
@@ -895,7 +921,7 @@ A large deterministic-safeguards pass. The throughline: **do not rely on the Bra
 - **Safety Gate coverage gap | Lỗ hổng phạm vi Safety Gate:** ~~`send_gmail_html_message` and `reply_to_email` sent real email with no Y/N confirmation, unlike `send_gmail_message`.~~ ✅ **DONE (July 6, 2026)** — both added to `_RISK_DESCRIPTIONS`.
 - **Test isolation | Cô lập test:** `test_hard_special.py` currently runs all 16 cases against ONE shared `AgentLoop`/`chat_history` session, which is what let the cross-request contamination bug above surface — but also means the suite cannot fully rule out other instances of it. Consider a fresh session per test or per logical group. (Still open — the contamination bug itself is fixed, but this structural risk in the test remains.)
 - **Healing skip-list | Bỏ qua lỗi không thể tự sửa:** ~~self-healing burned a guaranteed-to-fail Worker call on errors no parameter guess could fix (missing library, network timeout, geo-restriction).~~ ✅ **DONE (July 9, 2026)** — `_HEALING_SKIP_PATTERNS`; verified 94/269 (34.9%) of historical healing triggers would have been skipped.
-- **Cost monitoring | Giám sát chi phí:** 🟡 **PARTIALLY DONE (July 9, 2026)** — `[LLM_CALL]` logging + BUG DASHBOARD cost breakdown (see Changelog and Roadmap §9). Still no live-session surfacing or cumulative-over-time view.
+- **Cost monitoring | Giám sát chi phí:** ✅ **DONE (July 10, 2026)** — token-precise `[LLM_CALL]` logging, live per-tier tokens + estimated USD in vitals, and `scripts/cost_report.py` cumulative report with `core/cost.py` pricing. See the July 10 Changelog entry.
 
 ---
 

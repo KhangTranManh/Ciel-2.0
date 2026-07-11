@@ -30,7 +30,9 @@ from agent_system.models.brain import Brain
 from agent_system.models.worker import Worker
 from agent_system.models.middleware import Middleware
 from agent_system.utils.logger import log
+from agent_system.utils.usage import format_usage
 from agent_system.config import MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES
+from core.cost import estimate_cost
 
 load_dotenv()
 
@@ -140,7 +142,7 @@ class CielCore:
         # Call-count only (not token-precise): the harness/dashboards care about WHICH
         # mechanism causes extra calls (e.g. today's healing-waste finding), not exact
         # token math, and this needs no changes to Worker's return type/callers.
-        self.worker.on_call = lambda model: self._log_thought("WORKER", "LLM_CALL", f"model={model}")
+        self.worker.on_call = lambda model, usage=None: self._log_thought("WORKER", "LLM_CALL", format_usage(model, usage))
 
         # Modular Components
         self.router = Router(self.brain, self._log_thought, persona=self.ciel_persona)
@@ -153,7 +155,7 @@ class CielCore:
         if MIDDLEWARE_ENABLED:
             try:
                 self.middleware = Middleware()
-                self.middleware.on_call = lambda model: self._log_thought("MIDDLEWARE", "LLM_CALL", f"model={model}")
+                self.middleware.on_call = lambda model, usage=None: self._log_thought("MIDDLEWARE", "LLM_CALL", format_usage(model, usage))
             except Exception as e:
                 log.error(f"Middleware failed to initialize, continuing without it: {e}")
 
@@ -170,6 +172,12 @@ class CielCore:
         # Cheap and accurate for the current session; the UI reads this instead of the
         # old fake "log-size * 0.0001" cost estimate.
         self.llm_call_counts = {"BRAIN": 0, "WORKER": 0, "MIDDLEWARE": 0}
+        # Per-tier token totals and estimated USD cost for this session — accumulated at
+        # the SAME chokepoint (_log_thought) by parsing the LLM_CALL content line, so any
+        # future actor that logs an [LLM_CALL] is counted with zero extra wiring. Token
+        # numbers are exact (from the provider); cost is an estimate (see core/cost.py).
+        self.llm_token_counts = {t: {"input": 0, "output": 0, "total": 0} for t in ("BRAIN", "WORKER", "MIDDLEWARE")}
+        self.llm_cost_usd = {"BRAIN": 0.0, "WORKER": 0.0, "MIDDLEWARE": 0.0}
 
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
@@ -253,6 +261,24 @@ class CielCore:
         # [LLM_CALL] entry passes through here, so counting here covers all of them.
         if action.upper() == "LLM_CALL":
             self.llm_call_counts[actor] = self.llm_call_counts.get(actor, 0) + 1
+            # Parse "model=<id> in=<n> out=<n> total=<n>" (see agent_system.utils.usage
+            # .format_usage) to accumulate exact tokens + estimated cost per tier.
+            model_m = re.search(r"model=(\S+)", content)
+            in_m = re.search(r"\bin=(\d+)", content)
+            out_m = re.search(r"\bout=(\d+)", content)
+            tot_m = re.search(r"\btotal=(\d+)", content)
+            if actor in self.llm_token_counts:
+                inp = int(in_m.group(1)) if in_m else 0
+                out = int(out_m.group(1)) if out_m else 0
+                tot = int(tot_m.group(1)) if tot_m else (inp + out)
+                bucket = self.llm_token_counts[actor]
+                bucket["input"] += inp
+                bucket["output"] += out
+                bucket["total"] += tot
+                if model_m and (inp or out):
+                    self.llm_cost_usd[actor] = round(
+                        self.llm_cost_usd.get(actor, 0.0) + estimate_cost(model_m.group(1), inp, out), 6
+                    )
         log_file = self.base_dir / "ciel_data" / "logs" / "thoughts.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         import datetime

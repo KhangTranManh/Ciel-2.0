@@ -208,13 +208,19 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
             except Exception:
                 pass
 
-            # 3. Real per-tier LLM call counts for this session (replaces the old fake
-            #    "log-size * 0.0001" estimate — now backed by the [LLM_CALL] counter).
+            # 3. Real per-tier LLM usage for this session (replaces the old fake
+            #    "log-size * 0.0001" estimate). Call counts + exact token totals from the
+            #    provider + estimated USD cost (core/cost.py) — all live from the
+            #    _log_thought chokepoint counters.
             llm_calls = {"BRAIN": 0, "WORKER": 0, "MIDDLEWARE": 0}
+            llm_tokens = {t: {"input": 0, "output": 0, "total": 0} for t in ("BRAIN", "WORKER", "MIDDLEWARE")}
+            llm_cost = {"BRAIN": 0.0, "WORKER": 0.0, "MIDDLEWARE": 0.0}
             middleware_on = False
             try:
                 if ciel_agent:
                     llm_calls = dict(ciel_agent.core.llm_call_counts)
+                    llm_tokens = {k: dict(v) for k, v in ciel_agent.core.llm_token_counts.items()}
+                    llm_cost = dict(ciel_agent.core.llm_cost_usd)
                     middleware_on = ciel_agent.core.middleware is not None
             except Exception:
                 pass
@@ -224,6 +230,10 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
                 "vram_total": vram_total,
                 "llm_calls": llm_calls,
                 "llm_calls_total": sum(llm_calls.values()),
+                "llm_tokens": llm_tokens,
+                "llm_tokens_total": sum(v.get("total", 0) for v in llm_tokens.values()),
+                "llm_cost_usd": llm_cost,
+                "llm_cost_usd_total": round(sum(llm_cost.values()), 6),
                 "tiers": {
                     "Brain (Router)": True,
                     "Worker (Synth)": True,

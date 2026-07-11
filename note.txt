@@ -439,7 +439,24 @@ send) — the hook is code-symmetric to Worker's (already verified), but hasn't 
 
 **Verified live July 9, 2026 (real user email send):** `[MIDDLEWARE] [LLM_CALL]
 model=op/deepseek/deepseek-v4-pro` fired correctly. Cost/usage tracking is now fully verified
-across all 3 tiers (Brain/Worker/Middleware). The same real turn also showed Middleware working
+across all 3 tiers (Brain/Worker/Middleware).
+
+COST MONITORING COMPLETED (July 10, 2026 — Roadmap item now fully closed): the July 9 pass only
+counted CALLS. Added the three missing pieces. (1) TOKEN PRECISION: agent_system/utils/usage.py
+`extract_usage()` pulls the provider's real token counts off the LLM response (usage_metadata,
+with an OpenAI-style token_usage fallback); the `[LLM_CALL]` line is now `model=<id> in=<n>
+out=<n> total=<n>` (model= stays first so old `re.search(r"model=(\\S+)")` parsers still work).
+(2) LIVE SURFACING: CielCore accumulates `llm_token_counts` + `llm_cost_usd` per tier at the SAME
+_log_thought chokepoint that counts calls, and main_api.py vitals now emit llm_tokens/llm_cost_usd
+(+ totals) so the UI shows real session tokens + estimated $ live. (3) CUMULATIVE VIEW:
+core/cost.py holds the pricing table (USD/1M tokens, overridable WITHOUT code via
+ciel_data/model_pricing.json; unknown model → $0 but still counted) and scripts/cost_report.py
+mines thoughts.log → report by tier/model/day (`--since-days N`, `--json`), read-only, no LLM call.
+Tokens are EXACT, cost is an ESTIMATE. Verified: unit tests (both usage paths, prefix-match so
+op/deepseek/... → deepseek price), a live CielCore accumulation test (WORKER $0.00109 matches
+hand-calc, BRAIN $0 since Vilao price unset), cost_report on the real log (19 calls; pre-change
+entries show 0 tokens — correct, not a bug), all 8 touched files compile clean. Leftover (minor):
+set Vilao/Brain price in model_pricing.json to get Brain cost; token data is not retroactive. The same real turn also showed Middleware working
 as designed on a genuine edge case: `stealth_search` returned no relevant political news that
 day, Worker honestly reported "no data available" instead of fabricating a report
 (anti-hallucination working correctly), Middleware flagged the resulting email
@@ -472,6 +489,45 @@ every [LLM_CALL]; vitals reports real per-tier counts instead of the old fake es
 ENV DRIFT FOUND: the venv was missing `fastapi` (declared in requirements.txt but not installed) —
 installed fastapi 0.139.0 to run main_api.py. If main_api.py fails with ModuleNotFoundError on a
 fresh checkout, re-run `pip install -r requirements.txt`.
+
+VOICE I/O — CLI (added July 11, 2026): the Python side of the "voice seam" now exists, mirroring the
+UI seam design (capture/speak plug in without touching the core; transcript feeds the SAME
+`ciel.run_step()` the keyboard uses). Two standalone, swappable modules, each runnable on its own to
+test the modality BEFORE wiring it into the whole agent:
+  - INPUT / STT — core/voice_input.py. Mic capture via `sounddevice` (bundles PortAudio, clean
+    Windows install — no PyAudio/compiler). Energy-based endpointing (auto-calibrates ambient noise,
+    stops after ~1.3s silence, 15s cap, 6s start-timeout). Backends via STT_BACKEND (default "google"
+    = SpeechRecognition free Google Web Speech, no key, vi-VN; "whisper" = faster-whisper offline if
+    installed; "gemini" = google-genai if GEMINI_API_KEY set). Test alone: `python -m core.voice_input`.
+  - OUTPUT / TTS — core/speech_output.py. KEY DESIGN DECISION (deliberate): do NOT dumb down the
+    model prompts to be speech-friendly — the text UI / HUD / EMAIL all want the rich formatting.
+    Instead a deterministic `to_speech()` normalizer (same pattern as `_sanitize_outbound_email`)
+    strips markdown / emojis / [COGNITION]-style ALL-CAPS tags / code blocks / URLs before the text
+    hits the engine; numbers are preserved. Backends via TTS_BACKEND (default "edge" = edge-tts,
+    free MS neural voices, vi-VN-HoaiMyNeural (F) / vi-VN-NamMinhNeural (M), the ONLY 2 VN neural
+    voices; "pyttsx3" = offline SAPI; "space"/"rvc" = mikuTTS HF Space). MP3 playback uses built-in
+    Windows MCI (winmm) — no extra playback package. Prosody via TTS_RATE/TTS_PITCH/TTS_VOLUME.
+    Test alone: `python -m core.speech_output "Xin chào Master"` (add --show to see normalized text,
+    --raw to hear it un-normalized).
+main.py flags: `--voice` (speech is the default input; Enter on empty line = speak, or type to
+override; `:v`/`:voice` does a one-off capture in any mode) and `--speak` (Ciel reads each reply
+aloud through the normalizer; the printed transcript is unchanged). Also via env INPUT_MODE=voice /
+SPEAK=true. Both imports are LAZY + fail-open — missing audio deps or no mic never break the CLI.
+RVC / mikuTTS SPACE BACKEND (experimental, Cách 1): TTS_BACKEND=space calls John6666/mikuTTS's Gradio
+`/tts` (edge-tts base speech -> RVC voice conversion to a Hatsune Miku timbre). Verified live: returns
+a real converted WAV, but ~25s/utterance (free shared Space GPU) — good for trying a character voice,
+NOT a viable default. All knobs env-configurable: RVC_MODEL (17 Miku models), RVC_TTS_VOICE,
+RVC_F0_UP (transpose), RVC_F0_METHOD (rmvpe/pm), RVC_INDEX_RATE, RVC_PROTECT, RVC_SPACE. gradio_client
+is cached (connecting is slow) and the backend fail-opens if the Space is asleep/down.
+GPU note (important): NONE of these backends use the LOCAL GPU — edge-tts and the Space run on
+Microsoft/HF servers (your machine only does HTTP + audio playback), pyttsx3 is CPU. This machine's
+`torch` reports CUDA available=False, so a *locally downloaded* neural TTS/RVC model would fall back
+to CPU (slow) — local RVC is only worth it with an actual NVIDIA GPU + CUDA torch. edge-tts is the
+recommended default (cloud, free, instant, 0 GPU, good vi-VN).
+.env FIX (July 11, 2026): both voice modules now call `load_dotenv()` at import, so STT_*/TTS_*/RVC_*
+in .env are honored in EVERY entry path — previously the standalone `python -m core.*` testers didn't
+load .env and silently used code defaults. New deps: sounddevice, SpeechRecognition, edge-tts
+(gradio_client optional, only for TTS_BACKEND=space) — all in requirements.txt.
 
 ENV NAMING TRAP (documented here only — .env intentionally not modified): agent_system/config.py's
 WORKER_MODEL constant actually reads os.getenv("CODER_MODEL", ...). A .env entry literally named
