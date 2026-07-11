@@ -90,9 +90,10 @@ Ciel 2.0/
 ├── main_api.py                   # FastAPI/WebSocket backend. WS /ws (chat+thoughts+vitals+confirm)
 │                                 # + REST GET /skills (dynamic manifest), /health. UI reads these.
 ├── ui/                           # React frontend (browser-first) + Tauri v2 desktop shell — see ui/README.md
+│   ├── src/orb.ts                #   Three.js audio-reactive particle orb (createOrb→setState/setAnalyser/destroy)
 │   ├── src/core/                 #   transport+protocol (ws, bus, types, http) — modality-agnostic
-│   ├── src/io/                   #   MODALITY LAYER: input/ (Text live, Voice stub), output/ (Transcript, speaker stub)
-│   ├── src/components/           #   SkillGrid (dynamic), ThoughtStream, VitalsBar, ConfirmDialog
+│   ├── src/io/                   #   MODALITY LAYER: input/ (Text + Voice mic), output/ (Transcript, speaker+analyser)
+│   ├── src/components/           #   Orb (centerpiece), SkillGrid (dynamic), VitalsBar, ConfirmDialog
 │   ├── src/hooks/useCiel.ts      #   bus <-> React bridge
 │   └── src-tauri/                #   Tauri v2 shell: tauri.conf.json (devUrl→:1420, dist→../dist), Cargo
 ├── requirements.txt              # Python dependencies
@@ -609,6 +610,17 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 ---
 
 ## 8) Changelog | Nhật ký thay đổi
+
+### UI: voice output + JARVIS-style audio-reactive orb (July 11, 2026)
+
+Made the browser/desktop UI voice-first and audio-reactive — WITHOUT discarding any of Ciel's backend-driven panels. Explicitly evaluated and REJECTED adopting a "pure vanilla TS, no React" JARVIS-clone prompt wholesale (it would throw away SkillGrid, VitalsBar cost/tokens, the safety-gate ConfirmDialog, the bus/seam architecture, and the Tauri desktop path). Instead the orb — the "soul" of that look — was ported INTO the existing React app as a component.
+
+- **The orb** — `ui/src/orb.ts` is a framework-agnostic Three.js particle system (`createOrb(canvas) → {setState, setAnalyser, destroy}`): 2000 particles on a Fibonacci sphere, nearest-neighbor connecting lines (≤8000, density scaled per state), bright "electrons" travelling the lines in `thinking`, four states (idle/listening/thinking/speaking) with smooth interpolation of radius/speed/brightness/color, additive-blended glow, camera orbit + depth breathing, a state-change tumble, and a boot-up animation. `ui/src/components/Orb.tsx` wraps it in React (imperative handle driven by props). Inspired by ethanplusai/jarvis.
+- **Audio reactivity from the REAL voice** — `ui/src/io/output/speaker.ts` now routes the TTS `<audio>` through a Web Audio `AnalyserNode` (element → analyser → speakers) and broadcasts speaking start/end; `App.tsx` feeds that analyser to `orb.setAnalyser()`, so the orb pulses to Ciel's actual spoken output (bass pushes particles outward). Orb state is derived from the real conversation: speaking > thinking (`status`) > listening (mic) > idle.
+- **Voice output = approach B (reuse the CLI engine)** — the UI does NOT use browser `speechSynthesis` voices. The 🔊 toggle POSTs the reply text to the backend `POST /tts` (`main_api.py`), which runs the SAME `to_speech()` normalizer + edge-tts as the CLI (`synth_to_bytes()` in `core/speech_output.py`) and returns MP3 bytes — identical vi-VN neural quality, no client-side voice cleanup.
+- **edge-tts transient-failure fix** — the free Microsoft endpoint intermittently raises `NoAudioReceived` (verified: identical plain text fails ~1 in 3 calls, independent of content — throttling, not bad text/voice), which surfaced as sporadic `502`s on `/tts`. `_edge_synth_bytes()` now retries with backoff (4 attempts); shared by `/tts`, the CLI `speak()`, and `synth_to_file()`.
+- **Voice input (UI)** — `ui/src/io/input/VoiceInput.tsx` is now a real mic button using the browser Web Speech API (vi-VN) → the same `send()` the keyboard uses. (Separate from the CLI's server-side `core/voice_input.py`.)
+- **Layout change (per user)** — orb is the center column; the chat (Transcript + input dock) moved to the RIGHT column (where `ThoughtStream` was), and `ThoughtStream` was removed from the layout. Left column stays `SkillGrid`; `VitalsBar` and `ConfirmDialog` are unchanged. New UI deps: `three` + `@types/three`. **Verified:** `npm run typecheck` and `npm run build` both clean (Three.js bundles, ~670 KB / 180 KB gzip); live orb render confirmed by user screenshot (`docs/orb.jpg`). Caveats: browser Web Speech STT may be unavailable in Tauri WebView2 (button self-disables); audio-reactive playback needs the `AudioContext` resumed by a user gesture (the 🔊/🎤 click).
 
 ### Voice I/O on the CLI — STT + TTS with swappable backends (July 11, 2026)
 

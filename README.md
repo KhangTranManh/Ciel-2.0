@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <img src="docs/orb.jpg" alt="Ciel 2.0 — audio-reactive particle orb interface" width="860">
+  <br>
+  <em>The voice-first interface: an audio-reactive particle orb that reacts to Ciel's real state (idle / listening / thinking / speaking).</em>
+</p>
+
+<p align="center">
   <a href="architect.md">Architecture</a> ·
   <a href="note.txt">Live Status</a> ·
   <a href="PROMPT_INVENTORY.md">Prompts</a> ·
@@ -215,6 +221,7 @@ In the UI, click the 🔇 → 🔊 button beside the input box to have Ciel read
 - **Token-Precise Cost Tracking** — every real LLM call logs its exact provider token counts; live vitals show per-tier tokens and estimated USD, and `scripts/cost_report.py` aggregates spend over time. See [Observability & Cost](#observability--cost).
 
 ### Interface
+- **Audio-Reactive Orb** — a full Three.js particle orb (2000 particles, connecting lines, travelling "electrons") is the centerpiece. It reflects Ciel's real state (idle / listening / thinking / speaking) and pulses to the actual TTS voice via an `AnalyserNode`. Layout: skills (left) · orb (center) · conversation (right).
 - **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with zero code changes between the two. The skill list and live activity feed are 100% backend-driven.
 - **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction when no API/tool exists for a task.
 - **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider (Vilao, DeepSeek, Gemini, Ollama), swappable via `.env` with no code changes.
@@ -333,7 +340,10 @@ Ciel 2.0/
 │   └── external/                # Gmail, trading, Telegram, GitHub, web search, documents
 │
 ├── ui/                         # React + Tauri v2 frontend (optional) — see ui/README.md
-│   └── src/io/                  # modality layer: input/ (text, voice stub), output/ (transcript, speaker)
+│   └── src/
+│       ├── orb.ts               # Three.js audio-reactive particle orb (framework-agnostic)
+│       ├── components/Orb.tsx   # React wrapper driving the orb from conversation state
+│       └── io/                  # modality layer: input/ (text + voice mic), output/ (transcript, speaker+analyser)
 │
 ├── autonomous_pipeline/        # Self-running MLOps daemon (optional)
 │   ├── orchestrator.py          # Background scheduler
@@ -394,7 +404,7 @@ This is currently an internal/experimental project without a formal contribution
 
 ## Acknowledgements
 
-Built on [LangChain](https://github.com/langchain-ai/langchain) / [LangGraph](https://github.com/langchain-ai/langgraph), [ChromaDB](https://github.com/chroma-core/chroma), [sentence-transformers](https://github.com/UKPLab/sentence-transformers), [FastAPI](https://github.com/tiangolo/fastapi), [Tauri](https://github.com/tauri-apps/tauri), [edge-tts](https://github.com/rany2/edge-tts), and [SpeechRecognition](https://github.com/Uberi/speech_recognition) — with Gemini, DeepSeek, and Vilao as the LLM providers exercised in production.
+Built on [LangChain](https://github.com/langchain-ai/langchain) / [LangGraph](https://github.com/langchain-ai/langgraph), [ChromaDB](https://github.com/chroma-core/chroma), [sentence-transformers](https://github.com/UKPLab/sentence-transformers), [FastAPI](https://github.com/tiangolo/fastapi), [Tauri](https://github.com/tauri-apps/tauri), [Three.js](https://github.com/mrdoob/three.js), [edge-tts](https://github.com/rany2/edge-tts), and [SpeechRecognition](https://github.com/Uberi/speech_recognition) — with Gemini, DeepSeek, and Vilao as the LLM providers exercised in production. The particle orb is inspired by [ethanplusai/jarvis](https://github.com/ethanplusai/jarvis).
 
 ## License / Notes
 

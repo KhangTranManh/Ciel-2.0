@@ -135,18 +135,49 @@ def _play_audio_file(path: str) -> None:
 
 # ── Backends ────────────────────────────────────────────────────────────────
 
-def _speak_edge(text: str, voice: str) -> None:
+def _edge_synth_bytes(spoken: str, voice: str, attempts: int = 4) -> bytes:
+    """Synthesize with edge-tts → MP3 bytes, retrying transient failures.
+
+    The free Microsoft edge-tts endpoint intermittently raises `NoAudioReceived`
+    ("No audio was received…") under rapid/repeated calls — VERIFIED: the exact same
+    plain text fails ~1 in 3 attempts and succeeds on the next, independent of the
+    content (it is throttling/handshake flakiness, not a bad voice or bad text). A
+    short backoff retry makes it reliable; without it the API's `POST /tts` returns a
+    502 on those unlucky calls. Callers pass ALREADY-NORMALIZED text.
+    """
     import asyncio
+    import time
     import edge_tts
 
+    async def _run() -> bytes:
+        buf = bytearray()
+        com = edge_tts.Communicate(spoken, voice, rate=DEFAULT_RATE,
+                                   volume=DEFAULT_VOLUME, pitch=DEFAULT_PITCH)
+        async for chunk in com.stream():
+            if chunk["type"] == "audio":
+                buf.extend(chunk["data"])
+        return bytes(buf)
+
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            data = asyncio.run(_run())
+            if data:
+                return data
+            last_err = RuntimeError("edge-tts returned no audio")
+        except Exception as e:  # NoAudioReceived + transient network errors
+            last_err = e
+        if i < attempts - 1:
+            time.sleep(0.5 * (i + 1))
+    raise last_err if last_err else RuntimeError("edge-tts synthesis failed")
+
+
+def _speak_edge(text: str, voice: str) -> None:
+    data = _edge_synth_bytes(text, voice)  # text is already normalized by speak()
     tmp = tempfile.NamedTemporaryFile(prefix="ciel_tts_", suffix=".mp3", delete=False)
-    tmp.close()
     try:
-        async def _synth():
-            com = edge_tts.Communicate(text, voice, rate=DEFAULT_RATE,
-                                       volume=DEFAULT_VOLUME, pitch=DEFAULT_PITCH)
-            await com.save(tmp.name)
-        asyncio.run(_synth())
+        tmp.write(data)
+        tmp.close()
         _play_audio_file(tmp.name)
     finally:
         try:
@@ -228,18 +259,12 @@ def synth_to_file(text: str, path: str, voice: str | None = None,
                   normalize: bool = True) -> str:
     """edge-tts only: render speech to an MP3 file (used by tests / callers that want
     the audio without playing it). Returns the path written, or "" if nothing to say."""
-    import asyncio
-    import edge_tts
-
     spoken = to_speech(text) if normalize else text
     if not spoken:
         return ""
-
-    async def _synth():
-        com = edge_tts.Communicate(spoken, voice or DEFAULT_VOICE, rate=DEFAULT_RATE,
-                                   volume=DEFAULT_VOLUME, pitch=DEFAULT_PITCH)
-        await com.save(path)
-    asyncio.run(_synth())
+    data = _edge_synth_bytes(spoken, voice or DEFAULT_VOICE)
+    with open(path, "wb") as f:
+        f.write(data)
     return path
 
 
@@ -251,23 +276,10 @@ def synth_to_bytes(text: str, voice: str | None = None, normalize: bool = True) 
     nothing to say. Synchronous (wraps asyncio.run) — call it off the event loop
     (e.g. via run_in_executor) so it doesn't block an async endpoint.
     """
-    import asyncio
-    import edge_tts
-
     spoken = to_speech(text) if normalize else (text or "")
     if not spoken.strip():
         return b""
-
-    async def _run() -> bytes:
-        buf = bytearray()
-        com = edge_tts.Communicate(spoken, voice or DEFAULT_VOICE, rate=DEFAULT_RATE,
-                                   volume=DEFAULT_VOLUME, pitch=DEFAULT_PITCH)
-        async for chunk in com.stream():
-            if chunk["type"] == "audio":
-                buf.extend(chunk["data"])
-        return bytes(buf)
-
-    return asyncio.run(_run())
+    return _edge_synth_bytes(spoken, voice or DEFAULT_VOICE)
 
 
 def speak(text: str, voice: str | None = None, backend: str | None = None,

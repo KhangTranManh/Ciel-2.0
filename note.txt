@@ -529,6 +529,36 @@ in .env are honored in EVERY entry path — previously the standalone `python -m
 load .env and silently used code defaults. New deps: sounddevice, SpeechRecognition, edge-tts
 (gradio_client optional, only for TTS_BACKEND=space) — all in requirements.txt.
 
+VOICE I/O — UI + JARVIS-STYLE ORB (added July 11, 2026): the browser/desktop UI is now voice-first and
+audio-reactive, WITHOUT throwing away any of Ciel's backend-driven panels.
+- VOICE OUTPUT (approach B — reuse the CLI engine, don't use browser voices): backend `POST /tts`
+  (main_api.py) runs the SAME `to_speech()` normalizer + edge-tts as the CLI and returns MP3 bytes
+  (`synth_to_bytes()` in core/speech_output.py). The UI's 🔊 toggle POSTs the reply text and plays the
+  returned audio — identical vi-VN neural quality to the CLI, and NO client-side voice cleanup needed.
+  edge-tts TRANSIENT-FAILURE FIX: the free MS endpoint intermittently raises `NoAudioReceived` (verified:
+  identical plain text fails ~1/3 of calls, independent of content — throttling, not bad text/voice);
+  `_edge_synth_bytes()` now retries with backoff (4x), used by /tts, CLI speak(), and synth_to_file.
+  Without it /tts returned sporadic 502s.
+- VOICE INPUT (UI): ui/src/io/input/VoiceInput.tsx is now a real mic button using the browser Web Speech
+  API (vi-VN) → same `send()` the keyboard uses. (The CLI's core/voice_input.py server-side STT is a
+  separate path; the UI uses the browser's on-device STT — no backend round-trip.)
+- ORB (the centerpiece): ui/src/orb.ts is a framework-agnostic Three.js particle system
+  (`createOrb(canvas)->{setState,setAnalyser,destroy}`) — 2000 particles on a Fibonacci sphere, nearest-
+  neighbor connecting lines (<=8000, density per state), "electrons" travelling the lines in `thinking`,
+  4 states (idle/listening/thinking/speaking) with smooth interpolation, additive-blended glow, camera
+  orbit + breathing, state-change tumble, boot-up anim. Inspired by ethanplusai/jarvis. Audio-reactive:
+  speaker.ts routes the TTS <audio> through a Web Audio AnalyserNode → `orb.setAnalyser()` so the orb
+  pulses to Ciel's ACTUAL spoken voice (bass pushes particles out). ui/src/components/Orb.tsx wraps it in
+  React; App.tsx derives orb state from the real conversation (speaking > thinking(status) > listening > idle).
+- LAYOUT CHANGE (per user): orb is center; the chat (Transcript + input dock) moved to the RIGHT column
+  (where ThoughtStream was); ThoughtStream removed from the layout. Left column still SkillGrid; VitalsBar
+  (cost/tokens) + ConfirmDialog (safety gate) unchanged. DELIBERATE: did NOT adopt the JARVIS prompt's
+  "no React, pure vanilla TS" — that would discard SkillGrid/Vitals/Confirm/Tauri/bus; instead the orb was
+  ported INTO the React app as a component. New UI deps: three + @types/three. Verified: npm run typecheck
+  + npm run build both clean (Three.js bundles; ~670KB/180KB gzip). Live orb render confirmed by user
+  screenshot (docs/orb.jpg). Note: browser Web Speech API STT may be unavailable in Tauri WebView2 (button
+  self-disables); audio-reactive playback needs the AudioContext resumed by a user gesture (the 🔊/🎤 click).
+
 ENV NAMING TRAP (documented here only — .env intentionally not modified): agent_system/config.py's
 WORKER_MODEL constant actually reads os.getenv("CODER_MODEL", ...). A .env entry literally named
 WORKER_MODEL has NO effect on which model the Worker uses — set CODER_MODEL instead.

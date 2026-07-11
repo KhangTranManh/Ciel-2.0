@@ -21,6 +21,50 @@ import { HTTP_BASE } from "../../core/http";
 let unsubscribe: (() => void) | null = null;
 let currentAudio: HTMLAudioElement | null = null;
 
+// ── Audio analysis (feeds the orb's audio reactivity) ───────────────────────
+// The TTS <audio> is routed through Web Audio: element → AnalyserNode → speakers.
+// The orb reads the analyser so it pulses to Ciel's ACTUAL spoken voice. Speaking
+// start/end is broadcast so the UI can flip the orb into/out of the "speaking" state.
+let audioCtx: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+const speakingSubs = new Set<(speaking: boolean) => void>();
+
+function ensureAudio(): { ctx: AudioContext; analyser: AnalyserNode } | null {
+  try {
+    if (!audioCtx || !analyser) {
+      const AC = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      analyser.connect(audioCtx.destination);
+    }
+    return { ctx: audioCtx, analyser };
+  } catch {
+    return null;
+  }
+}
+
+export function getSpeechAnalyser(): AnalyserNode | null {
+  return analyser;
+}
+
+export function onSpeakingChange(cb: (speaking: boolean) => void): () => void {
+  speakingSubs.add(cb);
+  return () => speakingSubs.delete(cb);
+}
+
+function emitSpeaking(v: boolean): void {
+  speakingSubs.forEach((cb) => {
+    try {
+      cb(v);
+    } catch (err) {
+      console.error("[voice-out] speaking subscriber threw", err);
+    }
+  });
+}
+
 export function enableSpeaker(speak: (text: string) => void): void {
   if (unsubscribe) return; // already enabled
   unsubscribe = bus.on("response", (text) => {
@@ -48,9 +92,11 @@ export function stopSpeaking(): void {
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
     window.speechSynthesis.cancel();
   }
+  emitSpeaking(false);
 }
 
-// Approach B (default): backend edge-tts + to_speech(), play the returned MP3.
+// Approach B (default): backend edge-tts + to_speech(), play the returned MP3 and
+// route it through the analyser so the orb reacts to the voice.
 export async function backendSpeak(text: string): Promise<void> {
   if (!text || !text.trim()) return;
   stopSpeaking(); // interrupt the previous reply if it's still speaking
@@ -65,9 +111,29 @@ export async function backendSpeak(text: string): Promise<void> {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
-    audio.onended = () => URL.revokeObjectURL(url);
+
+    // Route through Web Audio for the analyser (best-effort — falls back to direct
+    // playback if the AudioContext or media source can't be created).
+    const a = ensureAudio();
+    if (a) {
+      try {
+        await a.ctx.resume();
+        const src = a.ctx.createMediaElementSource(audio);
+        src.connect(a.analyser);
+      } catch {
+        /* not routable — audio still plays directly to the speakers below */
+      }
+    }
+
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+      emitSpeaking(false);
+    };
+    emitSpeaking(true);
     await audio.play();
   } catch (err) {
+    emitSpeaking(false);
     console.error("[voice-out] backendSpeak failed", err);
   }
 }
