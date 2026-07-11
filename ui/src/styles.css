@@ -96,7 +96,14 @@ body {
 @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 
 /* ---- Input dock ---- */
-.input-dock { border-top: 1px solid var(--border); padding: 12px clamp(16px, 6vw, 80px); background: var(--panel); }
+.input-dock { border-top: 1px solid var(--border); padding: 12px clamp(16px, 6vw, 80px); background: var(--panel); display: flex; gap: 8px; align-items: flex-end; }
+.input-dock .input-row { flex: 1; }
+.speaker-toggle {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 12px; cursor: pointer; font-size: 18px; line-height: 1;
+  align-self: stretch;
+}
+.speaker-toggle[aria-pressed="true"] { border-color: var(--accent); }
 .input-row { display: flex; gap: 8px; align-items: flex-end; }
 .text-input {
   flex: 1; resize: none; background: var(--panel-2); color: var(--text);

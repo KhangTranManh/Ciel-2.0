@@ -61,6 +61,30 @@ async def get_skills():
         },
     }
 
+@app.post("/tts")
+async def tts(payload: dict):
+    """Text-to-speech for the browser UI (approach B): normalize with the SAME
+    `to_speech()` used by the CLI, synthesize with edge-tts, and return MP3 bytes.
+    The UI sends the raw reply text and just plays the audio — no client-side voice
+    cleanup needed, and the neural voice matches the CLI exactly. POST (not GET) so
+    long replies aren't capped by URL length. Voice/rate/etc. come from .env."""
+    from fastapi.responses import Response
+    text = (payload or {}).get("text", "")
+    voice = (payload or {}).get("voice") or None
+    if not text or not text.strip():
+        return Response(status_code=204)
+    try:
+        from core.speech_output import synth_to_bytes
+        loop = asyncio.get_event_loop()
+        audio = await loop.run_in_executor(None, lambda: synth_to_bytes(text, voice))
+    except Exception as e:
+        print(f"[API TTS Error] {e}")
+        return Response(status_code=502)
+    if not audio:
+        return Response(status_code=204)
+    return Response(content=audio, media_type="audio/mpeg")
+
+
 # SAFETY GATE: shared state for WebSocket confirmation
 _confirm_event = threading.Event()
 _confirm_result = {"approved": False}

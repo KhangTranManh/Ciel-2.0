@@ -243,6 +243,33 @@ def synth_to_file(text: str, path: str, voice: str | None = None,
     return path
 
 
+def synth_to_bytes(text: str, voice: str | None = None, normalize: bool = True) -> bytes:
+    """edge-tts only: render speech to in-memory MP3 bytes (no file, no playback).
+
+    Used by the API server (`POST /tts`) so the browser UI plays the SAME edge-tts
+    neural voice + `to_speech()` normalization as the CLI. Returns b"" if there is
+    nothing to say. Synchronous (wraps asyncio.run) — call it off the event loop
+    (e.g. via run_in_executor) so it doesn't block an async endpoint.
+    """
+    import asyncio
+    import edge_tts
+
+    spoken = to_speech(text) if normalize else (text or "")
+    if not spoken.strip():
+        return b""
+
+    async def _run() -> bytes:
+        buf = bytearray()
+        com = edge_tts.Communicate(spoken, voice or DEFAULT_VOICE, rate=DEFAULT_RATE,
+                                   volume=DEFAULT_VOLUME, pitch=DEFAULT_PITCH)
+        async for chunk in com.stream():
+            if chunk["type"] == "audio":
+                buf.extend(chunk["data"])
+        return bytes(buf)
+
+    return asyncio.run(_run())
+
+
 def speak(text: str, voice: str | None = None, backend: str | None = None,
           normalize: bool = True) -> bool:
     """Speak text aloud (blocking). Returns True if something was spoken.
