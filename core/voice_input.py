@@ -137,21 +137,53 @@ def _transcribe_google(samples, lang: str) -> str:
         raise RuntimeError(f"Google STT request failed: {e}")
 
 
-def _transcribe_whisper(samples, lang: str) -> str:
-    from faster_whisper import WhisperModel
-    import numpy as np
+# faster-whisper model is loaded once and reused. `small` is the default: on CPU/int8
+# it is a few seconds per short utterance (comparable to a Brain+Worker LLM round-trip)
+# and clearly better on Vietnamese than `base`. Override with WHISPER_MODEL (tiny/base/
+# small/medium) if you want more speed or more accuracy.
+_WHISPER = None
+
+
+def _load_whisper():
     global _WHISPER
-    try:
-        _WHISPER
-    except NameError:
-        _WHISPER = None
     if _WHISPER is None:
+        from faster_whisper import WhisperModel
         model_size = os.getenv("WHISPER_MODEL", "small")
         _WHISPER = WhisperModel(model_size, device="cpu", compute_type="int8")
+    return _WHISPER
+
+
+def _transcribe_whisper(samples, lang: str) -> str:
+    import numpy as np
+    model = _load_whisper()
     audio = samples.astype(np.float32) / 32768.0
     wlang = lang.split("-")[0] if lang else None  # "vi-VN" -> "vi"
-    segments, _ = _WHISPER.transcribe(audio, language=wlang)
+    # Latency-tuned: greedy (beam_size=1) not beam search, no cross-segment
+    # conditioning (avoids drift + a second pass), VAD to skip leading/trailing silence.
+    segments, _ = model.transcribe(
+        audio,
+        language=wlang,
+        beam_size=1,
+        condition_on_previous_text=False,
+        vad_filter=True,
+    )
     return " ".join(seg.text for seg in segments).strip()
+
+
+def warmup(backend: str | None = None) -> None:
+    """Pre-load the STT model so the FIRST real utterance isn't slow (model load +
+    first-inference kernel compile happen here instead). No-op unless the active
+    backend is whisper. Safe to call at startup; never raises."""
+    backend = (backend or os.getenv("STT_BACKEND", "google")).lower()
+    if backend != "whisper":
+        return
+    try:
+        import numpy as np
+        model = _load_whisper()
+        # A short silent buffer just to trigger the first-inference compile.
+        model.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), language="vi", beam_size=1)
+    except Exception as e:
+        print(f"[Voice] whisper warmup skipped: {e}")
 
 
 def _transcribe_gemini(samples, lang: str) -> str:

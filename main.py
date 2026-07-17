@@ -80,6 +80,13 @@ def main():
         if voice_default:
             print(Fore.MAGENTA + f"[Voice] Voice input ON (lang={stt_lang}). "
                   "Press Enter on an empty line to speak, or just type to override." + Style.RESET_ALL)
+            # Pre-load the STT model (only matters for the whisper backend) so the first
+            # spoken command isn't delayed by model load + first-inference compile.
+            try:
+                from core.voice_input import warmup as _stt_warmup
+                _stt_warmup()
+            except Exception:
+                pass
         else:
             print(Fore.MAGENTA + "[Voice] Type ':v' to speak a command by voice." + Style.RESET_ALL)
         if speak_default:

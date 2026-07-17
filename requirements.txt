@@ -42,10 +42,9 @@ pillow
 
 # --- Voice input (CLI speech-to-text, see core/voice_input.py) ---
 sounddevice          # mic capture (bundles PortAudio; clean Windows install)
-SpeechRecognition    # default "google" STT backend (free, no API key, vi-VN)
-# Optional STT backends (install only if you switch STT_BACKEND):
-#   faster-whisper   # offline, best Vietnamese accuracy  (STT_BACKEND=whisper)
-#   gemini uses the already-present google-genai + GEMINI_API_KEY (STT_BACKEND=gemini)
+faster-whisper       # recommended "whisper" STT backend — offline, self-hosted, best vi accuracy
+SpeechRecognition    # "google" STT backend (free cloud, no key) — fallback if you can't run whisper
+# Optional STT backend: gemini uses the already-present google-genai + GEMINI_API_KEY (STT_BACKEND=gemini)
 
 # --- Voice output (CLI text-to-speech, see core/speech_output.py) ---
 edge-tts             # default "edge" TTS backend (free neural voices, vi-VN, needs net)

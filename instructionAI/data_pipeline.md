@@ -93,9 +93,19 @@ User Input → rag_manager.search_similar(query, top_k=3)
 ## Audit Trail
 
 - **File**: `ciel_data/logs/thoughts.log`
-- **Purpose**: Raw chronological Brain/Worker thought audit trail.
+- **Purpose**: Raw chronological Brain/Worker/Middleware thought audit trail.
 - **Format**: See `conventions.md` for exact format.
 - **Generated views** (gitignored, disposable):
   - `ciel_data/logs/thoughts_view.md` — Grouped Markdown debug view.
   - `ciel_data/logs/thoughts_view.jsonl` — Structured log view.
 - **Generator**: `python scripts/format_thoughts_log.py --limit 30`
+
+## Cost / Usage Tracking
+
+Every real LLM call across all three tiers logs one `[LLM_CALL] model=<id> in=<n> out=<n>
+total=<n>` entry (exact provider token counts via `agent_system/utils/usage.py`). `CielCore`
+accumulates per-tier counts/tokens/estimated-USD at the single `_log_thought()` chokepoint; the
+API's vitals feed surfaces this live. Pricing lives in `core/cost.py`, overridable per-model via
+`ciel_data/model_pricing.json` with zero code changes. For a historical view (not just the live
+session), run `python -m scripts.cost_report [--since-days N]` — aggregates by tier/model/day
+from `thoughts.log`, read-only, no LLM call involved.

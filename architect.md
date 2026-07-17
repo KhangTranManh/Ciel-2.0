@@ -611,6 +611,13 @@ The `backtest/test_integration.py` suite covers 21+ test cases. A dedicated `tes
 
 ## 8) Changelog | Nhật ký thay đổi
 
+### STT → local faster-whisper + tested Brain fallback (July 11, 2026)
+
+Reduced the voice stack's dependence on free/unofficial cloud endpoints, and pinned down the biggest single-provider risk.
+
+- **STT default is now local `faster-whisper`** (CPU, int8) instead of the free Google Web Speech endpoint. `.env`: `STT_BACKEND=whisper`, `WHISPER_MODEL=small`. Benchmarked `base` vs `small` on a real Vietnamese clip: `small` transcribes a short utterance in ~1.1–1.4 s (comfortably inside a Brain+Worker LLM round-trip, so no perceptible added latency) and is clearly more accurate on Vietnamese (`base` mangled `vàng→vạn`, `rồi→trôi`; `small` got them right). `_transcribe_whisper` is latency-tuned (`beam_size=1`, `condition_on_previous_text=False`, `vad_filter=True`); `warmup()` (called from `main.py` when voice input is on) pre-loads the model + runs a first inference so the FIRST spoken command isn't delayed by model load / kernel compile (first-ever run also downloads the ~500 MB model once, then caches). `faster-whisper` is now a real `requirements.txt` dependency; `SpeechRecognition` (google) stays as the cloud fallback, gemini remains optional. **Verified live:** the real int16→transcribe path returned a perfect transcript in ~1.15 s.
+- **Brain fallback provider tested** — if Vilao (the current Brain, an unofficial provider) goes down, Brain can run on DeepSeek with ZERO code changes: set `BRAIN_PROVIDER=deepseek` + `BRAIN_MODEL=deepseek-chat` (`DEEPSEEK_API_KEY` is already present for the Worker). Verified live: the Router classified correctly via DeepSeek. No in-code auto-failover on purpose — a rare event, and a one-line `.env` change is simpler and safer than provider-switching logic.
+
 ### UI: voice output + JARVIS-style audio-reactive orb (July 11, 2026)
 
 Made the browser/desktop UI voice-first and audio-reactive — WITHOUT discarding any of Ciel's backend-driven panels. Explicitly evaluated and REJECTED adopting a "pure vanilla TS, no React" JARVIS-clone prompt wholesale (it would throw away SkillGrid, VitalsBar cost/tokens, the safety-gate ConfirmDialog, the bus/seam architecture, and the Tauri desktop path). Instead the orb — the "soul" of that look — was ported INTO the existing React app as a component.

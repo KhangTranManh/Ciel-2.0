@@ -529,6 +529,24 @@ in .env are honored in EVERY entry path — previously the standalone `python -m
 load .env and silently used code defaults. New deps: sounddevice, SpeechRecognition, edge-tts
 (gradio_client optional, only for TTS_BACKEND=space) — all in requirements.txt.
 
+STT MOVED TO LOCAL WHISPER (July 11, 2026): to stop depending on the free Google Web Speech endpoint
+(unofficial, can be throttled/killed), the default STT is now `faster-whisper` running LOCAL on CPU
+(int8). `.env`: STT_BACKEND=whisper, WHISPER_MODEL=small. Benchmarked base vs small on a real vi clip:
+`small` infer ~1.15–1.43s per short utterance (well within a Brain+Worker LLM round-trip, so it doesn't
+add perceptible latency), and clearly more accurate on Vietnamese than `base` (base mangled "vàng→vạn",
+"rồi→trôi"; small got them right — only foreign words like "bitcoin" still slip). `_transcribe_whisper`
+is latency-tuned: beam_size=1 (greedy), condition_on_previous_text=False, vad_filter=True. `_load_whisper()`
+loads once; `warmup()` (called from main.py when voice input is on) pre-loads the model + does a first
+inference so the FIRST spoken command isn't delayed by model-load/kernel-compile (first-ever run also
+downloads the ~500MB small model once; cached after). faster-whisper is now a real requirements.txt dep
+(SpeechRecognition kept as the cloud "google" fallback). google/gemini backends still available via STT_BACKEND.
+
+BRAIN FALLBACK PROVIDER (verified July 11, 2026): if Vilao (current Brain, an unofficial provider) goes
+down, switch Brain to DeepSeek with ZERO code changes — set BRAIN_PROVIDER=deepseek + BRAIN_MODEL=deepseek-chat
+in .env (DEEPSEEK_API_KEY already present for the Worker). Verified live: Brain routes correctly via DeepSeek
+(returned a valid `chat` action). This is the tested "plan B" for the biggest single-provider risk; no
+auto-failover in code on purpose (rare event, one-line .env change is simpler/safer).
+
 VOICE I/O — UI + JARVIS-STYLE ORB (added July 11, 2026): the browser/desktop UI is now voice-first and
 audio-reactive, WITHOUT throwing away any of Ciel's backend-driven panels.
 - VOICE OUTPUT (approach B — reuse the CLI engine, don't use browser voices): backend `POST /tts`
