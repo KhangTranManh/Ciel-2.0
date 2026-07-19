@@ -33,13 +33,25 @@ jobs:
       # ToolManager can load the skill pack). Only written if the secrets are actually
       # set — writing an empty/garbage file would turn a clean "not configured" skip
       # into a real, confusing error inside gmail_ops.py.
+      #
+      # NOTE: the conditional lives INSIDE the shell step (bash `[ -n ... ]`), not in
+      # a step-level `if: secrets.X != ''`. Referencing `secrets` directly in an `if:`
+      # expression is a common source of GitHub Actions parse errors ("Unrecognized
+      # named-value: 'secrets'") — passing it through `env:` and testing it in bash
+      # sidesteps that entirely and is the standard, portable pattern.
       - name: Decode Gmail credentials (optional)
-        if: ${{ secrets.GOOGLE_CREDENTIALS_B64 != '' }}
+        env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          GOOGLE_TOKEN_B64: ${{ secrets.GOOGLE_TOKEN_B64 }}
         run: |
-          echo "${{ secrets.GOOGLE_CREDENTIALS_B64 }}" | base64 -d > credentials.json
-          mkdir -p ciel_data
-          if [ -n "${{ secrets.GOOGLE_TOKEN_B64 }}" ]; then
-            echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > ciel_data/gmail_token.json
+          if [ -n "$GOOGLE_CREDENTIALS_B64" ]; then
+            echo "$GOOGLE_CREDENTIALS_B64" | base64 -d > credentials.json
+            mkdir -p ciel_data
+            if [ -n "$GOOGLE_TOKEN_B64" ]; then
+              echo "$GOOGLE_TOKEN_B64" | base64 -d > ciel_data/gmail_token.json
+            fi
+          else
+            echo "Gmail credentials not configured on this repo — skipping (expected unless you added GOOGLE_CREDENTIALS_B64)."
           fi
 
       - name: Run health check
