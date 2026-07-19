@@ -1,135 +1,135 @@
 import os
-import shutil
 import psutil
-import subprocess
-import sys
-import tempfile
+import shutil
 import logging
+import platform
+import subprocess
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('system_maintenance.log'),
+        logging.StreamHandler()
+    ]
+)
 
-# Configuration
-MIN_DISK_SPACE_GB = 5
-CRITICAL_PROCESSES = ['apt', 'dpkg', 'yum', 'dnf', 'pacman', 'systemd-tmpfiles']
-TEMP_DIRS = ['/tmp', '/var/tmp']
+# Safety thresholds
+DISK_SPACE_MIN_GB = 5.0
+CPU_LOAD_MAX_PERCENT = 80.0
+BATTERY_MIN_PERCENT = 20.0
 
-def check_disk_space(path: str, min_gb: float = MIN_DISK_SPACE_GB) -> bool:
-    """Check if disk has at least min_gb GB free space."""
+def check_disk_space(path='/'):
+    """Check if disk has enough free space."""
     try:
         usage = shutil.disk_usage(path)
         free_gb = usage.free / (1024 ** 3)
-        if free_gb < min_gb:
-            logger.warning(f"Low disk space on {path}: {free_gb:.2f} GB free (min {min_gb} GB)")
+        if free_gb < DISK_SPACE_MIN_GB:
+            logging.warning(f"Low disk space: {free_gb:.2f} GB free on {path}")
             return False
-        return True
-    except FileNotFoundError:
-        logger.error(f"Path {path} does not exist")
-        return False
-    except PermissionError:
-        logger.error(f"Permission denied accessing {path}")
-        return False
-
-def check_critical_processes() -> bool:
-    """Check if any critical system processes are running."""
-    try:
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'] in CRITICAL_PROCESSES:
-                    logger.warning(f"Critical process running: {proc.info['name']} (PID {proc.pid})")
-                    return False
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        logging.info(f"Disk space OK: {free_gb:.2f} GB free on {path}")
         return True
     except Exception as e:
-        logger.error(f"Error checking processes: {e}")
+        logging.error(f"Failed to check disk space: {e}")
         return False
 
-def check_system_load() -> bool:
-    """Check if system load is acceptable for maintenance."""
+def check_cpu_load():
+    """Check if CPU load is below threshold."""
     try:
-        load1, load5, load15 = psutil.getloadavg()
-        cpu_count = psutil.cpu_count()
-        if load1 > cpu_count * 0.8:
-            logger.warning(f"System load too high: {load1:.2f} (CPU count: {cpu_count})")
+        cpu_percent = psutil.cpu_percent(interval=1)
+        if cpu_percent > CPU_LOAD_MAX_PERCENT:
+            logging.warning(f"High CPU load: {cpu_percent}%")
             return False
+        logging.info(f"CPU load OK: {cpu_percent}%")
         return True
     except Exception as e:
-        logger.error(f"Error checking system load: {e}")
+        logging.error(f"Failed to check CPU load: {e}")
         return False
 
-def check_network_activity() -> bool:
-    """Check if significant network activity is ongoing."""
+def check_battery_status():
+    """Check if battery level is sufficient (laptops only)."""
     try:
-        net_io = psutil.net_io_counters()
-        if net_io.bytes_sent > 100 * 1024 * 1024 or net_io.bytes_recv > 100 * 1024 * 1024:
-            logger.warning("High network activity detected")
+        battery = psutil.sensors_battery()
+        if battery is None:
+            logging.info("No battery detected (desktop system)")
+            return True
+        if battery.percent < BATTERY_MIN_PERCENT and not battery.power_plugged:
+            logging.warning(f"Low battery: {battery.percent}% and not charging")
             return False
+        logging.info(f"Battery status OK: {battery.percent}%")
         return True
     except Exception as e:
-        logger.error(f"Error checking network activity: {e}")
+        logging.error(f"Failed to check battery status: {e}")
         return False
 
-def check_all_safety_conditions() -> bool:
-    """Run all safety checks and return True if all pass."""
-    checks = [
-        ("Disk space", check_disk_space('/')),
-        ("Critical processes", check_critical_processes()),
-        ("System load", check_system_load()),
-        ("Network activity", check_network_activity()),
-    ]
+def clear_temp_files():
+    """Clear system temporary files."""
+    temp_dirs = []
+    if platform.system() == 'Windows':
+        temp_dirs.append(os.environ.get('TEMP', ''))
+        temp_dirs.append(os.environ.get('TMP', ''))
+    else:
+        temp_dirs.append('/tmp')
     
-    all_pass = True
-    for name, result in checks:
-        if not result:
-            logger.error(f"Safety check failed: {name}")
-            all_pass = False
-    
-    return all_pass
-
-def clear_temp_directories(dirs: list = None) -> bool:
-    """Clear specified temporary directories safely."""
-    if dirs is None:
-        dirs = TEMP_DIRS
-    
-    success = True
-    for dir_path in dirs:
-        if not os.path.isdir(dir_path):
-            logger.warning(f"Directory {dir_path} does not exist, skipping")
+    for temp_dir in temp_dirs:
+        if not temp_dir or not os.path.exists(temp_dir):
             continue
-        
         try:
-            for item in os.listdir(dir_path):
-                item_path = os.path.join(dir_path, item)
+            for item in os.listdir(temp_dir):
+                item_path = os.path.join(temp_dir, item)
                 try:
                     if os.path.isfile(item_path) or os.path.islink(item_path):
-                        os.remove(item_path)
+                        os.unlink(item_path)
                     elif os.path.isdir(item_path):
-                        shutil.rmtree(item_path)
-                except (PermissionError, OSError) as e:
-                    logger.warning(f"Could not remove {item_path}: {e}")
-                    continue
-            logger.info(f"Cleared {dir_path}")
+                        shutil.rmtree(item_path, ignore_errors=True)
+                except Exception as e:
+                    logging.debug(f"Could not remove {item_path}: {e}")
+            logging.info(f"Cleared temporary files in {temp_dir}")
         except Exception as e:
-            logger.error(f"Error clearing {dir_path}: {e}")
-            success = False
-    
-    return success
+            logging.error(f"Failed to clear {temp_dir}: {e}")
+
+def empty_recycle_bin():
+    """Empty the system recycle bin/trash."""
+    try:
+        if platform.system() == 'Windows':
+            subprocess.run(['cmd', '/c', 'rd /s /q C:\\$Recycle.bin'], 
+                         capture_output=True, check=False)
+        else:
+            trash_path = Path.home() / '.local/share/Trash'
+            if trash_path.exists():
+                shutil.rmtree(trash_path, ignore_errors=True)
+        logging.info("Recycle bin emptied")
+    except Exception as e:
+        logging.error(f"Failed to empty recycle bin: {e}")
 
 def perform_maintenance():
-    """Main function: check safety, then perform maintenance."""
-    logger.info("Starting system maintenance safety checks")
+    """Perform system maintenance if safety conditions are met."""
+    logging.info("Starting system maintenance check")
     
-    if not check_all_safety_conditions():
-        logger.error("Safety checks failed. Aborting maintenance.")
-        sys.exit(1)
+    # Check all safety conditions
+    conditions = [
+        ("Disk space", check_disk_space()),
+        ("CPU load", check_cpu_load()),
+        ("Battery status", check_battery_status())
+    ]
     
-    logger.info("All safety checks passed. Proceeding with maintenance.")
+    all_safe = all(condition[1] for condition in conditions)
     
-    if not clear_temp_directories():
-        logger.warning("Some temporary directories could not be fully cleared")
+    if not all_safe:
+        failed = [c[0] for c in conditions if not c[1]]
+        logging.error(f"Safety conditions not met: {', '.join(failed)}. Maintenance aborted.")
+        return False
     
-    logger.info("Maintenance completed successfully")
+    logging.info("All safety conditions met. Proceeding with maintenance.")
+    
+    # Perform maintenance operations
+    clear_temp_files()
+    empty_recycle_bin()
+    
+    logging.info("System maintenance completed successfully")
+    return True
 
 if __name__ == "__main__":
     perform_maintenance()

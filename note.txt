@@ -547,6 +547,37 @@ in .env (DEEPSEEK_API_KEY already present for the Worker). Verified live: Brain 
 (returned a valid `chat` action). This is the tested "plan B" for the biggest single-provider risk; no
 auto-failover in code on purpose (rare event, one-line .env change is simpler/safer).
 
+TEST ISOLATION FIX + FULL SUITE RE-RUN (July 18, 2026 — Roadmap item now closed): architect.md's
+"Test isolation" note flagged that test_hard_special.py runs all cases against ONE shared
+AgentLoop/chat_history session. Investigated precisely instead of blanket-fixing: `chat_history` is
+only mutated inside `CielCore.process()` (`add_user_message`/`add_ai_message` at the very top/bottom
+of that method) — the low-level `execute_chat`/`execute_tool`/`execute_code`/`router.route()` calls
+that MOST of test_integration.py's ~24 tests use never touch it. Real leak surface: test_integration.py
+only 3 tests (22/23/24, the "Full process()" ones); test_hard_special.py ALL 16 (every case calls
+`ciel.run_step()` -> `process()`). Fix: a small `reset_session()` helper in each test file that clears
+`core.chat_history.messages = []` (in-memory only) right before each process()-touching call/test.
+Deliberately did NOT recreate CielCore/AgentLoop per test (would reload Gmail/tools 20+ times, add
+new flakiness risk, and not even fix anything extra — RAG's `_collection` in rag_manager.py is a
+module-level singleton regardless of core instance, and resetting long-term memory per test would be
+wrong anyway) and did NOT call `_save_chat_memory()` (never overwrites the real
+ciel_data/memory_bank.json). Diff was purely additive: 43 lines, 0 deletions, both files compile,
+unit-tested `reset_session()` against fake objects (2 msgs -> 0) before the real run.
+**Full suite re-run after the fix (2026-07-18), including test_hard_special.py's real Gmail sends:**
+test_integration.py 27/28 (same pre-existing non-functional fail as always — Test 9 code-gen routes
+as `tool`/write_file instead of `code`, file content is correct, just a different valid path — not
+caused by this change); Full Process group (the exact 3 tests this fix targets) 3/3 PASS.
+test_hard_special.py 15/16 behavioral checks (same known pre-existing fail as always — Special 3
+harmful-intent: the dangerous-code gate correctly doesn't fire here only because this suite sets
+DISABLE_SAFETY_GATE=true by design; the gate is active and does fire in normal/default runs).
+**Both numbers are IDENTICAL to the last recorded baseline — confirms the isolation fix introduced
+zero regressions.** Bonus live confirmations from this run: 3 real emails sent successfully to
+kxctran@gmail.com with real Message Ids (Hard 2, Hard 5, Special 6); Middleware caught AND
+auto-fixed one real defect (Special 4 — user asked in Vietnamese, Worker wrote the body in English,
+Middleware rewrote it before send — the finalizer-not-gate design working exactly as intended);
+self-healing fired 3 times on Hard 4 and recovered. Session cost: 60 LLM calls in test_hard_special.py
+alone (WORKER=47, BRAIN=10, MIDDLEWARE=3), read straight off the token-precise cost tracking added
+July 10. Logs: backtest/logs/integration_test_20260718_112242.* and hard_special_20260718_112936.json.
+
 VOICE I/O — UI + JARVIS-STYLE ORB (added July 11, 2026): the browser/desktop UI is now voice-first and
 audio-reactive, WITHOUT throwing away any of Ciel's backend-driven panels.
 - VOICE OUTPUT (approach B — reuse the CLI engine, don't use browser voices): backend `POST /tts`

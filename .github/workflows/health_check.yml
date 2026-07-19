@@ -1,0 +1,74 @@
+name: Ciel Health Check
+
+# Tầng 1 — lightweight daily health check (see scripts/health_check.py). Deliberately
+# NOT the full backtest suite (backtest/test_hard_special.py etc.) — that suite sends
+# REAL emails and burns 40-60 LLM calls per run; running it on a daily cron would be
+# expensive and spammy. This workflow boots CielCore and makes exactly ONE real Brain
+# LLM call to prove the system is alive, then reports PASS/FAIL to Telegram.
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 00:00 UTC = 07:00 Vietnam (UTC+7)
+  workflow_dispatch: {}    # manual "Run workflow" button in the Actions tab
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Gmail is OPTIONAL for this check (search_gmail isn't tested here, only that
+      # ToolManager can load the skill pack). Only written if the secrets are actually
+      # set — writing an empty/garbage file would turn a clean "not configured" skip
+      # into a real, confusing error inside gmail_ops.py.
+      - name: Decode Gmail credentials (optional)
+        if: ${{ secrets.GOOGLE_CREDENTIALS_B64 != '' }}
+        run: |
+          echo "${{ secrets.GOOGLE_CREDENTIALS_B64 }}" | base64 -d > credentials.json
+          mkdir -p ciel_data
+          if [ -n "${{ secrets.GOOGLE_TOKEN_B64 }}" ]; then
+            echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > ciel_data/gmail_token.json
+          fi
+
+      - name: Run health check
+        env:
+          # --- Providers (set whichever ones your .env actually uses) ---
+          BRAIN_PROVIDER: ${{ vars.BRAIN_PROVIDER || 'vilao' }}
+          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'alic/qwen3.7-max' }}
+          WORKER_PROVIDER: ${{ vars.WORKER_PROVIDER || 'deepseek' }}
+          CODER_MODEL: ${{ vars.CODER_MODEL || 'deepseek-chat' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          VILAO_URL: ${{ secrets.VILAO_URL }}
+          VILAO_KEY: ${{ secrets.VILAO_KEY }}
+          GPT_API_KEY: ${{ secrets.GPT_API_KEY }}
+          GPT_BASE_URL: ${{ secrets.GPT_BASE_URL }}
+          # --- Safety (content-filter permissiveness only — this workflow never
+          # executes a tool, so the destructive-action gate is never touched) ---
+          SAFETY_OPEN: 'true'
+          VILAO_SAFETY_BYPASS: 'true'
+          # --- Trading / Telegram (all optional; check just reports if missing) ---
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m scripts.health_check
+
+      - name: Upload thoughts.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciel-health-check-log
+          path: ciel_data/logs/thoughts.log
+          if-no-files-found: ignore

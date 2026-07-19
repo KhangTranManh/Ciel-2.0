@@ -1,43 +1,25 @@
-📊 BÁO CÁO ĐÁNH GIÁ THỊ TRƯỜNG
-Ngày: Hôm nay
+Master, hai tool trả về kết quả mâu thuẫn và thiếu dữ liệu. Tool đầu chỉ có vàng (4010.55), không có BTC. Tool thứ hai chỉ có BTC (63986), không có vàng. Tool thứ ba xác nhận BTC ở 63986 với biến động +0.956%. Tôi sẽ tổng hợp dữ liệu thực tế duy nhất có được: vàng từ tool 1, BTC từ tool 2 và 3. Không thể bịa số. Sẽ tạo file báo cáo trung thực.
 
----
+📊 BÁO CÁO THỊ TRƯỜNG NGÀY  
+— Dữ liệu tổng hợp từ các nguồn —
 
-I. TỔNG QUAN GIÁ
+1. Vàng (XAU/USD):  
+   Giá: 4010.55 USD/oz  
+   (Nguồn: get_market_price — không có thông tin biến động, cao/thấp)
 
-1. Vàng (XAU/USD):
-   - Giá hiện tại: 4,114.72 USD/oz
-   - Ghi chú: Dữ liệu chỉ có giá spot, không có biến động chi tiết.
+2. Bitcoin (BTC/USD):  
+   Giá: 63,986 USD  
+   Biến động 24h: +0.956%  
+   Cao nhất 24h: 64,387.99  
+   Thấp nhất 24h: 62,537.56  
+   (Nguồn: get_crypto_stats)
 
-2. Bitcoin (BTC/USD):
-   - Giá hiện tại: 63,050.01 USD (nguồn: phân tích kỹ thuật)
-   - Biến động 24h: +1.524%
-   - Cao nhất 24h: 63,283.26 USD
-   - Thấp nhất 24h: 61,544.56 USD
+ĐÁNH GIÁ SƠ BỘ:  
+- Vàng đang ở mức cao 4010 USD, phản ánh tâm lý trú ẩn an toàn hoặc áp lực lạm phát. Cần theo dõi thêm dữ liệu biến động để đánh giá xu hướng.  
+- Bitcoin giao dịch quanh 64k, tăng nhẹ gần 1% trong ngày, với biên độ dao động ~2.9% (từ 62.5k lên 64.4k). Thị trường crypto có dấu hiệu tích cực nhưng chưa bứt phá mạnh.  
+- Thiếu dữ liệu vàng chi tiết (biến động, cao/thấp) nên đánh giá tổng thể còn hạn chế. Khuyến nghị cập nhật thêm nguồn để có bức tranh đầy đủ.
 
----
+KẾT LUẬN:  
+Thị trường hiện tại cho thấy vàng neo cao, Bitcoin hồi phục nhẹ. Nhà đầu tư nên thận trọng, ưu tiên quản lý rủi ro.
 
-II. PHÂN TÍCH KỸ THUẬT – BTC
-
-- RSI (14): 49.33 → TRUNG TÍNH, không quá mua cũng không quá bán.
-- MA5: 63,279.21 USD
-- MA30: 62,648.95 USD
-- Nhận xét: Giá đang giao dịch DƯỚI MA5 nhưng TRÊN MA30. Xu hướng MA5 vs MA30: TĂNG. Điều này cho thấy đà tăng ngắn hạn đang chững lại nhưng xu hướng trung hạn vẫn tích cực.
-
----
-
-III. ĐÁNH GIÁ & NHẬN ĐỊNH
-
-- Vàng: Giá ở mức rất cao (4,114.72 USD). Không có dữ liệu biến động hay kỹ thuật để phân tích sâu hơn. Cần thận trọng nếu tham gia ở vùng giá này.
-- Bitcoin: Thị trường đang trong giai đoạn sideway tích lũy quanh vùng 63,000 USD. RSI trung tính cho thấy chưa có tín hiệu đảo chiều rõ ràng. Xu hướng trung hạn vẫn tăng (MA30 < MA5). Vùng hỗ trợ gần nhất: 62,648 USD (MA30). Vùng kháng cự: 63,279 USD (MA5).
-
----
-
-IV. KHUYẾN NGHỊ
-
-- Vàng: Chưa đủ dữ liệu để đưa ra khuyến nghị cụ thể. Khuyến nghị theo dõi thêm biến động và tin tức kinh tế vĩ mô.
-- Bitcoin: Có thể xem xét mua vào khi giá test lại vùng hỗ trợ MA30 (~62,648 USD) với kỳ vọng tiếp tục xu hướng tăng. Cắt lỗ dưới 61,500 USD (đáy 24h). Mục tiêu: vùng 64,000 – 65,000 USD.
-
----
-
-*Báo cáo được tổng hợp từ dữ liệu thị trường hiện tại. Đây không phải lời khuyên tài chính.*
+— Báo cáo được tạo bởi Ciel, dựa trên dữ liệu thực tế từ công cụ.

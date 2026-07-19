@@ -165,6 +165,28 @@ def _was_self_correction_attempted() -> bool:
         return False
 
 
+def reset_session(core):
+    """Clear in-memory short-term chat history so each `core.process()` test starts a
+    fresh turn, instead of silently building on whatever a PRECEDING process() test
+    added to the same shared `core.chat_history`.
+
+    Deliberately narrow (matches architect.md's "Test isolation" roadmap note without
+    restructuring the suite): this does NOT recreate CielCore (same Brain/Worker/
+    Middleware/ToolManager/RAG setup — no reload cost, no repeated Gmail/API handshakes)
+    and does NOT touch RAG (core/rag_manager.py's `_collection` is a module-level
+    singleton regardless of the core instance — and RAG is meant to persist as long-term
+    memory, not be reset per test). It also does NOT call `core._save_chat_memory()`,
+    so it never overwrites the real ciel_data/memory_bank.json on disk.
+
+    Only `core.process()` mutates chat_history (`add_user_message`/`add_ai_message` at
+    the top/bottom of `process()` in llm_connector.py) — the many tests in this file
+    that call `execute_chat`/`execute_tool`/`execute_code`/`router.route()` directly
+    never touch it, so this reset is a no-op for them and only matters at the few
+    call sites that use the full `core.process()` pipeline.
+    """
+    core.chat_history.messages = []
+
+
 def _is_transient_error(exc: Exception) -> bool:
     """Detect common transient routing / LLM call errors (JSON decode after retries, etc.)."""
     msg = str(exc).lower()
@@ -694,6 +716,9 @@ def main():
     header("TEST: Full process() — correction-eligible tool (market data)")
     ilog.add("TEST", "start", "Process Market", "core.process with get_market_price")
     try:
+        # Isolate from whatever real chat_history was loaded from disk at CielCore()
+        # init, so this test is reproducible regardless of prior production usage.
+        reset_session(core)
         resp = core.process("What is the current price of XAU/USD or gold? Please use available tools.")
         show_result("Full process() market result", resp, Fore.CYAN)
         ilog.add("RESULT", "process_market", "get_market_price query", resp)
@@ -718,6 +743,7 @@ def main():
     header("TEST: Full process() — stealth_search (correction eligible)")
     ilog.add("TEST", "start", "Process Search", "core.process with stealth_search")
     try:
+        reset_session(core)  # isolate from the prior process() test (market) above
         resp = core.process("Search for recent news about AI agents or Ciel like systems.")
         show_result("Full process() search result", resp, Fore.CYAN)
         ilog.add("RESULT", "process_search", "stealth_search query", resp)
@@ -743,6 +769,7 @@ def main():
     try:
         # Create a file first
         core.tool_manager.execute_tool("write_file", {"filename": "skip_test.txt", "content": "This should be read without correction."})
+        reset_session(core)  # isolate from the prior process() test (search) above
         before = _was_self_correction_attempted()
         resp = core.process("Read the file skip_test.txt from my workspace.")
         after = _was_self_correction_attempted()

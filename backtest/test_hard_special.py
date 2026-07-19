@@ -166,10 +166,26 @@ def header(msg):
     print(Fore.CYAN + f"{'='*70}" + Style.RESET_ALL)
 
 
+def reset_session(ciel):
+    """Clear in-memory short-term chat history before each test so all 16 hard/special
+    cases run isolated instead of sequentially building on ONE shared session — every
+    case here goes through `ciel.run_step()` -> `CielCore.process()`, which appends to
+    `chat_history` every single call (unlike test_integration.py, where only a few
+    tests use the full process() path). Matches architect.md's "Test isolation"
+    roadmap note. Deliberately narrow: does NOT recreate AgentLoop/CielCore (same
+    Brain/Worker/Middleware/ToolManager/RAG setup, no reload cost) and does NOT touch
+    RAG (core/rag_manager.py's `_collection` is a module-level singleton, and RAG is
+    meant to persist as long-term memory — resetting it per test would be wrong) or
+    call `_save_chat_memory()` (never overwrites the real ciel_data/memory_bank.json).
+    """
+    ciel.core.chat_history.messages = []
+
+
 def run_test(ciel, name: str, prompt: str, checks=None) -> dict:
     print(Fore.CYAN + f"\n=== TEST: {name} ===" + Style.RESET_ALL)
     print(Fore.GREEN + f"Prompt: {prompt[:100]}..." + Style.RESET_ALL)
 
+    reset_session(ciel)  # isolate this case from whatever a prior case's turn added
     start_line = _log_line_count()
     error = None
     try:

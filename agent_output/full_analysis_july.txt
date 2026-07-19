@@ -1,17 +1,42 @@
-📊 **BÁO CÁO PHÂN TÍCH THỊ TRƯỜNG – BTC & XAU (Tháng 7)**
+Dear Master,
 
-**1. Tổng quan thị trường**
+Please find below the detailed market analysis report for Bitcoin (BTC) and Gold (XAU) based on the latest available data.
 
-- **Bitcoin (BTC/USDT):** Giá hiện tại 63.030,00 USD. Biến động 24h: +1,416%. Cao nhất 24h: 63.283,26 USD, thấp nhất 24h: 61.544,56 USD. Chỉ số RSI ở mức 49,25 (trung tính). Đường MA5 (63.275,20) nằm trên MA30 (62.648,29) cho thấy xu hướng tăng ngắn hạn. Giá hiện đang giao dịch dưới MA5 nhưng trên MA30, phản ánh trạng thái điều chỉnh nhẹ trong xu hướng tăng.
+---
 
-- **Vàng (XAU/USD):** Dữ liệu giá và phân tích kỹ thuật hiện không khả dụng từ các công cụ. Chỉ có giá tham chiếu 4.114,38 USD/oz từ một nguồn không đầy đủ. Không thể đưa ra đánh giá chi tiết về xu hướng, kháng cự hay hỗ trợ cho vàng tại thời điểm này.
+**1. BTC/USD – Market Overview**
 
-**2. Đánh giá chiến lược**
+- **Current Price:** $63,962.55
+- **24h Change:** +0.90%
+- **24h High:** $64,387.99
+- **24h Low:** $62,537.56
+- **Technical Indicators (1D):**
+  - RSI: 51.76 (Neutral)
+  - MA5: $64,304.93
+  - MA30: $62,562.53
+  - Trend: Bullish (price above MA30, below MA5)
+- **News & Sentiment:**
+  - Recent pullback from monthly highs (~$64K) noted.
+  - Analyst PlanB (S2F model) suggests BTC could drop below $53K yet still reach $500K long-term.
+  - Standard Chartered's Geoff Kendrick provides a conservative bullish forecast.
+  - Overall sentiment: Mixed — short-term pullback, long-term bullish outlook persists.
 
-- **BTC:** Tín hiệu trung lập đến tích cực. RSI trung tính cho thấy thị trường chưa quá mua hay quá bán. Xu hướng MA5/MA30 vẫn duy trì tín hiệu tăng. Vùng giá 61.544 – 63.283 là biên độ giao dịch chính trong 24h qua. Cần theo dõi khả năng bứt phá trên MA5 (63.275) để xác nhận đà tăng tiếp.
+**2. XAU/USD – Market Overview**
 
-- **XAU:** Không đủ dữ liệu để phân tích. Khuyến nghị thu thập thêm số liệu giá, thống kê 24h và chỉ báo kỹ thuật trước khi đưa ra nhận định.
+- **Current Price:** $4,010.59
+- **24h Stats:** Not available from data sources.
+- **Technical Indicators:** Not available.
+- **News & Sentiment:**
+  - Gold price hovering above $4,000, weighed by risk-off market conditions.
+  - CPI: previously 4.2%, currently 3.5%.
+  - Next Fed meeting scheduled for 28–29 July 2026.
 
-**3. Kết luận**
+**3. Summary & Outlook**
 
-Báo cáo chi tiết đã được tổng hợp dựa trên dữ liệu thực tế từ các công cụ. Đối với vàng, cần bổ sung dữ liệu để hoàn thiện phân tích. Mọi quyết định giao dịch nên dựa trên đánh giá rủi ro cá nhân.
+- **BTC:** The market shows a neutral-to-bullish technical stance with a short-term pullback. Long-term forecasts remain optimistic despite potential further downside.
+- **XAU:** Gold remains elevated above $4,000 amid macroeconomic uncertainty. Key event to watch is the upcoming Fed meeting.
+
+The full detailed evaluation has been prepared and is available for your review.
+
+Best regards,
+Ciel
