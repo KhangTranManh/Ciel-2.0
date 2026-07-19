@@ -23,7 +23,11 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          # NOT 3.10: pandas-ta 0.4.71b0 (in requirements.txt) requires Python >=3.12
+          # and has no distribution compatible with 3.10 on PyPI at all ("from
+          # versions: none") — found live via a real CI run. 3.13 matches the local
+          # dev venv this project is actually developed/tested against.
+          python-version: '3.13'
           cache: 'pip'
 
       - name: Install dependencies

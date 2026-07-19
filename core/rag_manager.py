@@ -206,6 +206,52 @@ def get_memory_count() -> int:
         return 0
 
 
+# ==========================================================
+# ADMINISTRATION (pruning) — read/delete primitives only.
+# Policy (which cutoff, dry-run vs apply, backups) lives in
+# scripts/prune_rag_memory.py, not here — keeps this module's public
+# surface to the "simple operations" the module docstring promises.
+# ==========================================================
+def list_by_age(older_than_days: int) -> list[dict]:
+    """Return every memory older than N days: [{"id","date","timestamp","preview"}].
+    Read-only — does not delete anything. Empty list if RAG is unavailable."""
+    if not _ensure_initialized():
+        return []
+    try:
+        if _collection.count() == 0:
+            return []
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=older_than_days)).isoformat()
+        data = _collection.get(include=["metadatas", "documents"])
+        out = []
+        for doc_id, meta, doc in zip(data["ids"], data["metadatas"], data["documents"]):
+            ts = meta.get("timestamp", "")
+            if ts and ts < cutoff:
+                out.append({
+                    "id": doc_id,
+                    "date": meta.get("date", "unknown"),
+                    "timestamp": ts,
+                    "preview": (doc or "")[:120],
+                })
+        return out
+    except Exception as e:
+        print(f"[Ciel Warning] list_by_age failed: {e}")
+        return []
+
+
+def delete_by_ids(ids: list) -> int:
+    """Delete specific memories by id. Returns how many were requested (Chroma's
+    delete() doesn't report a count, so this is best-effort — callers should
+    re-check get_memory_count() to confirm)."""
+    if not ids or not _ensure_initialized():
+        return 0
+    try:
+        _collection.delete(ids=ids)
+        return len(ids)
+    except Exception as e:
+        print(f"[Ciel Warning] delete_by_ids failed: {e}")
+        return 0
+
+
 def compress_context(raw_contexts) -> str:
     """Compress recalled memories with zero-token structural filtering.
 

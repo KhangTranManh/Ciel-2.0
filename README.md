@@ -91,7 +91,7 @@ Every box above is a real module, not an aspiration — `core/router.py` (Router
 
 | Requirement | Needed for | Notes |
 |---|---|---|
-| **Python 3.10+** | Core backend | Use a fresh virtualenv on a new clone. |
+| **Python 3.12+** | Core backend | `pandas-ta` (in `requirements.txt`) requires Python >=3.12 and has no PyPI distribution for older versions — confirmed live via a CI run that failed on 3.10 with "no matching distribution." Use a fresh virtualenv on a new clone. |
 | **pip** | Dependency install | `pip install -r requirements.txt` |
 | **At least one LLM provider API key** | Brain / Worker / Middleware | Gemini, DeepSeek, and/or Vilao. Ollama works fully offline if you'd rather not use a cloud key. |
 | **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip entirely for CLI-only use. |
