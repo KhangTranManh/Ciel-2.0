@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Ciel 2.0",
         "width": 1280,
         "height": 820,
@@ -20,6 +21,20 @@
         "resizable": true,
         "fullscreen": false,
         "backgroundColor": "#0b0d12"
+      },
+      {
+        "label": "widget",
+        "title": "Ciel",
+        "width": 64,
+        "height": 64,
+        "resizable": true,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
       }
     ],
     "security": {
