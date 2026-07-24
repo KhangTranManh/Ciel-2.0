@@ -1,1 +1,0 @@
-[SYNTHESIZE_FROM_RESULTS] Full market risk report for XAU/USD and BTC using the real prices, 24h stats, BTC technicals (RSI/MA/Trend), gold price action, recent news headlines from both searches, and a risk evaluation with conclusion. Use only verified tool data above.
