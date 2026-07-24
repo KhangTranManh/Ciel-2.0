@@ -7,7 +7,11 @@ class Scraper:
         self.config = config
 
     def fetch_html(self, url: str) -> str:
-        response = requests.get(url)
+        response = requests.get(
+            url,
+            headers=self.config.headers,
+            timeout=self.config.timeout
+        )
         response.raise_for_status()
         return response.text
 
