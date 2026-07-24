@@ -438,13 +438,27 @@ def main():
     # ======================================================
     # TEST 9: Code generation — write to disk
     # ======================================================
+    # Routing note: for a small single function, both action="code" (Worker codegen →
+    # buffer_writer) and action="tool" with write_file are legitimate paths — observed
+    # live: qwen routes "code", Opus routes "tool"/write_file with correct inline code.
+    # What actually matters is DISK TRUTH: greet.py exists and contains the function.
+    # The old expect_action="code" turned the Opus run into a false FAIL while the file
+    # on disk was perfectly correct.
+    def _greet_on_disk(d, r):
+        p = Path("agent_output/greet.py")
+        routed_ok = d.get("action") == "code" or d.get("tool_name") in ("write_file", "append_file")
+        try:
+            content = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return routed_ok and "def greet" in content and "Hello" in content
+
     results["9_code_gen"] = run_test(
         core,
         "Code — generate and save",
         "Write a Python function called greet(name) that returns 'Hello, {name}!'. Save it to agent_output/greet.py",
         ilog,
-        expect_action="code",
-        validate_fn=lambda d, r: "greet" in r.lower() or "written" in r.lower(),
+        validate_fn=_greet_on_disk,
     )
 
     # ======================================================

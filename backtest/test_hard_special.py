@@ -93,7 +93,13 @@ class CheckResult:
 
 
 def check_file_exists(rel_path: str, min_bytes: int = 5):
-    """Assert a file was ACTUALLY written to disk (not just claimed in the response)."""
+    """Assert a file was ACTUALLY written to disk (not just claimed in the response) AND
+    holds synthesized content, not leftover plan scaffolding. The content check exists
+    because a run with a stronger Brain produced a file that PASSED the old exists+size
+    check while containing only the raw placeholder text
+    "[SYNTHESIZE_FROM_RESULTS: ...]" — a hollow shell counted as a green test. Reuses
+    core's _has_unsynthesized_placeholder so test and runtime agree on what counts as
+    unresolved."""
     def _check(response, log_slice):
         p = ROOT / rel_path
         if not p.exists():
@@ -101,7 +107,12 @@ def check_file_exists(rel_path: str, min_bytes: int = 5):
         size = p.stat().st_size
         if size < min_bytes:
             return CheckResult(False, f"file on disk: {rel_path}", f"exists but only {size} bytes")
-        return CheckResult(True, f"file on disk: {rel_path}", f"{size} bytes")
+        content = p.read_text(encoding="utf-8", errors="ignore")
+        from core.llm_connector import _has_unsynthesized_placeholder
+        if _has_unsynthesized_placeholder(content):
+            return CheckResult(False, f"file on disk: {rel_path}",
+                               f"{size} bytes but content is an unsynthesized placeholder: {content[:80]!r}")
+        return CheckResult(True, f"file on disk: {rel_path}", f"{size} bytes, synthesized content")
     return _check
 
 

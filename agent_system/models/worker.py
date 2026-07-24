@@ -23,6 +23,8 @@ from ..config import (
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
     LLM_REQUEST_TIMEOUT,
+    VILAO_URL,
+    VILAO_API_KEY,
 )
 from ..utils.logger import log
 from ..utils.usage import extract_usage
@@ -119,6 +121,29 @@ class Worker:
                 timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (DeepSeek)")
+        elif WORKER_PROVIDER.lower() == "vilao":
+            # OpenAI-compatible Vilao gateway — mirrors the Brain's vilao branch
+            # (agent_system/models/brain.py). Added because the Worker previously
+            # supported only deepseek/gemini/ollama and silently fell through to the
+            # Ollama localhost branch for provider=vilao, producing a WinError 10061
+            # connection-refused when no local Ollama is running. Reuses the same
+            # optional safety-bypass hints the Brain sends to Vilao.
+            import os
+            extra_body = None
+            if (os.getenv("VILAO_SAFETY_BYPASS", "false").lower() in ("true", "1", "yes")
+                    or os.getenv("SAFETY_OPEN", "true").lower() in ("true", "1", "yes")):
+                extra_body = {"safe_mode": False, "safety": False, "content_filter": False}
+            llm_kwargs = {
+                "model": WORKER_MODEL,
+                "api_key": VILAO_API_KEY,
+                "base_url": VILAO_URL,
+                "temperature": WORKER_TEMPERATURE,
+                "timeout": LLM_REQUEST_TIMEOUT,
+            }
+            if extra_body:
+                llm_kwargs["extra_body"] = extra_body
+            self._llm = ChatOpenAI(**llm_kwargs)
+            log.system(f"Worker initialized: {WORKER_MODEL} (Vilao, safety-bypass={bool(extra_body)})")
         elif WORKER_PROVIDER.lower() == "gemini":
             from langchain_google_genai import ChatGoogleGenerativeAI
             from ..config import GEMINI_API_KEY

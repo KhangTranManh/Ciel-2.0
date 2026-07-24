@@ -7,6 +7,46 @@ from agent_system.utils.logger import log
 from agent_system.utils.usage import extract_usage, format_usage
 from agent_system.config import RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL
 
+def _extract_json_object(raw: str) -> str:
+    """Return the first balanced top-level {...} block in `raw`.
+
+    The Router requires pure-JSON output, but some Brain models (observed live with
+    Opus via the Vilao gateway) intermittently wrap the JSON in prose or emit trailing
+    text after the closing brace. Each such reply used to fail json.loads outright and
+    burn a full ~14s Brain retry (3 in a row observed in one hard_special run) even
+    though a perfectly valid decision object was sitting inside the reply. Slicing out
+    the balanced object first makes those replies parse on the first attempt; replies
+    with no JSON at all still raise ValueError so tenacity retries as before.
+
+    Brace-counting is done outside string literals only (a '{' or '}' inside a quoted
+    hidden_thought sentence must not shift the balance).
+    """
+    start = raw.find("{")
+    if start == -1:
+        raise ValueError("Router LLM reply contains no JSON object")
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start:i + 1]
+    raise ValueError("Router LLM reply contains an unterminated JSON object")
+
+
 CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
 
 Respond ONLY with valid JSON. Start with a hidden_thought object.
@@ -23,6 +63,14 @@ Then one of:
 - {{"action": "multi_tool", "tools": [...], "response_hint": "..."}}
 
 Use multi_tool only when the task clearly needs several independent tools in sequence.
+
+MULTI_TOOL DECOMPOSITION (critical):
+- Break the request into ONE tools[] entry PER numbered step / distinct sub-task, each with its own correct tool and minimal args. NEVER collapse a compound request into a single catch-all call (e.g. do NOT dump the whole request text into one search query).
+- tool_args values must be the minimal literal argument for that step ("BTC/USD", "Hanoi"), never a copy of the request sentence.
+- Example — "Check my unread Gmail, get the weather for Hanoi, calculate 12*9, then email a summary to a@b.com" →
+  tools: [search_gmail(query="is:unread", resource="messages"), get_weather(city="Hanoi"), calculate(expression="12*9"), send_gmail_message(to="a@b.com", subject=<from request>, message="[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]")]
+- For a final email/file-report step whose content depends on the other tools' data, set the body/content to the placeholder "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]" (email) or "[REPORT_CONTENT_TO_BE_SYNTHESIZED]" (file) EXACTLY — the system fills it with the synthesized report after the data tools run. Do not write your own draft there and do not reword the placeholder.
+- Email subject: use the user's stated subject verbatim if given; otherwise a short title of the TOPIC (never the request text itself).
 
 AVAILABLE TOOLS:
 {tool_list}
@@ -114,7 +162,9 @@ class Router:
         if not raw:
             raise ValueError("Router LLM returned empty response -- retrying")
 
-        parsed = json.loads(raw)
+        # Tolerate prose/trailing text around the decision object (see
+        # _extract_json_object) instead of failing the whole ~14s call over wrapping.
+        parsed = json.loads(_extract_json_object(raw))
 
         # Extract and log Chain-of-Thought, then strip from decision
         hidden_thought = parsed.pop("hidden_thought", None)

@@ -91,6 +91,30 @@ def _find_dangerous_code_patterns(text: str) -> list:
     return [pat for pat in _DANGEROUS_CODE_PATTERNS if re.search(pat, text, re.IGNORECASE)]
 
 
+# Deferred-synthesis placeholder detector (deterministic, model-agnostic). execute_multi_tool
+# defers a write_file/send_gmail_message step whose content is "still waiting on real data"
+# and re-executes it after the Worker synthesizes the actual report. This used to be
+# recognized only via an exact literal match on the two markers this codebase itself
+# generates ("..._TO_BE_SYNTHESIZED]"). Observed gap: a stronger Brain model (Opus) planned
+# its OWN write_file step instead of relying on the workflow safeguard, and phrased the
+# placeholder differently — "[SYNTHESIZE_FROM_RESULTS: today's date from get_current_time,
+# ...]" — which the literal match didn't recognize. The classification silently missed it,
+# so that raw placeholder text was written straight to disk as the "report" (a hollow-shell
+# bug distinct from data fabrication: no invented facts, just unresolved plan scaffolding
+# leaking into a real file). Match on the SYNTHES* root inside brackets instead of one exact
+# string, so any Brain phrasing of the same "fill this in after synthesis" intent is caught.
+_UNSYNTHESIZED_PLACEHOLDER_RE = re.compile(
+    r"\[[^\[\]\n]{0,160}?(?:SYNTHES\w*|TO_BE_FILLED|PLACEHOLDER)[^\[\]\n]{0,160}?\]",
+    re.IGNORECASE,
+)
+
+
+def _has_unsynthesized_placeholder(text: str) -> bool:
+    """True if `text` still contains a bracketed 'fill this in after synthesis' marker
+    instead of real content, regardless of the Brain's exact wording for it."""
+    return bool(text) and bool(_UNSYNTHESIZED_PLACEHOLDER_RE.search(text))
+
+
 # Errors where NO tool_args correction can possibly help — retrying with guessed
 # parameters is guaranteed to fail again, it just costs an extra Worker call each time.
 # Found via scripts/prompt_harness.py: 220 HEALING_TRIGGER/UnclassifiedError occurrences
@@ -518,6 +542,20 @@ class CielCore:
                     if not self._request_confirmation(tool_name, tool_args, risk_override=risk):
                         return f"[CANCELLED] Master denied writing potentially destructive code to '{tool_args.get('filename', '?')}'. No action was taken."
 
+            # HARD BLOCK (symmetric to the email placeholder block below): never let an
+            # unresolved multi_tool synthesis placeholder land on disk as the "report" the
+            # user asked for. execute_multi_tool's deferred-write detection normally holds
+            # this kind of content back until after synthesis — this is the last-resort net
+            # for the case where that classification misses a paraphrased marker (or a
+            # placeholder reaches write_file/append_file via any other path), so a hollow
+            # file is blocked here instead of silently written.
+            if _has_unsynthesized_placeholder(tool_args["content"]):
+                self._log_thought("SAFETY", "write_placeholder_blocked",
+                                  f"{tool_name}: content for '{tool_args.get('filename', '?')}' still "
+                                  f"contains an unsynthesized placeholder — write blocked.")
+                return (f"Lỗi: nội dung ghi vào file chưa được tổng hợp (vẫn còn placeholder) — đã CHẶN ghi. "
+                        f"Cần thu thập dữ liệu thật và tổng hợp nội dung trước khi ghi file.")
+
         # OUTBOUND EMAIL SANITIZATION (single choke-point): every email-sending path
         # — multi_tool synthesis, direct Brain send, content-filter fallback, replies,
         # drafts — funnels through here, so cleaning the body once covers them all.
@@ -525,10 +563,12 @@ class CielCore:
         if body_key and isinstance(tool_args.get(body_key), str):
             # HARD BLOCK: never let an unsynthesized plan placeholder go out as a real
             # email. This marker is only meant to be replaced by execute_multi_tool's
-            # synthesis step; reaching here means the plan skipped synthesis.
-            if "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]" in tool_args[body_key]:
+            # synthesis step; reaching here means the plan skipped synthesis. Matched via
+            # _has_unsynthesized_placeholder() (SYNTHES* root) rather than one exact
+            # literal, so a Brain-paraphrased placeholder is still caught.
+            if _has_unsynthesized_placeholder(tool_args[body_key]):
                 self._log_thought("SAFETY", "email_placeholder_blocked",
-                                  f"{tool_name}: body still contains the synthesis placeholder — send blocked.")
+                                  f"{tool_name}: body still contains an unsynthesized placeholder — send blocked.")
                 return (f"Lỗi: nội dung email chưa được tổng hợp (vẫn còn placeholder) — đã CHẶN gửi. "
                         f"Cần thu thập dữ liệu thật và tổng hợp nội dung trước khi gửi.")
 
@@ -927,7 +967,7 @@ class CielCore:
             name = t.get("tool_name")
             if name in ("send_gmail_message", "send_gmail_html_message"):
                 send_tool = t
-            elif name in ("write_file", "append_file") and "_TO_BE_SYNTHESIZED]" in str(t.get("tool_args", {}).get("content", "")):
+            elif name in ("write_file", "append_file") and _has_unsynthesized_placeholder(str(t.get("tool_args", {}).get("content", ""))):
                 deferred_write = t
             else:
                 other_tools.append(t)
@@ -1068,6 +1108,83 @@ RULES:
                 return result
 
         return result
+
+    # Inspection tools eligible for the memory-fallback below. All are also in
+    # _SKIP_SELF_CORRECTION, which is precisely why they need this cheaper net:
+    # their results come back verbatim with no "did this actually answer the
+    # question?" evaluation at all.
+    _MEMORY_FALLBACK_TOOLS = {"list_workspace", "read_file", "get_file_info"}
+
+    _QUESTION_MARKERS = (
+        "?", "what ", "which ", "who ", "when ", "where ", "why ", "how ",
+        " gì", "gì?", " nào", "bao nhiêu", "là ai", "ở đâu", "khi nào", "thế nào", "làm sao",
+    )
+
+    _FALLBACK_STOPWORDS = {
+        # en
+        "the", "and", "for", "are", "was", "were", "you", "your", "our", "with", "from",
+        "this", "that", "have", "has", "had", "can", "could", "should", "would", "will",
+        "using", "use", "used", "please", "tell", "check", "about", "into", "onto",
+        # vi
+        "của", "cho", "các", "những", "được", "trong", "với", "này", "kia", "đang",
+        "hãy", "cần", "phải", "một", "chúng", "mình", "tôi", "bạn", "anh", "chị",
+    }
+
+    def _content_words(self, text: str) -> set:
+        return {w for w in re.findall(r"[\wÀ-ỹ]{3,}", (text or "").lower())
+                if w not in self._FALLBACK_STOPWORDS}
+
+    def _memory_fallback_for_inspection(self, user_input: str, recalled: str,
+                                        tool_name: str, result: str) -> str:
+        """Deterministic net for the observed 'amnesia' failure (test_rag_memory):
+        the Brain's verify-first instinct routes a memory question to an inspection
+        tool (list_workspace/read_file) — a REASONABLE choice, ground truth beats
+        trusting RAG — but when that inspection comes back empty/unrelated, the raw
+        listing used to be returned as the "answer" verbatim (these tools are in
+        _SKIP_SELF_CORRECTION, so no evaluation pass ever ran). The recalled RAG
+        context that could have answered the question was simply dropped.
+
+        This keeps the verify-first routing intact and only adds the missing rung:
+        IF this turn had recalled context relevant to the question AND the user asked
+        a question AND the inspection result shares not a single content word with
+        it, ask the WORKER (~1.6s — deliberately not a ~14s Brain call) to answer
+        from the recalled memory, explicitly labeled as unverified memory. Honest
+        framing over confident recall: RAG may be stale, so the reply must say it
+        could not confirm from the workspace. All trigger conditions are code, not
+        model judgment; on any doubt (imperatives like "list my files", results that
+        do mention the asked-about things, no recall this turn) it returns the tool
+        result untouched.
+        """
+        if not recalled or tool_name not in self._MEMORY_FALLBACK_TOOLS:
+            return result
+        lowered = user_input.lower()
+        if not any(m in lowered for m in self._QUESTION_MARKERS):
+            return result  # imperative request ("list my files") — listing IS the answer
+
+        q_words = self._content_words(user_input)
+        if not q_words:
+            return result
+        result_words = self._content_words(result)
+        recalled_words = self._content_words(recalled)
+        # Inconclusive = the inspection result addresses none of the question's terms;
+        # relevant = the recalled memory addresses at least one of them.
+        if q_words & result_words or not (q_words & recalled_words):
+            return result
+
+        self._log_thought("RAG", "memory_fallback_triggered",
+                          f"{tool_name} result shares no content word with the question; "
+                          f"answering from recalled context (labeled unverified).")
+        fallback_task = (
+            f"The Master asked: \"{user_input}\"\n\n"
+            f"A workspace inspection ({tool_name}) found nothing related:\n{result[:800]}\n\n"
+            f"[RECALLED MEMORY (long-term, may be outdated)]:\n{recalled[:2000]}\n\n"
+            f"Answer the Master's question using ONLY the recalled memory above. "
+            f"State clearly that this comes from your long-term memory of past "
+            f"conversations and could not be verified from the current workspace. "
+            f"If the recalled memory does not actually contain the answer, say honestly "
+            f"that you could not determine it. Do not invent anything."
+        )
+        return self.execute_chat(fallback_task)
 
     def _evaluate_result(self, user_input: str, tool_name: str, tool_args: dict, result: str) -> dict:
         """Ask Brain to evaluate if a tool result satisfies the user's request."""
@@ -1462,6 +1579,13 @@ RULES:
                 # Skip for trivially-correct tools to save Brain API calls
                 if tool_name not in self._SKIP_SELF_CORRECTION:
                     response = self._self_correct(user_input, tool_name, tool_args, response)
+                else:
+                    # Skip-listed inspection tools get no evaluation pass at all, so a
+                    # memory question routed to e.g. list_workspace used to return the
+                    # raw listing as the "answer". Cheap deterministic net (Worker-only,
+                    # no Brain call) — see _memory_fallback_for_inspection.
+                    response = self._memory_fallback_for_inspection(
+                        user_input, recalled, tool_name, response)
 
             elif action == "code":
                 task = decision.get("task", user_input)
