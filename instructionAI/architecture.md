@@ -136,6 +136,11 @@ User Input (text or voice transcript) → CielCore.process()
                      → Self-Correction: Brain evaluates → retries if unsatisfied (max 2)
       "code"       → Worker generates code → dangerous-code gate → buffer_writer → disk
       "multi_tool" → Sequential tool execution → Worker synthesizes report (before final send)
+                     → dependent steps: {{prev}} / {{step_N}} in a later step's args are
+                       replaced with an earlier step's raw output (deterministic, no LLM)
+                     → deferred write/send body filled with the synthesized report; any
+                       leftover synthesis placeholder is blocked (see safety_and_risk.md)
+                     → explicit "subject exactly '...'" is enforced onto the send step
   → Self-Healing Loop (if error, and not on the unfixable skip-list):
       Attempt 1: Fix obvious cause (syntax/import)
       Attempt 2: Rewrite with alternative approach
@@ -151,13 +156,23 @@ Each tier (Brain / Worker / Middleware) selects its provider and model independe
 
 | Tier | Provider | Model | Config Key |
 |------|----------|-------|------------|
-| **Brain (Router)** | Vilao | `alic/qwen3.7-max` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
-| **Worker (Generator)** | DeepSeek | `deepseek-chat` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
-| **Middleware (Verifier, optional)** | mirrors Brain's branching | disabled by default | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+| **Brain (Router)** | Vilao | `ccf/claude-opus-4-8` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
+| **Worker (Generator)** | Vilao | `op/deepseek/deepseek-v4-pro` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
+| **Middleware (Verifier, optional)** | Vilao | `op/deepseek/deepseek-v4-pro` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
 
-Also supported per tier: Gemini, Ollama (fully offline). **Tested fallback:** if Vilao (Brain)
-is unavailable, set `BRAIN_PROVIDER=deepseek` + `BRAIN_MODEL=deepseek-chat` — verified live, zero
-code changes, since `DEEPSEEK_API_KEY` is already configured for the Worker.
+> Provider model names drift — DeepSeek retired `deepseek-chat` (now `deepseek-v4-pro` /
+> `deepseek-v4-flash`); Vilao model aliases (e.g. `awkr/…` → `ccf/…`) change too. If a tier returns
+> empty output or a 4xx, check the alias is still live before suspecting the code.
+
+Also supported per tier: Gemini, Ollama (fully offline), and Vilao. **All three tiers can run on
+Vilao** — the Worker gained a `WORKER_PROVIDER=vilao` branch (`agent_system/models/worker.py`,
+mirroring the Brain's; previously provider=vilao silently fell through to the Ollama-localhost
+branch and failed with a connection-refused). A verified pure-Vilao setup: Brain
+`ccf/claude-opus-4-8`, Worker + Middleware `op/deepseek/deepseek-v4-pro`. **Tested fallback:** if
+Vilao is unavailable, set `BRAIN_PROVIDER=deepseek` + a valid DeepSeek model — zero code changes.
+
+> **Gotcha (unchanged):** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`
+> (`agent_system/config.py`); its PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).
 
 ## Two Entry Points
 

@@ -62,7 +62,13 @@ Then one of:
 - {{"action": "code", "task": "...", "filename": "agent_output/xxx.py"}}
 - {{"action": "multi_tool", "tools": [...], "response_hint": "..."}}
 
-Use multi_tool only when the task clearly needs several independent tools in sequence.
+Use multi_tool when the task needs several tools in sequence — whether independent OR dependent (a later step needing an earlier step's output).
+
+DEPENDENT STEPS (a step that needs a previous step's result):
+- In a later step's tool_args, reference an earlier step's raw output with "{{prev}}" (the immediately previous step) or "{{step_N}}" (the N-th step, 1-indexed). The system substitutes the real output at run time — you do NOT need to know that value now.
+- Example — "read ciel_workspace/note.txt then send its content to Telegram" →
+  tools: [read_file(filename="ciel_workspace/note.txt"), send_telegram(message="{{step_1}}")]
+- Only use a reference when a step genuinely depends on a prior result. For the FINAL report/email/file body that summarizes several tools, still use the synthesis placeholder (below), NOT {{stepN}} — the system synthesizes those from all outputs.
 
 MULTI_TOOL DECOMPOSITION (critical):
 - Break the request into ONE tools[] entry PER numbered step / distinct sub-task, each with its own correct tool and minimal args. NEVER collapse a compound request into a single catch-all call (e.g. do NOT dump the whole request text into one search query).

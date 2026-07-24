@@ -198,8 +198,10 @@ In the UI, click the 🔇 → 🔊 button beside the input box to have Ciel read
 ### Routing & Execution
 - **Three-Tier Architecture** — Brain (intent routing/planning) → Worker (content/code generation) → Middleware (scoped finalizer for email/report bodies, fail-open by design).
 - **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or `multi_tool`, each with its own execution path.
-- **Deterministic Workflow Safeguards** — if a plan is missing its terminal send step (email intent + address) or write step (explicit path + write verb), it's auto-appended in code, not left to the Brain to remember.
+- **Deterministic Workflow Safeguards** — if a plan is missing its terminal send step (email intent + address) or write step (explicit path + write verb), it's auto-appended in code, not left to the Brain to remember. The same layer enforces an explicitly-requested email subject (`subject exactly '...'`) and blocks any unsynthesized `[SYNTHESIZE…]`-style placeholder from reaching a file or an inbox — matched by pattern, so it holds even when the Brain paraphrases the marker.
+- **Dependent multi-tool steps** — a later step can consume an earlier one's real output via `{{prev}}` / `{{step_N}}` tokens in its args, substituted deterministically at run time (no LLM). Independent-tool plans are unchanged.
 - **Self-Healing with a Skip-List** — multi-attempt autonomous recovery for tool/code errors, but skips error classes no retry can ever fix (missing library, network timeout, geo-restriction) instead of burning a guaranteed-to-fail Worker call.
+- **Memory-aware recall fallback** — when a memory question is routed to a workspace-inspection tool that comes back empty, Ciel falls back to the recalled long-term context (labeled "unverified from workspace") instead of returning a bare directory listing.
 
 ### Safety
 - **Decoupled Safety Model** — content-filter permissiveness (`SAFETY_OPEN`) and the destructive-action confirmation gate (`DISABLE_SAFETY_GATE`) are independent flags on purpose; a denied confirmation can never be silently overridden by the content-filter setting.

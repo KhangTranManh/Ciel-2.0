@@ -112,7 +112,17 @@ content
 - **`_is_safe_path()` logic** in `system_ops.py` — weakens sandbox quarantine.
 - **`_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS`** in `llm_connector.py` — removing tools disables safety checks.
 - **`_find_dangerous_code_patterns()`** in `llm_connector.py` — the content-based gate for generated code.
-- **Router JSON schema** in `router.py` — must match parsing in `CielCore.process()`.
+- **`_has_unsynthesized_placeholder()`** in `llm_connector.py` — the generalized synthesis-placeholder
+  detector. Keep it pattern-based (matches ANY paraphrased marker, not one fixed string), used by
+  BOTH the multi_tool deferred-write detection and the write/email placeholder guards. It exists
+  because a stronger Brain paraphrased the canonical `[..._TO_BE_SYNTHESIZED]` marker (e.g.
+  `[SYNTHESIZE_FROM_RESULTS: ...]`) and an exact-string check let a hollow shell reach disk.
+- **`_resolve_step_refs()`** in `llm_connector.py` — deterministic `{{prev}}`/`{{step_N}}`
+  substitution that lets a multi_tool step consume an earlier step's raw output. Keep the
+  fast-path (`"{{" not in value`) so token-free plans are untouched (backward-compatible).
+- **Router JSON parsing** in `router.py` — `_extract_json_object()` slices the first balanced
+  `{...}` (tolerating prose/trailing text some models wrap around the decision) BEFORE `json.loads`;
+  the JSON SCHEMA itself must still match parsing in `CielCore.process()`.
 - **`memory_ops.py` imports** — must remain standalone (no `core/` or `agent_system/` deps).
 - **`thoughts.log` file path** — hardcoded in `llm_connector.py`, `main_api.py`, and `format_thoughts_log.py`.
 - **Coupling `SAFETY_OPEN` and `DISABLE_SAFETY_GATE`** — they are independent by design (see safety_and_risk.md).

@@ -58,8 +58,13 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    `write_file`/`append_file`/`execute_code` when the content matches a destructive pattern.
 
 4. **Prefer deterministic safeguards over trusting the LLM.** Sanitizers, workflow safeguards,
-   the dangerous-code scan, and the healing skip-list are code, not model judgment. The Middleware
-   tier is the ONLY LLM-based check and is scoped narrowly (email only) and **fail-open**.
+   the dangerous-code scan, the healing skip-list, the synthesis-placeholder guard
+   (`_has_unsynthesized_placeholder`), multi_tool step-refs (`_resolve_step_refs`), the
+   inspection-tool memory fallback (`_memory_fallback_for_inspection`), tolerant router-JSON
+   extraction (`_extract_json_object`), and exact-subject enforcement (`_enforce_subject`) are all
+   code, not model judgment. Recurring lesson: any safeguard that keys off an EXACT model-emitted
+   string is fragile — a stronger Brain paraphrases it; match by pattern/intent instead. The
+   Middleware tier is the ONLY LLM-based check and is scoped narrowly (email only) and **fail-open**.
 
 5. **Gather real data BEFORE composing any email body.** Market/search/document tools run first;
    anti-fabrication rules forbid inventing prices/numbers. Claim "sent" only on a real Message Id.

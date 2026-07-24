@@ -71,6 +71,23 @@ Every outbound email/report body passes through, in order:
    unfamiliar against the model's own training-era knowledge.
 3. The safety-gate preview (Y/N) reflects the FINAL body, after both steps.
 
+### Synthesis-placeholder guard (deterministic, both file writes and email)
+
+A multi_tool plan defers a write/send whose body is a synthesis placeholder, fills it with the
+Worker-synthesized report, then executes it. If a placeholder ever SURVIVES to the actual
+write/send, it is blocked — `_has_unsynthesized_placeholder()` matches ANY paraphrased marker
+(`[SYNTHESIZE_FROM_RESULTS: ...]`, `[..._TO_BE_SYNTHESIZED]`, bracketed ALL-CAPS shells), not one
+fixed string. This is symmetric: the email path already hard-blocked its canonical marker, and the
+FILE-write path now has the same guard (a hollow `[SYNTHESIZE...]` shell used to reach disk when a
+stronger Brain paraphrased the marker and the old exact-string check missed it).
+
+### Subject enforcement (deterministic)
+
+When the request names an exact subject (`subject exactly '...'`, `tiêu đề '...'`), the send step's
+subject is overwritten with it (`_enforce_subject()`) rather than trusting the Brain to keep it — the
+Brain routinely substitutes its own descriptive subject. Applies on BOTH the single-send (`action="tool"`)
+and multi_tool paths; only touches an existing `subject` arg (so `reply_to_email` is unaffected).
+
 ## Quarantine Zone (Workspace Sandbox)
 
 File tools in `system_ops.py` are locked to the `ciel_workspace/` (and `agent_output/` for

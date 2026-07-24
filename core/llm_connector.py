@@ -948,6 +948,73 @@ class CielCore:
             xau_rsi="N/A",
         )
 
+    # Reference tokens a later multi_tool step may use to consume an EARLIER step's
+    # raw output: {{prev}} = the immediately preceding step, {{step_N}} /
+    # {{step_N.output}} = the N-th executed step (1-indexed). See _resolve_step_refs.
+    _STEP_REF_RE = re.compile(r"\{\{\s*(prev|step[_ ]?(\d+)(?:\.output)?)\s*\}\}", re.IGNORECASE)
+    _STEP_REF_MAXLEN = 4000
+
+    def _resolve_step_refs(self, value, step_outputs: list):
+        """Substitute {{prev}} / {{step_N}} tokens in a multi_tool step's args with the
+        RAW output of an earlier step — enabling DEPENDENT chains (step N feeds step
+        N+1) that the plan's static, decided-up-front args could not express (the
+        long-standing 'multi_tool = independent tools only' limitation).
+
+        Deterministic string substitution, no LLM. Recurses through dict/list; only
+        rewrites str values, and only when a token is present. An out-of-range or
+        not-yet-run reference is left as the literal token AND logged, so a bad
+        reference is visible rather than silently blanked into wrong tool input.
+        """
+        if isinstance(value, dict):
+            return {k: self._resolve_step_refs(v, step_outputs) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_step_refs(v, step_outputs) for v in value]
+        if not isinstance(value, str) or "{{" not in value:
+            return value
+
+        def _sub(m):
+            token = m.group(0)
+            idx = int(m.group(2)) - 1 if m.group(2) else len(step_outputs) - 1
+            if 0 <= idx < len(step_outputs):
+                return (step_outputs[idx] or "")[:self._STEP_REF_MAXLEN]
+            self._log_thought(
+                "TOOL", "step_ref_unresolved",
+                f"multi_tool step referenced {token} but only {len(step_outputs)} "
+                f"prior step(s) had run — left literal.")
+            return token
+
+        return self._STEP_REF_RE.sub(_sub, value)
+
+    # Match an explicitly-requested email subject in the user's own words. The Brain
+    # routinely substitutes its own descriptive subject even when the user says
+    # "subject exactly '...'" (observed live on both the single-send and multi_tool
+    # paths), so a deterministic override enforces it instead of trusting the Brain.
+    _SUBJECT_RE = re.compile(
+        r"(?:subject|tiêu đề|chủ đề)\s*(?:line)?\s*"
+        r"(?:exactly|exact|is|should be|chính xác|phải là|:)?\s*"
+        r"['\"“”‘’](.+?)['\"“”‘’]",
+        re.IGNORECASE)
+
+    def _extract_requested_subject(self, user_input: str):
+        m = self._SUBJECT_RE.search(user_input or "")
+        if not m:
+            return None
+        subj = m.group(1).strip()
+        # Reject a runaway capture (a mis-placed quote swallowing the whole request).
+        return subj if 0 < len(subj) <= 200 else None
+
+    def _enforce_subject(self, send_args: dict, user_input: str) -> dict:
+        """Overwrite a Brain-composed subject with the user's explicitly-requested one.
+        Only touches an existing 'subject' arg (so reply_to_email without a subject is
+        unaffected). Deterministic — does not rely on the Brain to comply."""
+        requested = self._extract_requested_subject(user_input)
+        if requested and "subject" in send_args and send_args.get("subject", "").strip() != requested:
+            old = send_args.get("subject", "")
+            send_args["subject"] = requested
+            self._log_thought("BRAIN", "subject_override",
+                              f"User asked for an exact subject; replaced '{old}' with '{requested}'.")
+        return send_args
+
     def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "") -> str:
         """Execute multiple tools sequentially and synthesize the result.
 
@@ -973,18 +1040,27 @@ class CielCore:
                 other_tools.append(t)
 
         results = []
+        step_outputs = []   # raw result of each executed step, for {{prev}}/{{step_N}} refs
         # Execute non-send tools first
         for t in other_tools:
             name = t.get("tool_name", "")
             args = t.get("tool_args", {})
+            # DEPENDENT CHAINS: fill any {{prev}}/{{step_N}} tokens in this step's args
+            # with the raw output of an earlier step before it runs.
+            resolved = self._resolve_step_refs(args, step_outputs)
+            if resolved != args:
+                self._log_thought("TOOL", "step_ref_resolved",
+                                  f"{name}: injected prior step output into args.")
+                args = resolved
             log.tool(f"Executing step: {name}({args})")
-            
+
             if name not in self._tool_map:
                 res = f"[TOOL_ERROR] {name} not found."
             else:
                 res = self.execute_tool(name, args, response_hint=response_hint, user_input=user_input)
-                
+
             self._log_thought("TOOL", f"result_{name}", res)
+            step_outputs.append(res)
             results.append(f"--- Output from {name} ---\n{res}")
             if res.startswith("[CANCELLED]"):
                 break
@@ -1037,6 +1113,7 @@ RULES:
         if send_tool:
             send_name = send_tool.get("tool_name", "send_gmail_message")
             send_args = dict(send_tool.get("tool_args", {}))
+            send_args = self._enforce_subject(send_args, user_input)
 
             # The display copy `formatted` (which Master sees) keeps persona markers;
             # the outbound body is sanitized centrally in execute_tool, so just pass
@@ -1572,6 +1649,11 @@ RULES:
                         tool_args[body_key] = last_text
                         self._log_thought("BRAIN", "referential_send_override",
                                           f"Replaced Brain-composed '{body_key}' with the verbatim prior response for {tool_name} (referential send detected).")
+
+                # Enforce an explicitly-requested email subject on the single-send path
+                # too (the Brain often swaps in its own subject — observed live).
+                if body_key:
+                    tool_args = self._enforce_subject(dict(tool_args), user_input)
 
                 response = self.execute_tool(tool_name, tool_args, hint, user_input)
 

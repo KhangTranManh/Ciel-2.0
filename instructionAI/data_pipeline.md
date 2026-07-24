@@ -44,6 +44,21 @@ User Input → rag_manager.search_similar(query, top_k=3)
   → Inject as [RECALLED PAST CONTEXT] block into user prompt
 ```
 
+### Memory Fallback for Inspection Tools
+
+The Brain often (reasonably) tries to VERIFY a memory question against ground truth by routing it
+to an inspection tool (`list_workspace`/`read_file`/`get_file_info`) instead of answering from
+recalled context — a good instinct, since RAG can be stale. But those tools are on
+`_SKIP_SELF_CORRECTION`, so a directory listing used to be returned verbatim as the "answer" when
+the inspection found nothing relevant. `_memory_fallback_for_inspection()` closes this gap
+deterministically (no Brain call): when a turn **had recalled context**, the request **is a
+question**, the tool is an inspection tool, and its result shares **no content word** with the
+question — Ciel answers from the recalled context via one Worker call, explicitly labeled as
+long-term memory that **could not be verified from the workspace** (honest over confident). It
+never fires on imperative requests ("list my files"), when the result already addresses the
+question, or when there was no recall. Verified by an A/B: with this off, the amnesia recall test
+fails (listing returned); with it on, it recovers the fact.
+
 ### Key Configuration Constants
 
 | Constant | Value | Location |
