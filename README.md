@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="architect.md">Architecture</a> ·
-  <a href="note.txt">Live Status</a> ·
+  <a href="note.md">Live Status</a> ·
   <a href="PROMPT_INVENTORY.md">Prompts</a> ·
   <a href="ui/README.md">UI</a> ·
   <a href="autonomous_pipeline/architect.md">MLOps Pipeline</a>
@@ -317,7 +317,7 @@ Ciel 2.0/
 ├── main.py                    # CLI entry point (text + voice)
 ├── main_api.py                 # FastAPI + WebSocket server for the UI (+ /skills, /health, /tts)
 ├── architect.md                # Full architecture map (start here for deep dives)
-├── note.txt                    # Live status / rolling changelog
+├── note.md                    # Live status / rolling changelog
 ├── requirements.txt
 │
 ├── core/                       # Main orchestration — the part every request goes through
@@ -373,7 +373,7 @@ Ciel 2.0/
 | Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name (`BRAIN_MODEL`, `CODER_MODEL`) |
 | Add/remove a high-risk tool from the safety gate | `core/llm_connector.py` — `_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS` |
 | Tune what counts as "dangerous code" | `core/llm_connector.py` — `_find_dangerous_code_patterns()` |
-| Change an email template's structure | `note.txt` (templates section) and `email_template/` |
+| Change an email template's structure | `note.md` (templates section) and `email_template/` |
 | Adjust RAG recall sensitivity | `core/rag_manager.py` — `MIN_QUERY_LENGTH`, `MIN_RELEVANCE_SCORE` |
 | Enable/scope the Middleware tier | `.env` — `MIDDLEWARE_ENABLED`, `MIDDLEWARE_SCOPE`, `MIDDLEWARE_MAX_PASSES` |
 | Change the CLI/UI voice, STT/TTS backend, or prosody | `.env` — `STT_BACKEND`, `TTS_BACKEND`, `TTS_VOICE`, `TTS_RATE`/`TTS_PITCH`, and `RVC_*` for the experimental character voice |

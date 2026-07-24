@@ -35,7 +35,7 @@ Entry points: `main.py` (CLI, supports `--voice`/`--speak`) and `main_api.py`
 | `data_pipeline.md` | RAG memory pipeline, fact vault, scheduler, cost tracking, audit trail |
 | `voice_and_interface.md` | Voice I/O (STT/TTS backends, normalizer), the UI orb, and the modality seam |
 
-For the dated changelog and current live status, see `../architect.md` and `../note.txt`
+For the dated changelog and current live status, see `../architect.md` and `../note.md`
 (NOT this folder — instructionAI/ holds stable knowledge only).
 
 For a project-agnostic prompt that bootstraps/maintains an `instructionAI/`-style folder in

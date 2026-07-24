@@ -9,7 +9,7 @@ Ciel-2.0/
 ├── main.py                       # CLI entry point (input loop, safety callback, --voice/--speak)
 ├── main_api.py                   # FastAPI/WebSocket backend: WS /ws, GET /skills /health, POST /tts
 ├── architect.md                  # Detailed project roadmap and changelog (dated)
-├── note.txt                      # Live status / rolling changelog (dated)
+├── note.md                       # Live status / rolling changelog (dated)
 ├── credentials.json              # Google OAuth credentials (not tracked in git)
 ├── requirements.txt              # Python dependencies
 ├── .env                          # API keys, provider config (not tracked in git)

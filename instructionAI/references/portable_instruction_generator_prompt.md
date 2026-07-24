@@ -5,7 +5,8 @@ A project-agnostic prompt. Paste it into a new conversation (any AI, any repo) s
 folder as ground truth for the rest of the session — including after a context reset, a
 compacted/summarized history, or a brand-new session that "forgot" everything prior.
 
-This is the reusable core of the guide that used to live inline in this project's `note.txt`,
+This is the reusable core of the guide that used to live inline in this project's `note.txt` (that
+guide is now consolidated here; the project's live status/changelog moved to `note.md`),
 turned into an actual instruction addressed to the AI instead of a comment block.
 
 ---
