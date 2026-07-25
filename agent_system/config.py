@@ -22,6 +22,14 @@ VILAO_API_KEY = os.getenv("VILAO_KEY", "")
 GPT_API_KEY = os.getenv("GPT_API_KEY", "")
 GPT_BASE_URL = os.getenv("GPT_BASE_URL", "")
 
+# --- Router Assistant (fast front-line triage; escalates hard cases to the Brain) ---
+# A cheap/fast model that decides "answerable as plain chat" vs "needs the Brain to
+# plan tools". Off by default → pure Brain-only routing (unchanged behavior). Only the
+# Vilao provider path is wired for now (mirrors Brain/Worker vilao branch).
+ROUTER_ASSISTANT_ENABLED = os.getenv("ROUTER_ASSISTANT_ENABLED", "false").lower() in ("true", "1", "yes")
+ROUTER_ASSISTANT_PROVIDER = os.getenv("ROUTER_ASSISTANT_PROVIDER", "vilao")
+ROUTER_ASSISTANT_MODEL = os.getenv("ROUTER_ASSISTANT_MODEL", "")
+
 # Safety - SAFETY_OPEN=true means open/permissive Brain CONTENT filtering
 # (reduces over-blocking on normal tasks like email/text). This is about LLM
 # content moderation ONLY — it does NOT control the destructive-tool gate.

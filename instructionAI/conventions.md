@@ -120,6 +120,12 @@ content
 - **`_resolve_step_refs()`** in `llm_connector.py` — deterministic `{{prev}}`/`{{step_N}}`
   substitution that lets a multi_tool step consume an earlier step's raw output. Keep the
   fast-path (`"{{" not in value`) so token-free plans are untouched (backward-compatible).
+- **`stealth_search`'s source chain** in `web_agent_ops.py` — Google News RSS is PRIMARY and
+  the `ddgs` fallbacks exist because that endpoint is unofficial; don't collapse it back to a
+  single source. Equally, don't drop `_is_generic_news_query()` (top-stories feed vs keyword
+  search), the real-`pubDate` recency filter (DuckDuckGo's own `timelimit` is unreliable), or
+  the ordering: filter landing pages BEFORE trimming to `max_results`, or the "keep everything
+  if fewer than 3 survive" guard trips and lets index pages back in.
 - **Router JSON parsing** in `router.py` — `_extract_json_object()` slices the first balanced
   `{...}` (tolerating prose/trailing text some models wrap around the decision) BEFORE `json.loads`;
   the JSON SCHEMA itself must still match parsing in `CielCore.process()`.

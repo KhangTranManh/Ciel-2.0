@@ -58,7 +58,7 @@ Ciel-2.0/
 │       ├── trading_ops.py        # Crypto, Forex, Metals price + TA + build_market_report_html
 │       ├── telegram_ops.py       # Telegram Bot API notifications
 │       ├── github_ops.py         # Git status, diff, commit, push
-│       └── web_agent_ops.py      # stealth_search (recency-aware) + smart_scrape
+│       └── web_agent_ops.py      # stealth_search (Google News RSS → ddgs fallback) + smart_scrape
 
 ├── persona/                      # Personality
 │   └── official_ciel_personality.txt  # The only persona file loaded at startup
@@ -173,6 +173,33 @@ Vilao is unavailable, set `BRAIN_PROVIDER=deepseek` + a valid DeepSeek model —
 
 > **Gotcha (unchanged):** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`
 > (`agent_system/config.py`); its PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).
+
+## Web Search Source Chain (`skills/external/web_agent_ops.py`)
+
+`stealth_search` is layered, because the original single DuckDuckGo `text()` call returned
+no publication dates, surfaced section landing pages instead of articles, and honored its
+own `timelimit` unreliably (a "past day" window still returned 8–16-day-old hits):
+
+```
+news-intent query
+  → 1. Google News RSS          PRIMARY — free, no API key, no extra library
+       ├─ generic "what's the news" query  → TOP STORIES feed (no q=)
+       └─ query names a topic              → keyword search (q=)
+       locale (hl/gl/ceid) picked from the QUERY's language: vi/VN, en-US/US, ja/JP, …
+  → 2. ddgs.news()              fallback if RSS fails/empty (also dated)
+  → 3. ddgs.text()              non-news queries, or to top up
+then: recency filter on the REAL pubDate → landing-page filter → trim to max_results
+```
+
+Key points for anyone changing this:
+- **Top stories vs keyword search matters.** Searching "top news headlines today" matches
+  articles *titled* that (roundups: "School Assembly News Headlines"); the top-stories feed
+  returns the actual lead stories. `_is_generic_news_query()` decides between them.
+- **Language drives the locale.** A Vietnamese query must hit Vietnamese outlets — see the
+  `[USER LANGUAGE: X]` note the Router receives (`CielCore._detect_language`).
+- Every result prints `Published` + `Source`; undated web results are explicitly labeled
+  `UNKNOWN … do NOT state a date` so the model cannot invent one.
+- Google News RSS is an UNOFFICIAL endpoint (like edge-tts) — keep the ddgs fallback.
 
 ## Two Entry Points
 

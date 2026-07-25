@@ -57,11 +57,49 @@ stronger model paraphrases it. Match by pattern/intent instead.**
 | **Inspection-tool memory fallback** | A memory question routed to `list_workspace`/`read_file` that returns nothing → answer from recalled RAG, labeled *unverified* | `_memory_fallback_for_inspection()` |
 | Self-healing skip-list | Don't retry errors no param guess can fix (missing lib, timeout, geo) | `_HEALING_SKIP_PATTERNS` |
 | Anti-fabrication | Claim "sent" only on a real Message Id; referential sends reuse the exact prior reply | `_is_referential_send()` |
+| **Search results carry their own provenance** | Every hit prints `Published` + `Source`; undated ones are labeled `UNKNOWN … do NOT state a date` so no date can be invented | `web_agent_ops.py` |
+| **Real-date recency filter** | Enforce the requested time window on actual `pubDate` (DuckDuckGo's `timelimit` let 8–16-day-old hits through a "past day" query) | `_WINDOW_DAYS` |
+| **Language-aware search** | `[USER LANGUAGE: X]` survives the translate step → Vietnamese question yields a Vietnamese query and Vietnamese outlets | `_detect_language()` + Router rule |
 | **Tolerant router JSON** | Slice the first balanced `{…}` (prose/trailing text tolerated) before `json.loads` | `_extract_json_object()` |
 
 ---
 
 ## Changelog (most recent first)
+
+### 2026-07-25 — Web search overhaul (answers that state *when* and *what*)
+Symptom: news answers had no dates and stayed vague ("World Bank published an outlook
+focusing on GDP, inflation and risks"). Two independent causes, both fixed.
+
+- **The tool never supplied dates.** `stealth_search` used `ddgs.text()` — fields are
+  `title/href/body` only, and for news queries it returned section landing pages. Any date
+  in an answer had been scraped out of snippet prose, or invented.
+  → **Google News RSS is now the primary news source** (free, no API key, no new library —
+  `requests` + stdlib `xml.etree`): real `pubDate`, real outlet, and `hl`/`gl`/`ceid`
+  language-region targeting. `ddgs.news()` then `ddgs.text()` remain as fallbacks because
+  the RSS endpoint is unofficial.
+- **Generic "what's the news" now uses the TOP STORIES feed**, not keyword search: searching
+  "top news headlines today" matched articles *titled* that (roundups like "School Assembly
+  News Headlines"), while the feed returns the actual lead stories. `_is_generic_news_query()`
+  routes between them.
+- **Recency is enforced in code** on the real `pubDate` — DuckDuckGo's own `timelimit` was
+  demonstrably unreliable (a `'d'` window returned 8–16-day-old hits, previously invisible
+  because no dates were shown).
+- **Landing pages are dropped** (generic-blurb hints + "title starts with the outlet name",
+  which is language-agnostic). Filtering happens BEFORE trimming to `max_results`.
+- **Everything is answered in the user's language context.** `[USER LANGUAGE: X]` is appended
+  AFTER the translate-to-English step so it survives it; the Router builds the query in that
+  language for local topics (English/international topics stay English) and is barred from
+  putting a literal date string in a query (use `timelimit`).
+- **The formatter stopped throwing detail away.** Retrieval tools (`stealth_search`,
+  `smart_scrape`, `read_document`) now get a COMPLETENESS rule — cover every item, keep dates/
+  numbers/names/sources, never guess a date, omit content-free items — while every other tool
+  keeps the terse formatting (generation time scales with output length). Search results also
+  get an 8,000-char budget instead of the generic 2,000, which had been silently truncating
+  later hits.
+- Verified end-to-end: a Vietnamese request returns Vietnamese lead stories (typhoon Noul at
+  force 11–12, Hanoi flooding) and an English one returns NYT/WaPo/CNBC/AP — each item dated
+  and attributed. Notably the Worker also flagged a metadata/headline date mismatch on its own
+  rather than repeating it.
 
 ### 2026-07-24 → 07-25 — Reliability pass (multi_tool, RAG recall, provider) + docs
 Root cause across most issues this session: the **Brain layer** is the least reliable tier; the

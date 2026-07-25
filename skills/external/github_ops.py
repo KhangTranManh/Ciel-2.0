@@ -75,11 +75,24 @@ def _is_sensitive_file(filepath: str) -> bool:
     return False
 
 
-def _run_git(args: list, cwd: str, timeout: int = 30) -> dict:
-    """Run a git command and return structured result."""
+# Identity Ciel commits under. Applied per-command via `git -c ...` so the Master's own
+# global git config is never modified — commits made by the agent are attributable to it,
+# while anything the Master commits by hand keeps their own name.
+CIEL_GIT_NAME = os.getenv("CIEL_GIT_NAME", "Ciel")
+CIEL_GIT_EMAIL = os.getenv("CIEL_GIT_EMAIL", "ciel@ciel.local")
+
+
+def _run_git(args: list, cwd: str, timeout: int = 30, as_ciel: bool = False) -> dict:
+    """Run a git command and return structured result.
+
+    as_ciel=True prefixes per-command identity overrides so the commit is authored by
+    Ciel (both author AND committer) without touching any stored git config.
+    """
+    prefix = (["-c", f"user.name={CIEL_GIT_NAME}", "-c", f"user.email={CIEL_GIT_EMAIL}"]
+              if as_ciel else [])
     try:
         result = subprocess.run(
-            ["git"] + args,
+            ["git"] + prefix + args,
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -178,7 +191,18 @@ def get_github_tools() -> dict:
                 except Exception:
                     pass  # Skip any errors and continue scanning
 
-            scan(search)
+            # The search path may ITSELF be a repository — scan() only inspects children,
+            # so calling this from inside a repo used to report "no repositories found".
+            if (search / ".git").exists():
+                remote_result = _run_git(["remote", "get-url", "origin"], str(search), timeout=5)
+                branch_result = _run_git(["branch", "--show-current"], str(search), timeout=5)
+                repos.append({
+                    "path": str(search.resolve()),
+                    "remote": remote_result["stdout"] if remote_result["success"] else "No remote",
+                    "branch": branch_result["stdout"] if branch_result["success"] else "unknown",
+                })
+            else:
+                scan(search)
 
             if not repos:
                 return _make_result(True, data={
@@ -467,7 +491,7 @@ def get_github_tools() -> dict:
                     _run_git(["reset", "HEAD", filepath], repo_path)
 
             # Commit
-            commit_result = _run_git(["commit", "-m", message], repo_path)
+            commit_result = _run_git(["commit", "-m", message], repo_path, as_ciel=True)
             if not commit_result["success"]:
                 return _make_result(False, code="COMMIT_FAILED",
                                     message=f"Commit failed: {commit_result['stderr']}",

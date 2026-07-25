@@ -1,11 +1,42 @@
 ﻿import json
+import re
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_openai import ChatOpenAI
 from agent_system.models.brain import Brain, TRANSIENT_ERRORS
 from agent_system.utils.logger import log
 from agent_system.utils.usage import extract_usage, format_usage
-from agent_system.config import RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL
+from agent_system.config import (
+    RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL,
+    ROUTER_ASSISTANT_ENABLED, ROUTER_ASSISTANT_PROVIDER, ROUTER_ASSISTANT_MODEL,
+    VILAO_URL, VILAO_API_KEY, LLM_REQUEST_TIMEOUT,
+)
+
+# Stage-0 deterministic gate: any of these signals means the turn almost certainly needs
+# the Brain to plan a tool/action, so we skip the assistant and go straight to the Brain.
+# An email address or a workspace path, or an action verb (EN + VI). Kept broad on purpose —
+# a false "needs Brain" only costs latency; a false "chat" would skip a real action.
+_TOOL_SIGNAL_RE = re.compile(
+    r"[\w.\-]+@[\w.\-]+\.\w+"                                          # email address
+    r"|(?:ciel_workspace|agent_output)[\\/]"                            # workspace path
+    r"|\.(?:py|txt|json|md|log|csv|pdf|docx|html|xlsx|png)\b"           # a filename token
+    r"|\b(?:send|gửi|gởi|mail|email|read|đọc|write|ghi|save|lưu|create|tạo|delete|xóa|xoá|"
+    r"run|chạy|execute|price|giá|search|tìm|scrape|git|commit|push|todo|weather|calculate|"
+    r"tính|screenshot|vision|remember|nhớ|fact)\b",
+    re.IGNORECASE)
+
+
+# Slim triage prompt for the assistant — deliberately NO persona and NO tool schema, so it
+# is fast/cheap. Its ONLY job is CHAT-vs-ESCALATE; the Brain still does all real planning.
+_ASSISTANT_TRIAGE_PROMPT = (
+    "You are a fast intent-triage step for an AI assistant that has tools (files, email, "
+    "shell, market data, web search, git, etc.).\n"
+    "Decide ONE thing about the user's message:\n"
+    "  CHAT — it can be answered with a plain conversational reply, NO tool/action needed.\n"
+    "  ESCALATE — it needs a tool, an action, data lookup, or any multi-step planning.\n"
+    "Reply with EXACTLY one word: CHAT or ESCALATE. When in doubt, reply ESCALATE."
+)
 
 def _extract_json_object(raw: str) -> str:
     """Return the first balanced top-level {...} block in `raw`.
@@ -87,6 +118,23 @@ Strict rules:
 - For Gmail search always pass resource="messages".
 - Default to chat if unclear.
 
+WORKING DIRECTORY / REPO PATH:
+- The request carries a "[WORKING DIRECTORY: ...]" note. Use that path for any tool argument that needs a repository or project location (git_status, git_diff, git_commit_and_push, git_confirm_push, git_list_repos) unless the Master explicitly names a different one.
+- NEVER stop to ask the Master "which repository?" when that note is present — you already know. Asking for information you were just given reads as amnesia.
+
+PENDING CONFIRMATION (highest priority — check this FIRST):
+- If the request carries a "[PENDING CONFIRMATION: ...]" note, an action is already staged and waiting on the Master. Resolving it OUTRANKS every other interpretation.
+- The Master's reply is an approval ("yes", "ok", "confirm", "đồng ý", "làm đi", "tiếp tục", "chốt") → route to the named tool with the arguments given in the note, exactly as listed.
+- The reply is a refusal ("no", "cancel", "không", "hủy", "thôi") → action="chat" telling the Master it was cancelled.
+- NEVER ask the Master to re-state a repo path, filename, recipient, message or any other argument that already appears in the note — they were shown it moments ago and repeating the question looks like amnesia.
+- Only if the reply is clearly a NEW, unrelated request should you ignore the pending note and route the new request normally.
+
+SEARCH QUERY LANGUAGE (stealth_search):
+- The request carries a "[USER LANGUAGE: X]" note = the language the user ACTUALLY wrote in (the rest may have been translated to English for you).
+- News / current events / weather / prices / anything with a LOCAL angle → write the query in THAT language (Vietnamese request → Vietnamese query, e.g. "tin tức nổi bật hôm nay"), so results come from that country's outlets. An English query returns foreign coverage the user never asked for.
+- USER LANGUAGE: English, or an international / technical / scientific topic with no local angle → an English query is correct.
+- NEVER put a literal date string in the query ("July 25 2026"): it matches pages that merely contain that text. Use the `timelimit` argument for recency ('d' day, 'w' week, 'm' month).
+
 PATH HANDLING FOR WRITES / CREATE FILE:
 - If the user's request does not mention a clear destination path (e.g. "ciel_workspace/..." or "agent_output/..."), the system will ask the user for the path before writing.
 - If the request already contains the path ("where"), use it directly. Do not force agent_output or any default.
@@ -111,6 +159,74 @@ class Router:
         self.log_thought = log_thought_fn
         self.persona = persona
 
+        # Optional fast front-line triage model (see architecture: assistant + Brain).
+        # Off unless ROUTER_ASSISTANT_ENABLED and a model name are set. Vilao-only wiring
+        # for now; any failure here disables it (fail-safe → Brain-only, never crash).
+        self._assistant_llm = None
+        if ROUTER_ASSISTANT_ENABLED and ROUTER_ASSISTANT_MODEL:
+            try:
+                if ROUTER_ASSISTANT_PROVIDER.lower() == "vilao":
+                    self._assistant_llm = ChatOpenAI(
+                        model=ROUTER_ASSISTANT_MODEL,
+                        api_key=VILAO_API_KEY,
+                        base_url=VILAO_URL,
+                        temperature=0.0,
+                        timeout=LLM_REQUEST_TIMEOUT,
+                    )
+                    log.system(f"Router assistant: {ROUTER_ASSISTANT_MODEL} (Vilao, triage)")
+                else:
+                    log.system(f"Router assistant provider '{ROUTER_ASSISTANT_PROVIDER}' not wired — assistant disabled.")
+            except Exception as e:
+                log.system(f"Router assistant init failed ({e}) — falling back to Brain-only routing.")
+                self._assistant_llm = None
+
+    def route(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
+        """Two-tier routing. A fast assistant triages CHAT-vs-ESCALATE for conversational
+        turns; anything with a deterministic tool signal, or that the assistant escalates,
+        goes to the full Brain planner. Assistant off (or any failure) → Brain-only, i.e.
+        exactly the previous behavior."""
+        self.log_thought("USER", "request", user_input)
+
+        if self._assistant_llm is not None:
+            # STAGE 0 — deterministic gate: obvious tool/action signals skip the assistant
+            # (no point asking; they need the Brain anyway) and pay zero assistant latency.
+            if _TOOL_SIGNAL_RE.search(user_input or ""):
+                self.log_thought("ROUTER", "tier_brain", "tool signal in request → straight to Brain.")
+            else:
+                # STAGE 1 — assistant triage on a no-signal (likely conversational) turn.
+                verdict = self._classify_with_assistant(user_input)
+                if verdict == "chat":
+                    self.log_thought("ROUTER", "tier_assistant", "assistant → CHAT (fast path).")
+                    log.brain("Routed: [CHAT] (assistant fast-path)")
+                    return {"action": "chat", "task": user_input}
+                self.log_thought("ROUTER", "tier_brain", f"assistant → {verdict} → escalating to Brain.")
+
+        # STAGE 2 — full Brain planner.
+        return self._route_brain(user_input, tool_list_str, chat_history)
+
+    def _classify_with_assistant(self, user_input: str) -> str:
+        """Return 'chat' or 'escalate'. Fail-safe: any error/ambiguity → 'escalate', so a
+        broken assistant never silently turns a real action into a chat reply."""
+        try:
+            resp = self._assistant_llm.invoke([
+                SystemMessage(content=_ASSISTANT_TRIAGE_PROMPT),
+                HumanMessage(content=user_input),
+            ])
+            self.log_thought("ROUTER", "LLM_CALL",
+                             format_usage(ROUTER_ASSISTANT_MODEL, extract_usage(resp)))
+            content = resp.content
+            if isinstance(content, list):
+                content = "".join(c.text if hasattr(c, "text") else str(c) for c in content)
+            up = (content or "").upper()
+            if "ESCALATE" in up and "CHAT" not in up:
+                return "escalate"
+            if "CHAT" in up and "ESCALATE" not in up:
+                return "chat"
+            return "escalate"  # both/neither present → ambiguous → fail-safe
+        except Exception as e:
+            self.log_thought("ROUTER", "assistant_error", f"{type(e).__name__}: {e} → escalating.")
+            return "escalate"
+
     @retry(
         stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
         wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
@@ -123,7 +239,9 @@ class Router:
             f"Retrying in {rs.next_action.sleep:.1f}s (attempt {rs.attempt_number}/{RETRY_MAX_ATTEMPTS})"
         ),
     )
-    def route(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
+    def _route_brain(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
+        """Full Brain (Opus) routing — the original route() body. Only invoked when the
+        turn escalates past the fast assistant triage (or when the assistant is off)."""
         base_prompt = f"{self.persona}\n\n{CIEL_ROUTER_PROMPT}" if self.persona else CIEL_ROUTER_PROMPT
         prompt = base_prompt.format(tool_list=tool_list_str)
         # Anchor the model to the real current date — its training data is older, so it
@@ -148,8 +266,6 @@ class Router:
         # The `chat_history` parameter is kept only for call-site/signature compatibility.
         messages.append(HumanMessage(content=user_input))
 
-        self.log_thought("USER", "request", user_input)
-        
         response = self.brain._router_llm.invoke(messages)
         self.log_thought("BRAIN", "LLM_CALL", format_usage(BRAIN_MODEL, extract_usage(response)))
         # Gemini occasionally returns content as a list of parts instead of a plain string

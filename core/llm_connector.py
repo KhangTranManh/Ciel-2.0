@@ -10,6 +10,7 @@ Architecture:
 import os
 import re
 import json
+import time
 import traceback
 import unicodedata
 from datetime import datetime
@@ -189,6 +190,10 @@ class CielCore:
         # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
         # Signature: confirm_callback(tool_name: str, preview: str, tool_args: dict) -> bool
         self.confirm_callback = None
+        # Set by a preview tool (see _PENDING_FOLLOWUPS); consumed by the next
+        # affirmation so "yes" resolves the pending action instead of reaching the
+        # Brain context-free.
+        self._pending_action = None
 
         # Live per-tier LLM call counter — incremented at the single logging chokepoint
         # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
@@ -212,6 +217,30 @@ class CielCore:
 
     # Tools that require Master's explicit Y/N approval before execution
     _HIGH_RISK_TOOLS = set(_RISK_DESCRIPTIONS.keys())
+
+    # TWO-STEP TOOLS: a tool that only PREVIEWS an action, plus the tool that actually
+    # performs it and which of the preview's args carry over. `git_commit_and_push`
+    # literally ends its output with 'Say "yes" or "confirm" to commit and push' — a
+    # promise the pipeline could not keep: the Router deliberately never sees
+    # chat_history, and RAG skips inputs under MIN_QUERY_LENGTH (15), so a bare "yes"
+    # (3) or "confirm commit" (14) reached the Brain with zero context. Observed live:
+    # the Brain answered "what is your command?" and then asked for the repo path it
+    # had itself just printed. Capturing the follow-up deterministically closes that gap.
+    _PENDING_FOLLOWUPS = {
+        "git_commit_and_push": {"tool": "git_confirm_push", "carry": ("repo_path", "message")},
+    }
+    _PENDING_TTL_SECONDS = 600     # a stale "yes" must never fire an old action
+
+    _AFFIRM_RE = re.compile(
+        r"^\s*(?:yes|y|ok|okay|sure|yep|yeah|confirm(?:ed)?|proceed|go\s*ahead|do\s*it|"
+        r"đồng\s*ý|xác\s*nhận|chốt|ok\s*nhé|làm\s*đi|tiếp\s*tục|được|ừ|uh|oke)"
+        r"(?:\s+(?:it|that|now|please|đi|nhé|luôn|commit|push|the\s+commit|and\s+push))*\s*[.!]*\s*$",
+        re.IGNORECASE)
+    _CANCEL_RE = re.compile(
+        r"^\s*(?:no|nope|cancel|abort|stop|don'?t|nevermind|never\s*mind|"
+        r"không|khong|hủy|huỷ|thôi|dừng|bỏ\s*qua)"
+        r"(?:\s+\w+)*\s*[.!]*\s*$",
+        re.IGNORECASE)
 
     # Email-sending tools and the arg holding the body that must be sanitized
     # before it leaves the system (strips internal reasoning/meta/paths).
@@ -694,6 +723,19 @@ class CielCore:
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
+        # Remember a preview tool's follow-up so a later bare "yes" can execute it
+        # (see _PENDING_FOLLOWUPS). Args come from THIS call, so the confirm step never
+        # has to re-derive a repo path or message the Brain can no longer see.
+        followup = self._PENDING_FOLLOWUPS.get(tool_name)
+        if followup and not result_text.startswith(("[TOOL_ERROR", "[CANCELLED")):
+            carried = {k: tool_args[k] for k in followup["carry"] if k in tool_args}
+            if len(carried) == len(followup["carry"]):
+                self._pending_action = {"tool": followup["tool"], "args": carried,
+                                        "ts": time.time(), "from": tool_name}
+                self._log_thought("SYSTEM", "pending_action_set",
+                                  f"{tool_name} → awaiting confirmation for "
+                                  f"{followup['tool']}({carried}).")
+
         if tool_name in {"get_fact", "save_fact", "delete_fact"}:
             return self._format_fact_result(tool_name, result_text)
 
@@ -706,18 +748,46 @@ class CielCore:
         elif tool_name == "smart_scrape":
             # Let the Worker read up to 40,000 characters of the scraped website
             clean_text = result_text[:40000]
+        elif tool_name == "stealth_search":
+            # Search hits now carry a Published date + Source per result, so a full page
+            # of results no longer fits in the generic 2,000-char budget — truncating
+            # here silently dropped the last hits before the Worker ever saw them.
+            clean_text = result_text[:8000]
         else:
             clean_text = result_text[:2000]
 
+        # Information-retrieval tools return MANY distinct facts; "absolute shortest"
+        # collapsed them into content-free generalities and silently dropped items
+        # (observed: a search covering an ongoing war summarized as "an outlook focusing
+        # on GDP, inflation and risks"). Those tools get a completeness rule instead;
+        # every other tool keeps the terse formatting (also keeps latency down, since
+        # generation time scales with output length).
+        _RETRIEVAL_TOOLS = {"stealth_search", "smart_scrape", "read_document"}
+        if tool_name in _RETRIEVAL_TOOLS:
+            lead_line = ("Turn this tool output into a clear, information-dense answer.\n")
+            rule_one = (
+                "1. COMPLETENESS OVER BREVITY: cover EVERY distinct item/finding in the raw "
+                "result — do not merge them into one vague sentence and do not silently drop any. "
+                "Keep the concrete specifics: dates, numbers, names, places, sources. "
+                "One short bullet per item; no conversational filler.\n"
+                "1b. DATES: state each item's Published date. If an item says Published: UNKNOWN, "
+                "say the date is unknown — NEVER guess or infer one. If an item is clearly older "
+                "than the user's timeframe, say how old it is instead of implying it is fresh.\n"
+                "1c. If an item has no specific content (a section/landing page), omit it rather "
+                "than writing a hollow line about it.\n")
+        else:
+            lead_line = "Format this tool output into the absolute shortest, clearest response possible.\n"
+            rule_one = "1. Be extremely concise. Give just the requested data. No conversational filler.\n"
+
         format_task = (
             f"{self.ciel_persona}\n\n"
-            f"Format this tool output into the absolute shortest, clearest response possible.\n"
+            f"{lead_line}"
             f"User's request: {user_input}\n"
             f"Tool: {tool_name}\n"
             f"Raw result:\n{clean_text}\n\n"
             f"Hint: {response_hint}\n"
             f"RULES:\n"
-            f"1. Be extremely concise. Give just the requested data. No conversational filler.\n"
+            f"{rule_one}"
             f"2. Always address the user as 'Master' at the beginning of your response.\n"
             f"3. ANTI-HALLUCINATION: ONLY use facts present in the Raw result above. "
             f"If the raw result contains an error, 'file not found', 'N/A', or is empty, "
@@ -1489,6 +1559,44 @@ RULES:
         r"\bsend it\b",
     )
 
+    # Characters/words that identify the language the user actually wrote in. Needed
+    # because the Vilao path translates the request to English before routing — after
+    # which the Brain has no way to know a "tin tức hôm nay" request came from a
+    # Vietnamese speaker, and builds an ENGLISH search query. Observed live: the same
+    # tool returns local VN coverage for "tin tức hôm nay" but Astoria/Nigeria trivia
+    # for "top news headlines July 25 2026".
+    _VN_DIACRITICS = set("ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụỳýỷỹỵ")
+    _VN_ASCII_HINTS = ("tin tuc", "hom nay", "gia vang", "the gioi", "giup toi",
+                       "cho toi", "thoi tiet", "bao cao", "tim kiem")
+
+    @classmethod
+    def _detect_language(cls, text: str) -> str:
+        """Best-effort, zero-cost language label for the ORIGINAL request."""
+        t = (text or "").lower()
+        if any(ch in cls._VN_DIACRITICS for ch in t) or any(h in t for h in cls._VN_ASCII_HINTS):
+            return "Vietnamese"
+        # Kana first: it is unique to Japanese, whereas kanji share the CJK ideograph
+        # block with Chinese (checking Chinese first mislabels Japanese text).
+        for lo, hi, name in (("぀", "ヿ", "Japanese"), ("가", "힯", "Korean"),
+                             ("Ѐ", "ӿ", "Russian"), ("一", "鿿", "Chinese")):
+            if any(lo <= ch <= hi for ch in t):
+                return name
+        return "English"
+
+    def _get_pending_action(self):
+        """The still-valid pending action, or None. Expires by TTL so a "yes" typed
+        long after the preview can never fire a stale destructive action."""
+        p = self._pending_action
+        if not p:
+            return None
+        if time.time() - p.get("ts", 0) > self._PENDING_TTL_SECONDS:
+            self._log_thought("SYSTEM", "pending_action_expired",
+                              f"{p['tool']} pending confirmation expired after "
+                              f"{self._PENDING_TTL_SECONDS}s — cleared.")
+            self._pending_action = None
+            return None
+        return p
+
     @staticmethod
     def _is_referential_send(user_input: str) -> bool:
         """True if the request refers to previously-generated content ("send this/
@@ -1534,6 +1642,35 @@ RULES:
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""
         self.chat_history.add_user_message(user_input)
+
+        # === PENDING CONFIRMATION (runs FIRST — before any routing) ===
+        # A preview tool promised the Master that "yes" would carry out the action, so
+        # an affirmation must resolve THAT action, never fall through to the Brain,
+        # which has neither chat_history nor (for such short inputs) RAG recall and
+        # therefore asks the Master to re-state details it just printed itself.
+        # The executed tool still goes through execute_tool, so its Safety-Gate Y/N
+        # remains in force — this resolves context, it does not bypass any gate.
+        pending = self._get_pending_action()
+        if pending:
+            if self._CANCEL_RE.match(user_input or ""):
+                self._pending_action = None
+                self._log_thought("SYSTEM", "pending_action_cancelled",
+                                  f"Master declined {pending['tool']} — cleared.")
+                reply = f"Cancelled. {pending['tool'].replace('_', ' ')} was not carried out, Master."
+                self.chat_history.add_ai_message(reply)
+                self._save_chat_memory()
+                return reply
+            if self._AFFIRM_RE.match(user_input or ""):
+                self._pending_action = None
+                self._log_thought("SYSTEM", "pending_action_confirmed",
+                                  f"Affirmation resolved to {pending['tool']}({pending['args']}).")
+                log.system(f"Confirmation accepted → executing {pending['tool']}")
+                reply = self.execute_tool(pending["tool"], pending["args"],
+                                          response_hint="Report the outcome of the confirmed action.",
+                                          user_input=user_input)
+                self.chat_history.add_ai_message(reply)
+                self._save_chat_memory()
+                return reply
 
         # === NEW PATH CLARIFICATION LOGIC ===
         # If user wants to write/create/save/generate a file but didn't specify where,
@@ -1581,6 +1718,31 @@ RULES:
                     enriched_input = self.worker.generate(sanitize_task)
                 except Exception:
                     pass  # fall back to original if Worker fails
+
+            # Tell the Brain which language the request was ORIGINALLY written in. Added
+            # AFTER the translate step so it survives it — otherwise the Brain only ever
+            # sees English and builds English search queries for local-news requests.
+            enriched_input = f"{enriched_input}\n\n[USER LANGUAGE: {self._detect_language(user_input)}]"
+
+            # Tell the Brain WHERE it is. Tools like git_status/git_diff take a repo_path
+            # the Brain has no way to know, so it either guessed "." or stopped to ask —
+            # non-deterministically, for the very same request (observed both live).
+            # Stating the working directory removes the guess.
+            _cwd = self.base_dir.resolve()
+            enriched_input += (f"\n\n[WORKING DIRECTORY: {_cwd} — "
+                               f"{'a git repository' if (_cwd / '.git').exists() else 'not a git repository'}. "
+                               f"Use this path for any tool needing a repo/project path unless the Master names another.]")
+
+            # If an action is still awaiting confirmation and the reply was neither a
+            # clean yes nor a clean no (handled deterministically above), tell the Brain
+            # it exists — otherwise it re-asks for details it already has. Deterministic
+            # code covers the clear cases; this note covers the phrasings it can't match.
+            _pending = self._get_pending_action()
+            if _pending:
+                enriched_input += (
+                    f"\n\n[PENDING CONFIRMATION: '{_pending['tool']}' is awaiting the Master's "
+                    f"yes/no, with these already-known arguments: {_pending['args']}. "
+                    f"Resolve THIS action — never ask the Master to re-state arguments listed here.]")
 
             # Proactive bypass for email sends: avoid calling the Brain router at all
             # when the request is clearly about sending email. This prevents the

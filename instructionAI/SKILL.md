@@ -68,6 +68,10 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
 
 5. **Gather real data BEFORE composing any email body.** Market/search/document tools run first;
    anti-fabrication rules forbid inventing prices/numbers. Claim "sent" only on a real Message Id.
+   The same principle governs retrieved data: `stealth_search` labels undated results
+   `Published: UNKNOWN … do NOT state a date`, and the tool-result formatter tells the Worker to
+   report each item's date rather than guess one. A tool must hand over the facts (date, source)
+   the answer needs — the model cannot cite what it never received.
 
 6. **`memory_ops.py` is standalone.** It reads/writes `ciel_data/facts.json` directly with zero
    imports from `core/` or `agent_system/`. Keep it that way.

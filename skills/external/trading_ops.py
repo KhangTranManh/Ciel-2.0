@@ -53,11 +53,27 @@ def fetch_market_price(symbol: str) -> str:
     except Exception as e: return f"API Error: {e}"
 
 
+def _to_binance_symbol(symbol: str) -> str:
+    """Normalize any common spelling of a crypto pair to Binance's BASEUSDT form.
+
+    The old logic stripped the separator and appended USDT unconditionally, so every
+    pair written with a USD quote — including `BTC/USD`, the exact style
+    `get_market_price` uses for XAU/USD and EUR/USD — became `BTCUSDUSDT` and failed.
+    Only a bare ticker ever worked, which is why the Brain kept guessing and the
+    self-healing loop burned retries cycling BTC/USDT → BTCUSD → BTCUSDT.
+    """
+    sym = (symbol or "").upper().replace("/", "").replace("-", "").strip()
+    for quote in ("USDT", "USDC", "USD"):        # longest first
+        if sym.endswith(quote) and len(sym) > len(quote):
+            sym = sym[: -len(quote)]
+            break
+    return f"{sym}USDT"
+
+
 def fetch_crypto_stats(symbol: str) -> str:
     """Get 24h stats for Crypto only (Binance Free API). Raw function."""
     try:
-        symbol = symbol.upper().replace("/", "").replace("-", "")
-        if not symbol.endswith("USDT"): symbol += "USDT"
+        symbol = _to_binance_symbol(symbol)
         data = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=10).json()
         if "lastPrice" in data: return f"Stats {symbol}: Price={data['lastPrice']}, Change={data['priceChangePercent']}%, High={data['highPrice']}, Low={data['lowPrice']}"
         return "Error fetching stats."
@@ -67,8 +83,7 @@ def fetch_crypto_stats(symbol: str) -> str:
 def fetch_crypto_technical(symbol: str, interval: str = "1h") -> str:
     """Get Technical indicators for Crypto only (Binance Free API). Raw function."""
     try:
-        symbol = symbol.upper().replace("/", "").replace("-", "")
-        if not symbol.endswith("USDT"): symbol += "USDT"
+        symbol = _to_binance_symbol(symbol)
         data = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100", timeout=10).json()
         if isinstance(data, dict) and "code" in data: return f"API Error: {data['msg']}"
 
