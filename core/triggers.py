@@ -40,6 +40,7 @@ given (see rule 1 in instructionAI/SKILL.md — the format is never to be change
 the tail is read, bounded by `max_bytes`, because that file grows without limit; a check
 that got slower as the log grew would eventually be a reason to turn proactivity off.
 """
+import json
 import re
 import threading
 import time
@@ -328,26 +329,317 @@ def make_repeated_failure_check(log_path, threshold: int = 3, window_seconds: fl
     return check
 
 
+def make_deferred_approval_check(deferred_store, min_items: int = 1):
+    """A background run wanted to do something that needed the Master, and stopped.
+
+    This is the visible half of the unattended permission ceiling (see
+    `core/permissions.py`): DEFER is only safe because the Master eventually hears about
+    it. Without this trigger, deferring would just be a quieter way of dropping work.
+    """
+    def check(now: float):
+        items = deferred_store.pending()
+        if len(items) < max(1, min_items):
+            return None
+        newest = max((float(i.get("last_at") or i.get("at") or 0)) for i in items)
+        return Notification(
+            # Keyed on how many are waiting, so the Master is told again when a NEW one
+            # arrives, but not merely because the old ones are still there.
+            key=f"deferred_approval:{len(items)}",
+            title=f"{len(items)} hành động nền đang chờ bạn duyệt",
+            detail=(deferred_store.describe()
+                    + f"\nChúng bị hoãn vì không có ai ở máy lúc chúng muốn chạy."),
+            action="Xem bằng 'chờ duyệt', rồi ra lệnh lại nếu vẫn muốn làm — "
+                   "Ciel không tự chạy lại lệnh cũ trên dữ liệu đã thay đổi.",
+            urgency=ASK,
+            created_at=max(now, newest),
+        )
+    return check
+
+
+# --- Group B: the clock ------------------------------------------------------------
+
+def daily_at(hour: int, minute: int, inner, state: dict = None):
+    """Wrap a check so it can only fire once per day, at or after a wall-clock time.
+
+    Lets a scheduled task be expressed as a Trigger like everything else, instead of
+    living in a second mechanism with its own semantics. Firing "at or after" rather
+    than "exactly at" matters: the engine polls, and a machine that was asleep at 08:00
+    should still get its digest when it wakes, not skip the day.
+    """
+    seen = state if state is not None else {}
+
+    def check(now: float):
+        lt = time.localtime(now)
+        today = time.strftime("%Y-%m-%d", lt)
+        if seen.get("day") == today:
+            return None
+        if (lt.tm_hour, lt.tm_min) < (hour, minute):
+            return None
+        seen["day"] = today
+        return inner(now)
+    return check
+
+
+def make_digest_check(notifier, max_items: int = 12):
+    """Deliver everything that was held back — the other half of the budget promise.
+
+    A finding demoted for budget or for having no action is only "not lost" if something
+    eventually reads it out. This drains the queue, so the digest is genuinely a summary
+    of what was suppressed rather than a second place for things to rot.
+    """
+    def check(now: float):
+        held = notifier.drain_digest()
+        if not held:
+            return None
+        lines = []
+        for h in held[-max_items:]:
+            when = time.strftime("%H:%M", time.localtime(h.get("at") or now))
+            lines.append(f"  · [{when}] {h.get('title', '?')}"
+                         + (f" — {h.get('action')}" if h.get("action") else ""))
+        more = f"\n  (và {len(held) - max_items} mục nữa)" if len(held) > max_items else ""
+        return Notification(
+            key=f"digest:{time.strftime('%Y-%m-%d', time.localtime(now))}",
+            title=f"Tóm tắt {len(held)} việc đã được giữ lại",
+            detail="\n".join(lines) + more,
+            action="Đọc lướt; mục nào cần thì bảo Ciel làm tiếp.",
+            urgency=NOTIFY,
+            created_at=now,
+        )
+    return check
+
+
+# --- Group C: the outside world ----------------------------------------------------
+# These cost network calls and can be wrong, so every one of them fires on a threshold
+# the Master set explicitly. A condition trigger without a threshold is just a timer.
+
+_PRICE_SPEC_RE = re.compile(r"^\s*([A-Za-z0-9/\-]+)\s*(>=|<=|>|<)\s*([0-9.,]+)\s*$")
+_NUM_RE = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
+
+
+def parse_price_alerts(spec: str) -> list:
+    """`"XAU/USD>2400, BTC/USDT<60000"` → [(symbol, op, threshold), …].
+
+    Unparseable entries are dropped rather than guessed at: a misread threshold would
+    either fire constantly or never, and both look like the feature working.
+    """
+    out = []
+    for part in (spec or "").split(","):
+        m = _PRICE_SPEC_RE.match(part)
+        if not m:
+            continue
+        try:
+            out.append((m.group(1).upper(), m.group(2), float(m.group(3).replace(",", ""))))
+        except ValueError:
+            continue
+    return out
+
+
+def _extract_price(text: str):
+    """Pull the first number out of a `fetch_market_price` string, or None."""
+    m = _NUM_RE.search((text or "").replace(",", ""))
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def make_price_alert_check(alerts, fetcher=None, state: dict = None):
+    """Fire when a price CROSSES a threshold — not while it merely sits past it.
+
+    The distinction is the whole feature. A level check would re-announce "gold is above
+    2400" on every poll for as long as it stays there; only the crossing is news. State
+    is per-alert and in memory, so a restart re-arms rather than replaying.
+    """
+    armed = state if state is not None else {}
+
+    def check(now: float):
+        if not alerts:
+            return None
+        if fetcher is None:
+            from skills.external.trading_ops import fetch_market_price as f
+        else:
+            f = fetcher
+        for symbol, op, threshold in alerts:
+            raw = f(symbol)
+            price = _extract_price(raw)
+            if price is None:
+                continue
+            hit = price >= threshold if op == ">=" else \
+                  price > threshold if op == ">" else \
+                  price <= threshold if op == "<=" else price < threshold
+            key = f"{symbol}{op}{threshold}"
+            was = armed.get(key)
+            armed[key] = hit
+            if not hit or was is True:
+                continue        # not crossed, or already reported while it stayed true
+            if was is None:
+                continue        # first observation only arms the alert; it is not a crossing
+            return Notification(
+                key=f"price_alert:{key}:{int(now // 3600)}",
+                title=f"{symbol} vừa vượt ngưỡng bạn đặt",
+                detail=f"Giá hiện tại {price:g} {op} {threshold:g}. Nguồn: {raw.strip()[:120]}",
+                action=f"Bảo Ciel phân tích {symbol} nếu bạn muốn xem kỹ hơn.",
+                urgency=NOTIFY,
+                created_at=now,
+            )
+        return None
+    return check
+
+
+def make_important_sender_check(senders, fetcher=None, state: dict = None):
+    """An unread email from someone on a list the Master wrote — not from anyone.
+
+    Filtering by sender is what separates this from a notification for every email, which
+    is a thing the Master's own mail client already does better.
+    """
+    seen = state if state is not None else set()
+    wanted = [s.strip().lower() for s in (senders or []) if s.strip()]
+
+    def check(now: float):
+        if not wanted:
+            return None
+        if fetcher is None:
+            from .scheduler import _fetch_unread_emails as f
+        else:
+            f = fetcher
+        text = f(10) or ""
+        if text.startswith("[Gmail"):
+            return None                     # an auth/API error is repeated_failure's job
+        for line in text.splitlines():
+            low = line.lower()
+            who = next((s for s in wanted if s in low), None)
+            if not who or line in seen:
+                continue
+            seen.add(line)
+            return Notification(
+                key=f"important_email:{who}:{abs(hash(line)) % 10**8}",
+                title=f"Mail chưa đọc từ {who}",
+                detail=line.strip()[:200],
+                action="Bảo Ciel đọc hoặc trả lời nếu cần.",
+                urgency=NOTIFY,
+                created_at=now,
+            )
+        return None
+    return check
+
+
+def make_stale_todo_check(todo_path, min_age_days: float = 7.0, max_show: int = 3):
+    """Todos that have been open a long time.
+
+    Note what this is NOT: a due-date reminder. `productivity_ops` todos carry only
+    `created`, with no due field, so age is the only honest signal available — promising
+    deadline reminders on a store that has no deadlines would be a lie in the UI.
+    """
+    def check(now: float):
+        try:
+            raw = json.loads(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
+        except Exception:
+            return None
+        cutoff = now - min_age_days * 86400.0
+        stale = []
+        for t in raw if isinstance(raw, list) else []:
+            if not isinstance(t, dict) or t.get("done"):
+                continue
+            try:
+                created = time.mktime(time.strptime(str(t.get("created", ""))[:19],
+                                                    "%Y-%m-%dT%H:%M:%S"))
+            except Exception:
+                continue
+            if created <= cutoff:
+                stale.append((created, t))
+        if not stale:
+            return None
+        stale.sort()
+        oldest_days = int((now - stale[0][0]) / 86400.0)
+        listing = "\n".join(f"  · #{t.get('id')} {str(t.get('task'))[:70]}"
+                            for _, t in stale[:max_show])
+        return Notification(
+            key=f"stale_todo:{len(stale)}:{int(now // 86400)}",
+            title=f"{len(stale)} việc trong todo đã để lâu",
+            detail=f"{listing}\nCũ nhất: {oldest_days} ngày (ngưỡng {int(min_age_days)} ngày).",
+            action="Bảo Ciel 'complete_todo <id>' nếu xong, hoặc bỏ qua nếu không còn cần.",
+            urgency=NOTIFY,
+            created_at=now,
+        )
+    return check
+
+
+# --- assembly ----------------------------------------------------------------------
+
+def build_triggers(*, enabled_names=None, task_store=None, log_path=None, notifier=None,
+                   deferred_store=None, todo_path=None,
+                   unfinished_min_age: float = 1800.0,
+                   cost_usd_limit: float = 0.0, cost_token_limit: int = 0,
+                   failure_threshold: int = 3,
+                   price_alerts=(), important_senders=(),
+                   stale_todo_days: float = 7.0,
+                   digest_hour: int = 8, digest_minute: int = 0) -> list:
+    """Build exactly the triggers named in `enabled_names`, and nothing else.
+
+    Opt-in by name rather than a blacklist for the same reason skills are: this list
+    will grow, and a default-on trigger added later would start talking without anyone
+    choosing it. A trigger whose dependency is missing (no store, no thresholds) is
+    dropped silently — asking for `price_alert` with no thresholds configured should be
+    a no-op, not a crash at start-up.
+    """
+    wanted = set(enabled_names or ())
+    specs = []
+
+    def add(name, check, every, cooldown, ok=True):
+        if name in wanted and ok and check is not None:
+            specs.append(Trigger(name=name, check=check, every_seconds=every,
+                                 cooldown_seconds=cooldown))
+
+    # Group A — Ciel watching itself.
+    # `is not None` everywhere, never a truthiness test: `DeferredStore` defines
+    # __len__, so an EMPTY store is falsy — and empty is its normal state. Testing it
+    # for truth silently dropped the one trigger whose whole job is to report on it.
+    add("unfinished_task",
+        make_unfinished_task_check(task_store, unfinished_min_age)
+        if task_store is not None else None, 300.0, 6 * 3600.0)
+    add("daily_cost",
+        make_daily_cost_check(log_path, cost_usd_limit, cost_token_limit)
+        if log_path is not None else None, 900.0, 12 * 3600.0)
+    add("repeated_failure",
+        make_repeated_failure_check(log_path, failure_threshold)
+        if log_path is not None else None, 600.0, 2 * 3600.0)
+    add("deferred_approval",
+        make_deferred_approval_check(deferred_store)
+        if deferred_store is not None else None, 300.0, 3 * 3600.0)
+
+    # Group B — the clock.
+    add("digest",
+        daily_at(digest_hour, digest_minute, make_digest_check(notifier))
+        if notifier is not None else None, 300.0, 12 * 3600.0)
+    if "morning_digest" in wanted:
+        # Imported lazily: scheduler.py pulls in Gmail/trading/Worker, none of which
+        # should be loaded just to build a trigger list that may not include this one.
+        from .scheduler import make_morning_digest_check
+        add("morning_digest",
+            daily_at(digest_hour, digest_minute, make_morning_digest_check()),
+            300.0, 12 * 3600.0)
+
+    # Group C — the outside world, each behind a threshold the Master set.
+    add("price_alert", make_price_alert_check(list(price_alerts)) if price_alerts else None,
+        600.0, 1800.0)
+    add("important_email",
+        make_important_sender_check(list(important_senders)) if important_senders else None,
+        900.0, 1800.0)
+    add("stale_todo",
+        make_stale_todo_check(todo_path, stale_todo_days) if todo_path is not None else None,
+        6 * 3600.0, 24 * 3600.0)
+
+    return specs
+
+
 def build_group_a(task_store, log_path, *, enabled_names=None,
                   unfinished_min_age: float = 1800.0,
                   cost_usd_limit: float = 0.0, cost_token_limit: int = 0,
                   failure_threshold: int = 3) -> list:
-    """The self-monitoring set. `enabled_names=None` means none — proactivity is opt-in.
-
-    Opt-in by name rather than a blacklist for the same reason skills are: this list
-    will grow, and a default-on trigger added later would start talking without anyone
-    choosing it.
-    """
-    wanted = set(enabled_names or ())
-    specs = [
-        Trigger(name="unfinished_task",
-                check=make_unfinished_task_check(task_store, unfinished_min_age),
-                every_seconds=300.0, cooldown_seconds=6 * 3600.0),
-        Trigger(name="daily_cost",
-                check=make_daily_cost_check(log_path, cost_usd_limit, cost_token_limit),
-                every_seconds=900.0, cooldown_seconds=12 * 3600.0),
-        Trigger(name="repeated_failure",
-                check=make_repeated_failure_check(log_path, failure_threshold),
-                every_seconds=600.0, cooldown_seconds=2 * 3600.0),
-    ]
-    return [t for t in specs if t.name in wanted]
+    """Back-compat shim for the Group-A-only call site. Prefer `build_triggers`."""
+    return build_triggers(enabled_names=enabled_names, task_store=task_store,
+                          log_path=log_path, unfinished_min_age=unfinished_min_age,
+                          cost_usd_limit=cost_usd_limit, cost_token_limit=cost_token_limit,
+                          failure_threshold=failure_threshold)

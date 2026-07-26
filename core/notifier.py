@@ -241,17 +241,22 @@ class Notifier:
 
     def __init__(self, state_path=None, channels=(), daily_budget: int = 8,
                  default_cooldown: float = 3600.0, ask_escalate_seconds: float = 1800.0,
-                 fallback_channel: str = "telegram"):
+                 fallback_channel: str = "telegram", repeat_limit: int = 4,
+                 repeat_reset_seconds: float = 7 * 86400.0):
         self.state_path = state_path
         self.channels = list(channels)
         self.daily_budget = int(daily_budget)
         self.default_cooldown = float(default_cooldown)
         self.ask_escalate_seconds = float(ask_escalate_seconds)
         self.fallback_channel = fallback_channel
+        # After this many interrupts about the SAME key, stop interrupting about it.
+        self.repeat_limit = int(repeat_limit)
+        self.repeat_reset_seconds = float(repeat_reset_seconds)
         self._lock = threading.RLock()
         self._last_sent = {}        # key -> ts of the last interrupt for that key
         self._digest = []           # notifications waiting for the next digest
         self._pending_ack = {}      # key -> {"at": ts, "note": {...}} for ASK escalation
+        self._repeats = {}          # key -> [times interrupted, last interrupt ts]
         self._day = ""
         self._count = 0             # interrupts sent today
         self._load()
@@ -273,12 +278,16 @@ class Notifier:
             self._digest = [d for d in (raw.get("digest") or []) if isinstance(d, dict)]
             self._pending_ack = {k: v for k, v in (raw.get("pending_ack") or {}).items()
                                  if isinstance(v, dict)}
+            self._repeats = {k: [int(v[0]), float(v[1])]
+                             for k, v in (raw.get("repeats") or {}).items()
+                             if isinstance(v, (list, tuple)) and len(v) == 2}
             self._day = raw.get("day") or ""
             self._count = int(raw.get("count") or 0)
         except Exception:
             # A corrupt state file must not silence notifications, and must not crash
             # start-up. Losing cooldown history costs at most one duplicate message.
             self._last_sent, self._digest, self._pending_ack = {}, [], {}
+            self._repeats = {}
             self._day, self._count = "", 0
 
     def _save_locked(self):
@@ -290,6 +299,7 @@ class Notifier:
                 "last_sent": self._last_sent,
                 "digest": self._digest[-_DIGEST_MAX:],
                 "pending_ack": self._pending_ack,
+                "repeats": self._repeats,
                 "day": self._day,
                 "count": self._count,
             }, ensure_ascii=False), encoding="utf-8")
@@ -329,7 +339,20 @@ class Notifier:
                 left = int(window - (now - last))
                 return Outcome("suppressed", reason=f"cooldown {left}s left")
 
-            # 3. Budget. Deterministic, counted in Python — never a request that the
+            # 3. Feedback. If the same finding has interrupted this many times and is
+            #    STILL being raised, the condition has outlived the Master's interest in
+            #    it — a stuck task they have decided not to finish, a threshold that no
+            #    longer means anything. Repeating it further only teaches them to ignore
+            #    the channel, so it goes quiet without going away. Muting the KEY rather
+            #    than the trigger is deliberate: this stuck task falls silent, a
+            #    different one still gets through.
+            if self._is_muted_locked(note.key, now):
+                self._push_digest_locked(note)
+                self._save_locked()
+                return Outcome("digest",
+                               reason=f"muted after {self.repeat_limit} unheeded repeats")
+
+            # 4. Budget. Deterministic, counted in Python — never a request that the
             #    model restrain itself. Over budget, the message still survives, it
             #    just stops being an interruption.
             if self._count >= self.daily_budget:
@@ -337,13 +360,14 @@ class Notifier:
                 self._save_locked()
                 return Outcome("digest", reason=f"daily budget {self.daily_budget} spent")
 
-            # 4. Route: first live channel that actually accepts it.
+            # 5. Route: first live channel that actually accepts it.
             for ch in self.channels:
                 if not ch.is_live(now):
                     continue
                 if ch.send(note, now):
                     self._last_sent[note.key] = now
                     self._count += 1
+                    self._bump_repeat_locked(note.key, now)
                     if urgency == ASK:
                         self._pending_ack[note.key] = {
                             "at": now, "channel": ch.name, "text": note.render(),
@@ -351,10 +375,42 @@ class Notifier:
                     self._save_locked()
                     return Outcome("delivered", channel=ch.name)
 
-            # 5. Nobody home and no fallback worked — hold it rather than drop it.
+            # 6. Nobody home and no fallback worked — hold it rather than drop it.
             self._push_digest_locked(note)
             self._save_locked()
             return Outcome("digest", reason="no live channel")
+
+    # ------------------------------------------------------------- feedback
+    def _is_muted_locked(self, key: str, now: float) -> bool:
+        rec = self._repeats.get(key)
+        if not rec:
+            return False
+        count, last = rec
+        # A long quiet spell means the condition went away and came back — that is a new
+        # event, not the old one nagging, so the count starts over.
+        if (now - last) > self.repeat_reset_seconds:
+            self._repeats.pop(key, None)
+            return False
+        return count >= self.repeat_limit
+
+    def _bump_repeat_locked(self, key: str, now: float):
+        rec = self._repeats.get(key)
+        if rec and (now - rec[1]) <= self.repeat_reset_seconds:
+            self._repeats[key] = [rec[0] + 1, now]
+        else:
+            self._repeats[key] = [1, now]
+
+    def muted_keys(self, now: float) -> list:
+        with self._lock:
+            return [k for k in list(self._repeats) if self._is_muted_locked(k, now)]
+
+    def unmute(self, key: str) -> bool:
+        """Let a silenced finding speak again — the Master changed their mind."""
+        with self._lock:
+            if self._repeats.pop(key, None) is None:
+                return False
+            self._save_locked()
+            return True
 
     def _push_digest_locked(self, note: Notification):
         self._digest.append({

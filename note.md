@@ -25,13 +25,12 @@ being asked to compensate in prose.
 | **3 — Permissions** | Approval was binary and arrived mid-execution, so "no" left work half-done. | ✅ `core/permissions.py` |
 | **4 — Context discipline** | **99% of every Brain call is fixed overhead** (4,291 tok: router prompt 37%, tool list 33%, persona 28%, the actual request **0.4%**). Injections are added ad hoc in `process()`; there is no single assembler and no token budget. | ⬜ measured, not built |
 | **5 — Ergonomics** | A long request cannot be interrupted — `main.py` is a blocking `input()` loop, so the only way out of a 566s call is killing the process. | ⬜ not started |
-| **6 — Proactivity** | Ciel only ever answers. It could fire on a clock, but never on a *condition* — so it could say "good morning" and not "that job is still stuck". | 🟡 Group A done (`core/notifier.py`, `core/triggers.py`); condition triggers on the outside world pending |
-| **7 — User model** | The fact vault is **pull-only and empty**: nothing injects facts into context, so the model must guess an exact snake_case key *and* choose to call `get_fact`. Proactivity without this is spam. | ⬜ next |
+| **6 — Proactivity** | Ciel only ever answers. It could fire on a clock, but never on a *condition* — so it could say "good morning" and not "that job is still stuck". | ✅ `core/notifier.py`, `core/triggers.py` — 9 triggers in 3 groups, unattended permission ceiling, feedback muting |
+| **7 — User model** | The fact vault is **pull-only and empty**: nothing injects facts into context, so the model must guess an exact snake_case key *and* choose to call `get_fact`. Proactivity without this is spam. | ✅ `core/user_model.py` — bounded profile injected into prompts, learned unprompted behind a free gate |
 
-Tiers 6 and 7 were promoted ahead of 4 and 5 deliberately (see the 2026-07-26 entry).
-7 should land before the rest of 6: what makes an interruption welcome is knowing what
-this person cares about, and the morning digest already proves the point — it sends the
-same three forex pairs every day because it has no way to know.
+Tiers 6 and 7 were promoted ahead of 4 and 5 deliberately: 4 and 5 only optimise what
+already runs, while 6 and 7 add behaviour that never existed. Both are now complete;
+**4 and 5 are what remain**, and 4 is still the hard blocker for local/small models.
 
 Not a tier, but done alongside: **parallel tool execution** (`core/parallel.py`).
 
@@ -139,6 +138,107 @@ to a component that only ever emits JSON. The 4,291-token floor is also the hard
 for small/local models — a 4K-context model cannot run this at all.
 
 ## Changelog (most recent first)
+
+### 2026-07-26 — Tiers 6 and 7 completed
+
+**Tier 6 — the rest of proactivity.** Nine triggers in three groups: A watches Ciel
+itself, B is the clock, C is the outside world behind thresholds the Master set. Four
+things landed with it:
+
+- **Unattended permission ceiling.** A trigger firing at 03:00 has nobody to ask, so
+  `decide(..., attended=False)` returns a fourth decision, `DEFER`. Session grants, plan
+  approvals and even `DISABLE_SAFETY_GATE` are ignored there — every one of them is
+  evidence a human agreed *while present*, and none of that transfers to a background
+  run. The flag is **thread-local**, because a plain attribute would let the scheduler
+  thread downgrade a foreground request's confirmations mid-flight, and it is propagated
+  explicitly into parallel workers: a safety control that fails open in a worker thread
+  is worse than none. Verified live — the same `delete_file` call asks when attended and
+  defers when not, with the confirm callback never firing.
+- **`DeferredStore` deliberately does not replay.** A mutating action decided against
+  03:00's world is not the same action at 09:00, and approving it from a one-line summary
+  is approving a fragment — the exact failure Tier 3 removed. It records, reports, and
+  lets the Master re-issue.
+- **The digest is now read out.** Findings demoted for budget were only "not lost" if
+  something eventually drains them; `make_digest_check` does.
+- **Feedback.** After `PROACTIVE_REPEAT_LIMIT` interrupts about the *same* finding that
+  is still being raised, it goes quiet. Muted per **key**, not per trigger, so one stuck
+  task falls silent while a different one still gets through.
+
+`_morning_digest` became a declared trigger, so there is now one delivery mechanism
+instead of two — and the scheduler skips its 08:00 clock task when the engine owns it,
+since two mechanisms delivering one brief is a double-send the Notifier cannot dedupe.
+
+**Tier 7b — learning without being asked.** `assess_preference()` is free Python and
+skips one-off wording ("hôm nay", "lần này") outright, so an ordinary turn spends
+nothing; only explicit durable wording buys one extraction call. **Python decides the
+kind** — letting the model self-report authority would make the authority rule
+meaningless, since it would simply claim `stated` and overwrite anything. It runs on a
+daemon thread from the top of `process()`: measured, the reply returns in **0.8 ms**
+while a real extraction takes 5–8 s.
+
+Live, against the real model:
+
+```
+"từ giờ mọi báo cáo phải ngắn gọn, có số liệu…"  -> 1 trait, 8.5s   (background)
+"đừng bao giờ gửi mail cho t sau 10 giờ tối"     -> 1 trait, 5.0s
+"hôm nay t bận nên trả lời ngắn thôi"            -> 0 trait, 0.0s   gate skipped it
+"đọc file note.md giúp t"                        -> 0 trait, 0.0s
+```
+
+**The bug the suite caught:** `DeferredStore` defines `__len__`, so an **empty** store is
+falsy — and empty is its normal state. `if deferred_store` therefore dropped the one
+trigger whose entire job is to report on it, precisely when there was nothing to report
+yet. Now `is not None` everywhere.
+
+Verified: `backtest/test_proactive.py` **148 assertions**, `backtest/test_user_model.py`
+**108 assertions**, both LLM-free. Plus live runs on the real core for the unattended
+ceiling, thread-locality, trigger wiring and end-to-end learning.
+
+### 2026-07-26 — Tier-7a: memory that pushes instead of waiting to be asked
+
+`core/user_model.py`. The diagnosis first: `facts.json` has been `{}` this entire
+project, and that is what the design produces. The vault is **pull-only** — recall needs
+the model to guess an exact snake_case key *and* decide to call `get_fact`; writing needs
+the Master to say "remember this" out loud. A memory that only works when someone
+remembers to use it is not memory. Tier 7a is the push side.
+
+**The two stores are split by what happens to them, not by what they hold.** The moment
+a store is auto-injected, everything in it goes to the provider on every call — including
+third-party gateways. So `facts.json` keeps credentials and is never injected, while
+`user_model.json` is injected and **refuses** to hold credentials (`looks_like_secret`,
+checked on key *and* value).
+
+Three rules stop a profile from rotting: **authority** (`stated` > `inferred` >
+`observed`, and a lower authority can never overwrite a higher one, so a bad inference
+cannot quietly replace an instruction), **decay** (non-stated traits fade on a half-life
+unless re-observed — "I'm busy today" must not become a permanent trait), and a **hard
+token ceiling** (`render()` truncates strongest-first; this is a fixed tax on every call
+that carries it, the exact pattern Tier 4 exists to control).
+
+**Two real bugs the suite caught, both at the security boundary:**
+
+- `\bcvv\b` did **not** match `card_cvv`, and `\bpin\b` did not match `bank_pin` —
+  because `_` is a word character, so there is no `\b` before `cvv`. Both credentials
+  were being **accepted into the store that gets injected into every prompt**. Fixed by
+  normalising separators to spaces before matching.
+- `normalize_key` produced `preferred___language` from `Preferred   Language`, so two
+  spellings of one idea became two traits — and the authority/contradiction rules only
+  work when the same idea lands on one key. Fixed by collapsing underscore runs.
+
+Verified: `backtest/test_user_model.py` — **63 assertions, no LLM**, months of decay
+simulated instantly. Plus a live run on the real `CielCore`: empty profile injects
+**0 tokens** and produces a byte-identical prompt; a 3-trait profile costs **110 tokens**
+against a 250 budget and reaches both the chat prompt and the tool-format prompt;
+`wifi_password` was refused and appears nowhere in either; `USER_MODEL_ENABLED=false`
+restores the exact pre-Tier-7 prompt.
+
+Deliberately **not** injected into the Router: at 1,591 tokens it is already 37% of a
+Brain call, and a profile changes *how* an answer reads far more often than *which tool*
+is right. Revisit in Tier 4, once one assembler owns the budget.
+
+Next (7b): the write path that notices a preference **without being told** — a
+deterministic gate decides whether a turn plausibly contained one, and only then does a
+single extraction call happen. Until then the profile only fills via `remember()`.
 
 ### 2026-07-26 — Tier-6 Group A: Ciel speaks first, about itself
 

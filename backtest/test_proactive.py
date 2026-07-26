@@ -14,6 +14,7 @@ here assert that the ROUTING decision was right, which is the part that is ours.
 Run from the Ciel 2.0 directory:
     ./myenv/Scripts/python.exe -m backtest.test_proactive
 """
+import json
 import os
 import shutil
 import sys
@@ -34,10 +35,13 @@ from core.notifier import (          # noqa: E402
     ASK, NOTIFY, SILENT, Channel, CliChannel, Notification, Notifier, Presence,
 )
 from core.triggers import (          # noqa: E402
-    Trigger, TriggerEngine, build_group_a, make_daily_cost_check,
-    make_repeated_failure_check, make_unfinished_task_check,
+    Trigger, TriggerEngine, build_group_a, build_triggers, daily_at, make_daily_cost_check,
+    make_deferred_approval_check, make_digest_check, make_important_sender_check,
+    make_price_alert_check, make_repeated_failure_check, make_stale_todo_check,
+    make_unfinished_task_check, parse_price_alerts,
 )
 from core.task_state import TaskStore   # noqa: E402
+from core.permissions import Decision, DeferredStore, PermissionPolicy   # noqa: E402
 
 
 HOUR = 3600.0
@@ -458,6 +462,271 @@ def test_build_group_a(tmp):
           all(t.every_seconds > 0 and t.cooldown_seconds > t.every_seconds for t in got))
 
 
+def test_repeat_muting(tmp):
+    print("\n[13] Feedback — a finding the Master keeps ignoring goes quiet")
+    ch = FakeChannel("app")
+    n = make_notifier(tmp, [ch], repeat_limit=3, default_cooldown=10.0)
+
+    t = T0
+    for i in range(3):
+        out = n.deliver(note(key="stuck"), t)
+        check(f"repeat {i + 1} still interrupts", out.status == "delivered", out.reason)
+        t += 20
+
+    out = n.deliver(note(key="stuck"), t)
+    check("past the limit it drops to the digest instead of interrupting",
+          out.status == "digest" and len(ch.sent) == 3, out.reason)
+    check("the reason names the mechanism, not just 'suppressed'",
+          "unheeded" in out.reason, out.reason)
+    check("the finding is still recoverable from the digest",
+          any(d["key"] == "stuck" for d in n.peek_digest()))
+    check("muted_keys reports it", n.muted_keys(t) == ["stuck"])
+
+    check("a DIFFERENT finding is unaffected — muting is per key, not per trigger",
+          n.deliver(note(key="fresh"), t).status == "delivered")
+
+    check("unmute lets it speak again", n.unmute("stuck")
+          and n.deliver(note(key="stuck"), t + 100).status == "delivered")
+
+    # A condition that goes away and comes back much later is news again.
+    n2 = make_notifier(tmp, [FakeChannel("app")], repeat_limit=2,
+                       default_cooldown=10.0, repeat_reset_seconds=1000.0)
+    n2.deliver(note(key="x"), T0)
+    n2.deliver(note(key="x"), T0 + 20)
+    check("muted after the limit", n2.deliver(note(key="x"), T0 + 40).status == "digest")
+    check("a long silence re-arms it — that is a new event, not the old one nagging",
+          n2.deliver(note(key="x"), T0 + 5000).status == "delivered")
+
+
+def test_digest_trigger(tmp):
+    print("\n[14] Digest — the other half of the budget promise")
+    ch = FakeChannel("app")
+    n = make_notifier(tmp, [ch], daily_budget=1)
+    n.deliver(note(key="d1"), T0)                       # spends the budget
+    n.deliver(note(key="d2"), T0 + 1)                   # -> digest
+    n.deliver(note(key="d3", action=""), T0 + 2)        # -> digest (no action)
+
+    chk = make_digest_check(n)
+    out = chk(T0 + 100)
+    check("the digest reports everything that was held back", out is not None)
+    check("...and says how many", out and "2 việc" in out.title, out.title if out else "")
+    check("it lists the held-back titles", out and out.detail.count("·") == 2)
+    check("draining empties the queue — held findings must not rot there",
+          n.peek_digest() == [] and chk(T0 + 200) is None)
+
+    check("nothing held back means no digest is sent", make_digest_check(n)(T0) is None)
+
+
+def test_daily_at(tmp):
+    print("\n[15] daily_at — a clock task expressed as a trigger")
+    fired = []
+    state = {}
+    inner = lambda now: note(key=f"clock{int(now)}")     # noqa: E731
+    gate = daily_at(8, 0, lambda now: (fired.append(now), inner(now))[1], state)
+
+    seven = time.mktime((2026, 7, 26, 7, 30, 0, 0, 0, -1))
+    check("before the hour, nothing happens", gate(seven) is None and not fired)
+
+    eight = time.mktime((2026, 7, 26, 8, 0, 0, 0, 0, -1))
+    check("at the hour it fires", gate(eight) is not None and len(fired) == 1)
+    check("and not again the same day", gate(eight + 3600) is None and len(fired) == 1)
+
+    tomorrow = time.mktime((2026, 7, 27, 9, 15, 0, 0, 0, -1))
+    check("the next day it fires again", gate(tomorrow) is not None and len(fired) == 2)
+
+    # A machine asleep at 08:00 must still get its digest when it wakes.
+    late_state = {}
+    late = daily_at(8, 0, inner, late_state)
+    check("a late first poll still fires that day, rather than skipping it",
+          late(time.mktime((2026, 7, 28, 14, 0, 0, 0, 0, -1))) is not None)
+
+
+def test_price_alert(tmp):
+    print("\n[16] Price alerts — the CROSSING is the news, not the level")
+    check("specs are parsed", parse_price_alerts("XAU/USD>2400, BTC/USDT<60000")
+          == [("XAU/USD", ">", 2400.0), ("BTC/USDT", "<", 60000.0)])
+    check("garbage is dropped, never guessed at",
+          parse_price_alerts("nonsense, XAU/USD??, >5") == [])
+
+    prices = {"XAU/USD": "Giá XAU/USD: 2350.00 USD"}
+    chk = make_price_alert_check([("XAU/USD", ">", 2400.0)],
+                                 fetcher=lambda s: prices[s], state={})
+    check("below the threshold says nothing", chk(T0) is None)
+
+    prices["XAU/USD"] = "Giá XAU/USD: 2450.00 USD"
+    out = chk(T0 + 600)
+    check("crossing it fires", out is not None)
+    check("the message carries the real number", out and "2450" in out.detail)
+
+    check("staying above it does NOT fire again", chk(T0 + 1200) is None)
+    prices["XAU/USD"] = "Giá XAU/USD: 2100.00 USD"
+    check("falling back says nothing", chk(T0 + 1800) is None)
+    prices["XAU/USD"] = "Giá XAU/USD: 2500.00 USD"
+    check("crossing again IS news", chk(T0 + 2400) is not None)
+
+    # First observation must only arm the alert — otherwise every restart re-announces.
+    armed_fresh = make_price_alert_check([("XAU/USD", ">", 2400.0)],
+                                         fetcher=lambda s: "Giá: 2450.00", state={})
+    check("the very first reading arms rather than fires", armed_fresh(T0) is None)
+
+    bad = make_price_alert_check([("X", ">", 1.0)], fetcher=lambda s: "no number here",
+                                 state={})
+    check("an unparseable price is skipped, not crashed on", bad(T0) is None)
+
+
+def test_important_email(tmp):
+    print("\n[17] Important senders — a list the Master wrote, not every email")
+    mail = ("- From: Boss <boss@corp.com> | Subject: quarterly\n"
+            "- From: noreply@spam.io | Subject: sale")
+    chk = make_important_sender_check(["boss@corp.com"], fetcher=lambda n: mail, state=set())
+    out = chk(T0)
+    check("mail from the list fires", out is not None and "boss@corp.com" in out.title)
+    check("the same mail does not fire twice", chk(T0 + 60) is None)
+
+    check("mail from nobody on the list is ignored",
+          make_important_sender_check(["x@y.z"], fetcher=lambda n: mail, state=set())(T0) is None)
+    check("an empty list means the trigger is inert",
+          make_important_sender_check([], fetcher=lambda n: mail)(T0) is None)
+    check("a Gmail auth error is not reported here — that is repeated_failure's job",
+          make_important_sender_check(["boss@corp.com"],
+                                      fetcher=lambda n: "[Gmail Error] invalid_grant",
+                                      state=set())(T0) is None)
+
+
+def test_stale_todo(tmp):
+    print("\n[18] Stale todos — age, because the store has no due dates")
+    p = Path(tmp) / "todos.json"
+    old = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(T0 - 20 * 86400))
+    new = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(T0 - 3600))
+    p.write_text(json.dumps([
+        {"id": 1, "task": "việc để lâu", "done": False, "created": old},
+        {"id": 2, "task": "việc mới", "done": False, "created": new},
+        {"id": 3, "task": "đã xong từ lâu", "done": True, "created": old},
+    ]), encoding="utf-8")
+
+    out = make_stale_todo_check(p, min_age_days=7)(T0)
+    check("an old open todo is raised", out is not None)
+    check("only ONE is counted — recent and completed ones do not qualify",
+          out and "1 việc" in out.title, out.title if out else "")
+    check("the age is reported honestly against the threshold",
+          out and "20 ngày" in out.detail and "7 ngày" in out.detail)
+    check("a high threshold silences it", make_stale_todo_check(p, min_age_days=90)(T0) is None)
+    check("a missing todo file is silence, not a crash",
+          make_stale_todo_check(Path(tmp) / "nope.json")(T0) is None)
+
+
+def test_unattended_permissions(tmp):
+    print("\n[19] Unattended ceiling — silence must never resolve to consent")
+    pol = PermissionPolicy(risky_names={"delete_file", "send_gmail_message"})
+
+    check("attended: a risky tool asks",
+          pol.decide("delete_file", {"p": "x"})[0] == Decision.ASK)
+    check("UNATTENDED: the same tool defers instead",
+          pol.decide("delete_file", {"p": "x"}, attended=False)[0] == Decision.DEFER)
+    check("read-only tools still run unattended",
+          pol.decide("read_file", {}, attended=False)[0] == Decision.AUTO)
+
+    pol.grant_for_session("delete_file")
+    check("a session grant does NOT transfer to an unattended run",
+          pol.decide("delete_file", {"p": "x"}, attended=False)[0] == Decision.DEFER)
+    pol.grant_for_plan([{"tool_name": "delete_file", "tool_args": {"p": "x"}}])
+    check("a plan approval does NOT transfer either",
+          pol.decide("delete_file", {"p": "x"}, attended=False)[0] == Decision.DEFER)
+
+    open_gate = PermissionPolicy(risky_names={"delete_file"}, gate_disabled=True)
+    check("attended + open gate: it runs",
+          open_gate.decide("delete_file", {}, attended=True)[0] == Decision.AUTO)
+    check("DISABLE_SAFETY_GATE means 'stop asking', not 'act unsupervised'",
+          open_gate.decide("delete_file", {}, attended=False)[0] == Decision.DEFER)
+
+    denied = PermissionPolicy(risky_names={"delete_file"}, deny_names={"delete_file"})
+    check("DENY still outranks everything, unattended included",
+          denied.decide("delete_file", {}, attended=False)[0] == Decision.DENY)
+
+    os.environ["CIEL_UNATTENDED_AUTO_TOOLS"] = "send_gmail_message"
+    try:
+        opted = PermissionPolicy(risky_names={"delete_file", "send_gmail_message"})
+        check("the escape hatch is per tool and explicit",
+              opted.decide("send_gmail_message", {}, attended=False)[0] == Decision.AUTO
+              and opted.decide("delete_file", {}, attended=False)[0] == Decision.DEFER)
+        hatch_vs_deny = PermissionPolicy(risky_names={"send_gmail_message"},
+                                         deny_names={"send_gmail_message"})
+        check("...and cannot be used to route around the deny list",
+              hatch_vs_deny.decide("send_gmail_message", {}, attended=False)[0] == Decision.DENY)
+    finally:
+        os.environ.pop("CIEL_UNATTENDED_AUTO_TOOLS", None)
+
+    plan = [{"tool_name": "read_file", "tool_args": {}},
+            {"tool_name": "delete_file", "tool_args": {"p": "x"}}]
+    review = PermissionPolicy(risky_names={"delete_file"}).review_plan(plan, attended=False)
+    check("review_plan reports the deferred steps so the plan can be stopped whole",
+          review[Decision.DEFER] == ["delete_file"] and review[Decision.ASK] == [])
+
+
+def test_deferred_store(tmp):
+    print("\n[20] Deferred store — record, tell, and deliberately do NOT replay")
+    d = DeferredStore(Path(tmp) / "deferred.json")
+    d.add("delete_file", {"path": "a.txt"}, reason="needs approval", source="trigger", now=T0)
+    check("a blocked action is recorded", len(d) == 1)
+
+    d.add("delete_file", {"path": "a.txt"}, now=T0 + 60)
+    check("an identical repeat collapses onto one entry", len(d) == 1)
+    check("...but the attempt count rises", d.pending()[0]["hits"] == 2)
+
+    d.add("delete_file", {"path": "b.txt"}, now=T0 + 90)
+    check("a DIFFERENT argument is a different action", len(d) == 2)
+
+    text = d.describe()
+    check("describe is human-readable and names the tool", "delete_file" in text)
+    check("...and shows repeated attempts", "2 lần" in text)
+
+    d2 = DeferredStore(Path(tmp) / "deferred.json")
+    check("it survives a restart — that is the whole point", len(d2) == 2)
+    check("resolving removes one", d2.resolve(d2.pending()[0]["id"]) and len(d2) == 1)
+    check("resolving an unknown id is not an error", not d2.resolve("nope"))
+    check("clear empties it", d2.clear() == 1 and len(d2) == 0)
+
+    chk = make_deferred_approval_check(d2)
+    check("nothing pending means nothing to say", chk(T0) is None)
+    d2.add("send_gmail_message", {"to": "x@y.z"}, now=T0)
+    out = chk(T0 + 10)
+    check("pending items are raised as a question", out is not None
+          and out.effective_urgency() == ASK)
+    check("the action tells the Master to re-issue rather than promising a replay",
+          out and "ra lệnh lại" in out.action.lower())
+
+
+def test_build_triggers_full(tmp):
+    print("\n[21] Assembly — a trigger with no threshold is skipped, not crashed on")
+    store = TaskStore(Path(tmp) / "bt.json")
+    log = Path(tmp) / "bt.log"
+    n = make_notifier(tmp, [FakeChannel("app")])
+    d = DeferredStore(Path(tmp) / "bt_def.json")
+
+    got = build_triggers(enabled_names=["price_alert", "important_email", "stale_todo"],
+                         task_store=store, log_path=log, notifier=n)
+    check("Group C is skipped when its thresholds are unset", got == [])
+
+    got = build_triggers(
+        enabled_names=["unfinished_task", "daily_cost", "repeated_failure",
+                       "deferred_approval", "digest", "price_alert", "stale_todo"],
+        task_store=store, log_path=log, notifier=n, deferred_store=d,
+        todo_path=Path(tmp) / "todos.json",
+        price_alerts=[("XAU/USD", ">", 2400.0)])
+    names = [t.name for t in got]
+    check("everything asked for and satisfiable is built",
+          names == ["unfinished_task", "daily_cost", "repeated_failure",
+                    "deferred_approval", "digest", "price_alert", "stale_todo"], str(names))
+    check("an unknown name is still ignored",
+          build_triggers(enabled_names=["nope"], task_store=store) == [])
+    check("a missing dependency drops that trigger rather than raising",
+          [t.name for t in build_triggers(enabled_names=["unfinished_task", "digest"],
+                                          task_store=store)] == ["unfinished_task"])
+    check("build_group_a still works for the old call shape",
+          [t.name for t in build_group_a(store, log, enabled_names=["daily_cost"])]
+          == ["daily_cost"])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="ciel_proactive_")
     print("=" * 72)
@@ -467,7 +736,10 @@ def main():
         for fn in (test_message_contract, test_cooldown, test_budget, test_routing,
                    test_presence_and_cli, test_escalation, test_persistence, test_engine,
                    test_unfinished_task_trigger, test_cost_trigger, test_failure_trigger,
-                   test_build_group_a):
+                   test_build_group_a, test_repeat_muting, test_digest_trigger,
+                   test_daily_at, test_price_alert, test_important_email, test_stale_todo,
+                   test_unattended_permissions, test_deferred_store,
+                   test_build_triggers_full):
             fn(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

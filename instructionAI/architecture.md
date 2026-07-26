@@ -193,6 +193,74 @@ Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
 a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
 regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
+## Tier-7a User Model (`core/user_model.py`, added July 2026)
+
+A fact vault already existed (`skills/internal/memory_ops.py` + `ciel_data/facts.json`)
+and was still `{}` after months. That is the design, not neglect: the vault is
+**pull-only**, so recall needs the model to guess an exact snake_case key *and* choose to
+call `get_fact`, while writing needs the Master to say "remember this" out loud. This
+module is the **push** side — a bounded profile that enters the prompt by itself.
+
+**Two stores, split by what happens to them, not by what they hold:**
+
+| Store | Holds | Read path |
+|---|---|---|
+| `ciel_data/facts.json` | secrets, credentials | pull-only, **never injected** |
+| `ciel_data/user_model.json` | preferences, profile | **injected**, refuses credentials |
+
+`looks_like_secret()` is a deterministic refusal on both key and value — the value test
+is what catches the dangerous case, an innocently-named key holding a real token. Note
+the separator normalisation: `_` and `-` are word characters, so `\bcvv\b` does **not**
+match `card_cvv` without it.
+
+**Three rules keep a profile from rotting:**
+
+1. **Authority** — `stated` (3) > `inferred` (2) > `observed` (1). A lower-authority
+   write can never overwrite a higher one, so a bad inference cannot quietly replace an
+   instruction the Master gave in words. The Master can always change their own mind.
+2. **Decay** — `stated` never fades. Inferred/observed lose confidence on a half-life
+   unless re-observed, so "I'm busy today" cannot harden into a permanent trait.
+3. **A hard token ceiling** — `render(budget_tokens=…)` truncates, strongest trait first,
+   so truncation drops the weakest. It returns `""` on an empty profile, which means the
+   feature costs **exactly zero** until it has learned something.
+
+Injected via `CielCore._profile_block()` at the Worker chat path and both tool-result
+format paths. **Deliberately not in the Router** — that prompt is already 37% of a Brain
+call, and a profile changes *how* an answer reads far more often than *which tool* is
+right; revisit in Tier 4 when one assembler owns the budget. `USER_MODEL_ENABLED=false`
+restores the byte-identical pre-Tier-7 prompt (asserted live).
+
+The block states its own authority: *"Đây là nền, KHÔNG phải mệnh lệnh"* — a stale
+profile must never override what the Master is asking for right now.
+
+### Tier-7b — learning without being told
+
+`save_fact` never fires organically because it needs the Master to *ask*. Asking the
+model "was there a preference in that?" every turn would fix that and cost a call per
+turn forever. So the same shape as `ContinuationPolicy.assess()`:
+
+```
+assess_preference(text)     free Python. None on an ordinary turn → nothing happens
+  ├─ one-off marker ("hôm nay", "lần này")  → None, outright
+  ├─ durable marker ("từ giờ", "luôn")      → STATED
+  └─ leaning ("thích", "muốn", "prefer")    → INFERRED
+        └─ ONE extraction call → parse_extraction → remember()
+```
+
+**Python decides the kind, the model only proposes key/value.** Letting the model
+self-report authority would make the authority rule meaningless — it would simply claim
+`stated` and overwrite anything.
+
+Runs on a **daemon thread** from the top of `process()`: measured, the reply returns in
+**0.8 ms** while a real extraction takes 5–8 s. Hooked at the top rather than at the end
+because `process()` has many return points and a partial hook would learn inconsistently.
+Excluded on unattended runs — a trigger's text is Ciel's own words, and learning from
+itself is how a profile drifts away from the person it describes.
+`USER_MODEL_LEARN_DAILY_LIMIT` caps extraction calls per day, persisted, so a chatty
+session cannot multiply the cost.
+
+Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
+
 ## Tier-6 Proactivity (`core/notifier.py` + `core/triggers.py`, added July 2026)
 
 `scheduler.py` could only fire on a wall-clock time and held one hardcoded task, so Ciel
@@ -227,11 +295,43 @@ cooldown, so a condition that merely *stays* true is announced once.
 **Budget.** `PROACTIVE_DAILY_BUDGET` caps interruptions per day, counted in Python. Over
 budget, findings still survive — they drop to the digest instead of being lost.
 
-| Trigger | Watches | Source |
-|---|---|---|
-| `unfinished_task` | a job abandoned past `PROACTIVE_UNFINISHED_MIN_AGE` | Tier-2 `TaskStore` |
-| `daily_cost` | today's tokens/USD over a ceiling you set | `thoughts.log` + `core/cost.py` |
-| `repeated_failure` | one tool failing N times in a window | `thoughts.log` |
+| Group | Trigger | Watches | Source |
+|---|---|---|---|
+| A | `unfinished_task` | a job abandoned past `PROACTIVE_UNFINISHED_MIN_AGE` | Tier-2 `TaskStore` |
+| A | `daily_cost` | today's tokens/USD over a ceiling you set | `thoughts.log` + `core/cost.py` |
+| A | `repeated_failure` | one tool failing N times in a window | `thoughts.log` |
+| A | `deferred_approval` | background actions blocked pending the Master | `DeferredStore` |
+| B | `digest` | everything held back, read out once a day | the Notifier's own queue |
+| B | `morning_digest` | the 08:00 brief, now a declared trigger | Gmail + markets + Worker |
+| C | `price_alert` | a price **crossing** a threshold you set | `fetch_market_price` |
+| C | `important_email` | unread mail from senders you listed | Gmail |
+| C | `stale_todo` | todos open past N days (**age**, not due date — the store has none) | `todos.json` |
+
+Group C exists only behind thresholds the Master set explicitly; a trigger whose
+threshold is unset is dropped at build time. `daily_at()` expresses a clock task as an
+ordinary trigger, firing *at or after* its time so a machine asleep at 08:00 still gets
+its brief on waking. When the engine owns `morning_digest`, the scheduler skips
+registering the 08:00 clock task — two mechanisms delivering one brief is a double-send
+the Notifier cannot dedupe.
+
+**Unattended permission ceiling.** A trigger firing at 03:00 has nobody to ask, and
+"nobody answered" must never resolve to "yes". `PermissionPolicy.decide(...,
+attended=False)` returns the fourth decision, `DEFER`: the action is recorded in
+`DeferredStore` and raised at the next interaction. Session grants, plan approvals and
+`DISABLE_SAFETY_GATE` are **all ignored** in that context — each is evidence someone
+agreed while *present*. The only escape hatch is per-tool (`CIEL_UNATTENDED_AUTO_TOOLS`).
+`CielCore.unattended` is **thread-local** and propagated explicitly into parallel
+workers; a plain attribute would let the scheduler thread downgrade a foreground
+request's confirmations mid-flight.
+
+`DeferredStore` deliberately does **not** replay. A mutating action decided against
+03:00's world is not the same action at 09:00, and approving it from a one-line summary
+is approving a fragment — the exact failure Tier 3 removed.
+
+**Feedback.** After `PROACTIVE_REPEAT_LIMIT` interrupts about the *same* finding that is
+still being raised, it goes quiet (drops to the digest). Muting is per **key**, not per
+trigger, so one stuck task falls silent while a different one still gets through; a long
+silence re-arms it, because a condition that went away and came back is news again.
 
 Opt-in **by name** via `PROACTIVE_TRIGGERS` (empty = nothing runs), for the same reason
 skills are opt-in: the list will grow, and a default-on trigger added later would start
@@ -244,7 +344,7 @@ log-reading check silently reports "nothing found" — a monitoring trigger that
 fires is indistinguishable from a healthy system. Any new check that parses the log must
 go through `_iter_entries`.
 
-Tests: `backtest/test_proactive.py` (78 assertions, no LLM, no network). Every decision
+Tests: `backtest/test_proactive.py` (148 assertions, no LLM, no network). Every decision
 function takes `now` as a parameter and never reads the clock, so a full day — cooldowns
 expiring, budget filling, escalation, midnight rollover — is simulated in milliseconds.
 **Keep that property**: a check that calls `time.time()` internally is untestable.

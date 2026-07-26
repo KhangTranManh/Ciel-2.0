@@ -44,7 +44,7 @@ def _setup_proactive(ciel, scheduler):
         return None, None
     try:
         from core.notifier import Presence, CliChannel, TelegramChannel, Notifier
-        from core.triggers import TriggerEngine, build_group_a
+        from core.triggers import TriggerEngine, build_triggers, parse_price_alerts
 
         presence = Presence(idle_threshold=config.PROACTIVE_IDLE_SECONDS)
         # Order is priority: the terminal in front of the Master first, Telegram as the
@@ -54,15 +54,24 @@ def _setup_proactive(ciel, scheduler):
             channels=[CliChannel(presence), TelegramChannel()],
             daily_budget=config.PROACTIVE_DAILY_BUDGET,
             ask_escalate_seconds=config.PROACTIVE_ASK_ESCALATE_SECONDS,
+            repeat_limit=config.PROACTIVE_REPEAT_LIMIT,
         )
-        triggers = build_group_a(
-            ciel.core.tasks,
-            ciel.core.base_dir / "ciel_data" / "logs" / "thoughts.log",
+        triggers = build_triggers(
             enabled_names=config.PROACTIVE_TRIGGERS,
+            task_store=ciel.core.tasks,
+            log_path=ciel.core.base_dir / "ciel_data" / "logs" / "thoughts.log",
+            notifier=notifier,
+            deferred_store=ciel.core.deferred,
+            todo_path=ciel.core.base_dir / "ciel_workspace" / "todos.json",
             unfinished_min_age=config.PROACTIVE_UNFINISHED_MIN_AGE,
             cost_usd_limit=config.PROACTIVE_COST_USD_LIMIT,
             cost_token_limit=config.PROACTIVE_COST_TOKEN_LIMIT,
             failure_threshold=config.PROACTIVE_FAILURE_THRESHOLD,
+            price_alerts=parse_price_alerts(config.PROACTIVE_PRICE_ALERTS),
+            important_senders=config.PROACTIVE_IMPORTANT_SENDERS,
+            stale_todo_days=config.PROACTIVE_STALE_TODO_DAYS,
+            digest_hour=config.PROACTIVE_DIGEST_HOUR,
+            digest_minute=config.PROACTIVE_DIGEST_MINUTE,
         )
         if not triggers:
             print(Fore.YELLOW + f"[Proactive] No known trigger in PROACTIVE_TRIGGERS="
@@ -70,6 +79,10 @@ def _setup_proactive(ciel, scheduler):
             return None, None
         scheduler.trigger_engine = TriggerEngine(notifier, triggers,
                                                  logger=ciel.core._log_thought)
+
+        def _mark():
+            ciel.core.unattended = True     # thread-local; runs inside the daemon thread
+        scheduler.mark_unattended = _mark
         return presence, notifier
     except Exception as e:
         print(Fore.YELLOW + f"[Proactive] disabled: {type(e).__name__}: {e}" + Style.RESET_ALL)
@@ -150,6 +163,18 @@ def main():
                       + Style.RESET_ALL)
                 print(Fore.YELLOW + "       Ask 'đang làm gì' / 'status' any time for details."
                       + Style.RESET_ALL)
+        except Exception:
+            pass
+
+        # TIER 6: actions a background run wanted to take but could not, because nobody
+        # was here to approve them. Reported at the first moment there IS someone here.
+        try:
+            waiting = ciel.core.deferred.describe()
+            if waiting:
+                print(Fore.YELLOW + f"[Chờ duyệt] {len(ciel.core.deferred)} hành động nền "
+                      f"đã bị hoãn:\n{waiting}" + Style.RESET_ALL)
+                print(Fore.YELLOW + "       Ra lệnh lại nếu vẫn muốn làm — Ciel không tự "
+                      "chạy lại lệnh cũ trên dữ liệu đã thay đổi." + Style.RESET_ALL)
         except Exception:
             pass
         if voice_default:

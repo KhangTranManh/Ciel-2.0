@@ -30,7 +30,8 @@ from .continuation import (
 )
 from .parallel import plan_batches, collect_parallel_safe
 from .task_state import TaskStore
-from .permissions import PermissionPolicy, Decision
+from .user_model import UserModel, assess_preference, learn_from_turn
+from .permissions import PermissionPolicy, Decision, DeferredStore
 from . import rag_manager
 
 import sys
@@ -44,6 +45,8 @@ from agent_system.config import (
     MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES,
     AGENT_LOOP_ENABLED, AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_SECONDS,
     AGENT_PARALLEL_ENABLED, AGENT_PARALLEL_MAX_WORKERS,
+    USER_MODEL_ENABLED, USER_MODEL_TOKEN_BUDGET,
+    USER_MODEL_LEARN_ENABLED, USER_MODEL_LEARN_DAILY_LIMIT,
 )
 from core.cost import estimate_cost
 
@@ -238,6 +241,23 @@ class CielCore:
             risky_names=self._HIGH_RISK_TOOLS,
             gate_disabled=os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes"),
         )
+        # TIER 6 — set True only while a background/scheduled run is executing. It flips
+        # every risky decision from ASK to DEFER, because "nobody answered" must never
+        # resolve to "yes". Default False: an ordinary CLI/API request IS attended.
+        #
+        # Thread-LOCAL on purpose. A plain attribute would be a race: the scheduler
+        # thread would flip it to True while a foreground request was mid-flight on the
+        # main thread, and that request's confirmations would silently turn into
+        # deferrals. Per-thread, the background run marks only itself. `_run_steps`
+        # propagates it into parallel workers explicitly (see `_run`), because a
+        # security control that fails open in a worker thread is worse than none.
+        self._ctx = threading.local()
+        self.deferred = DeferredStore(self.base_dir / "ciel_data" / "state" / "deferred.json")
+        # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
+        # holds credentials, never injected) this small block is added to the prompts
+        # where preferences actually change the output. It renders to "" while empty, so
+        # the feature costs literally nothing until it has something to say.
+        self.user_model = UserModel(self.base_dir / "ciel_data" / "user_model.json")
 
         # Live per-tier LLM call counter — incremented at the single logging chokepoint
         # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
@@ -538,6 +558,67 @@ class CielCore:
         except Exception as e:
             print(f"[Brain Cleanse Error] {e}")
 
+    def _learn_from_turn(self, user_input: str):
+        """TIER 7b — notice a durable preference without being asked to remember it.
+
+        Runs on a daemon thread so it adds ZERO latency to the reply: the answer is
+        already on its way out before this starts. The deterministic gate
+        (`assess_preference`) runs first and is free, so an ordinary turn spends nothing
+        and never even spawns the thread. Fail-open: the turn has already been answered,
+        and nothing about learning may break it.
+
+        Unattended runs are excluded on purpose. A background trigger's text is Ciel's
+        own words, not the Master's, and learning "preferences" from itself is how a
+        profile drifts away from the person it describes.
+        """
+        try:
+            if not USER_MODEL_ENABLED or not USER_MODEL_LEARN_ENABLED or self.unattended:
+                return
+            if assess_preference(user_input) is None:
+                return              # the common case, decided in free Python
+        except Exception:
+            return
+
+        def _work():
+            try:
+                learn_from_turn(self.user_model, user_input, self.worker.generate,
+                                daily_limit=USER_MODEL_LEARN_DAILY_LIMIT,
+                                logger=self._log_thought)
+            except Exception as e:
+                self._log_thought("USER_MODEL", "error", f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @property
+    def unattended(self) -> bool:
+        """True while THIS thread is running unsupervised work. See __init__."""
+        return getattr(self._ctx, "unattended", False)
+
+    @unattended.setter
+    def unattended(self, value: bool):
+        self._ctx.unattended = bool(value)
+
+    def _profile_block(self) -> str:
+        """TIER 7 — the Master's profile as a prompt block, or "" when it adds nothing.
+
+        Gated by USER_MODEL_ENABLED and hard-capped by USER_MODEL_TOKEN_BUDGET, because
+        anything injected here is a FIXED tax on every call that carries it — the exact
+        cost pattern Tier 4 exists to control. Fail-open: any error yields "", which is
+        byte-for-byte the pre-Tier-7 prompt.
+
+        Deliberately NOT injected into the Router: it is already the most bloated prompt
+        in the system (37% of a Brain call), and a profile changes *how* an answer reads
+        far more often than it changes *which tool* is right. Revisit in Tier 4, once a
+        single context assembler owns the budget.
+        """
+        try:
+            if not USER_MODEL_ENABLED:
+                return ""
+            block = self.user_model.render(budget_tokens=USER_MODEL_TOKEN_BUDGET)
+            return f"{block}\n\n" if block else ""
+        except Exception:
+            return ""
+
     def execute_chat(self, task: str) -> str:
         """Worker generates a natural language response."""
         capabilities_context = ""
@@ -551,6 +632,7 @@ class CielCore:
 
         persona_task = (
             f"{self.ciel_persona}\n\n"
+            f"{self._profile_block()}"
             f"Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
             f"No filler, no pleasantries. Always address the user as 'Master'.{capabilities_context}\n\n"
             f"User's request: {task}"
@@ -674,11 +756,19 @@ class CielCore:
         # SAFETY GATE (Tier 3): AUTO / ASK / DENY — see core/permissions.py.
         # NOTE: SAFETY_OPEN governs Brain LLM content-filtering, a separate concern —
         # it must NOT influence the destructive-tool confirmation gate.
-        decision, why = self.permissions.decide(tool_name, tool_args)
+        decision, why = self.permissions.decide(tool_name, tool_args, attended=not self.unattended)
         if decision == Decision.DENY:
             self._log_thought("SAFETY", "denied", f"{tool_name}: {why}")
             return (f"[CANCELLED] {tool_name} is on the deny list and will not be run, Master. "
                     f"Remove it from CIEL_DENY_TOOLS if that was not intended.")
+        if decision == Decision.DEFER:
+            # TIER 6 — nobody is at the keyboard, so there is no one to say yes. Silence
+            # must not become consent: the action is recorded and raised at the next
+            # interaction (see the `deferred_approval` trigger) rather than performed.
+            self.deferred.add(tool_name, tool_args, reason=why, source="unattended run")
+            self._log_thought("SAFETY", "deferred", f"{tool_name}: {why}")
+            return (f"[CANCELLED] {tool_name} needs your approval and nobody was at the "
+                    f"keyboard, Master. It has been recorded for you to confirm.")
         if decision == Decision.ASK:
             if not self._request_confirmation(tool_name, tool_args):
                 return f"[CANCELLED] Master denied execution of {tool_name}. No action was taken."
@@ -838,6 +928,7 @@ class CielCore:
 
         format_task = (
             f"{self.ciel_persona}\n\n"
+            f"{self._profile_block()}"
             f"{lead_line}"
             f"User's request: {user_input}\n"
             f"Tool: {tool_name}\n"
@@ -1164,8 +1255,21 @@ class CielCore:
         # Fresh slate: a grant from an earlier plan must never carry into this one.
         self.permissions.clear_plan_grants()
 
-        review = self.permissions.review_plan(tools)
+        review = self.permissions.review_plan(tools, attended=not self.unattended)
         denied, asked = review[Decision.DENY], review[Decision.ASK]
+        deferred = review[Decision.DEFER]
+
+        if deferred:
+            # A whole plan cannot be half-approved by a machine. If any step needs the
+            # Master and the Master is not here, the plan does not start.
+            for st in tools or []:
+                if isinstance(st, dict) and (st.get("tool_name") or "") in deferred:
+                    self.deferred.add(st.get("tool_name"), st.get("tool_args") or {},
+                                      reason="plan step needed approval", source="unattended plan")
+            self._log_thought("SAFETY", "plan_deferred", f"steps needing approval: {deferred}")
+            return (f"[CANCELLED] This plan needs your approval for "
+                    f"{', '.join(sorted(set(deferred)))} and nobody was at the keyboard, "
+                    f"Master. Nothing was run; it has been recorded.")
 
         if denied:
             self._log_thought("SAFETY", "plan_denied", f"deny-listed steps: {denied}")
@@ -1232,8 +1336,15 @@ class CielCore:
                                       f"{name}: injected prior step output into args.")
                 prepared.append((name, args))
 
+            # Captured HERE, in the submitting thread, because `unattended` is
+            # thread-local: a worker thread starts with the default (attended), so
+            # without carrying it across, a background plan's risky steps would be
+            # confirmed-and-run instead of deferred. Fail-open on a safety control.
+            unattended_here = self.unattended
+
             def _run(pair):
                 name, args = pair
+                self.unattended = unattended_here
                 if name not in self._tool_map:
                     return f"[TOOL_ERROR] {name} not found."
                 return self.execute_tool(name, args, response_hint=response_hint,
@@ -1414,8 +1525,10 @@ class CielCore:
                                   model_requested=model_requested)
 
         combined_results = "\n\n".join(results)
-        
+
         format_task = f"""{self.ciel_persona}
+
+{self._profile_block()}
 
 Synthesize the following data from multiple tools into a cohesive report.
 User's request: {user_input}
@@ -2011,6 +2124,12 @@ RULES:
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""
         self.chat_history.add_user_message(user_input)
+
+        # TIER 7b — learn a durable preference from this turn, if there is one. Placed
+        # at the TOP rather than at the end because `process()` has many return points
+        # and a hook on only some of them would learn inconsistently; the gate is free
+        # Python and the work runs on a daemon thread, so this costs the turn nothing.
+        self._learn_from_turn(user_input)
 
         # === PENDING CONFIRMATION (runs FIRST — before any routing) ===
         # A preview tool promised the Master that "yes" would carry out the action, so

@@ -18,6 +18,7 @@ from pathlib import Path
 # Import raw functions from skill modules (no duplication)
 from skills.external.telegram_ops import send_telegram_message as _send_telegram
 from skills.external.trading_ops import fetch_market_price
+from core.notifier import Notification, NOTIFY
 
 # Lazy imports — only loaded when a task actually fires
 _worker = None
@@ -129,6 +130,57 @@ def _morning_digest():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [SCHEDULER] Morning Digest {status}")
 
 
+def _build_digest_text() -> str:
+    """Gather + format the brief, and write it to the workspace. Returns the text.
+
+    Split out of `_morning_digest` so the same work can be delivered two ways without
+    being written twice: the legacy clock task keeps pushing straight to Telegram, while
+    the Tier-6 trigger below hands the text to the Notifier and lets IT choose a channel.
+    """
+    emails = _fetch_unread_emails(max_results=5)
+    prices = [fetch_market_price(s) for s in ("EUR/USD", "XAU/USD", "GBP/USD")]
+    worker = _get_worker()
+    digest = worker.generate(
+        "You are Ciel. Write a concise Morning Digest for the Master.\n"
+        "Include: date, top unread emails summary, forex/metals prices.\n"
+        "Use markdown formatting. Be professional and brief.\n\n"
+        f"Date: {datetime.now().strftime('%A, %B %d, %Y')}\n\n"
+        f"Unread Emails:\n{emails}\n\n"
+        f"Market Prices:\n" + "\n".join(prices))
+    try:
+        workspace = Path(__file__).resolve().parent.parent / "ciel_workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "daily_brief.md").write_text(digest, encoding="utf-8")
+    except Exception:
+        pass                        # the brief is still worth delivering if the file fails
+    return digest
+
+
+def make_morning_digest_check():
+    """The 08:00 brief, expressed as a Tier-6 trigger like everything else.
+
+    This is the one check that spends tokens — one Worker call, once a day, exactly as
+    before. The gain is not cost, it is that the brief now goes through the same
+    Notifier as every other finding: it obeys the daily budget, it routes to whichever
+    channel the Master is actually watching instead of always Telegram, and it is
+    subject to the same cooldown rather than being able to double-send.
+    """
+    def check(now: float):
+        text = _build_digest_text()
+        if not text or not text.strip():
+            return None
+        return Notification(
+            key=f"morning_digest:{datetime.fromtimestamp(now).strftime('%Y-%m-%d')}",
+            title="Bản tin sáng",
+            detail=text.strip()[:1500],
+            action="Đọc lướt; bảo Ciel nếu muốn đào sâu mục nào.",
+            urgency=NOTIFY,
+            trigger="morning_digest",
+            created_at=now,
+        )
+    return check
+
+
 # ──────────────────────────────────────────────
 #  SCHEDULER ENGINE
 # ──────────────────────────────────────────────
@@ -142,6 +194,8 @@ class CielScheduler:
         # thread rather than starting its own — one background thread is easier to
         # reason about, and every trigger already throttles itself via `every_seconds`.
         self.trigger_engine = None
+        # Called once inside the daemon thread to flag it as an unattended context.
+        self.mark_unattended = None
         try:
             import schedule
             self._schedule = schedule
@@ -156,8 +210,14 @@ class CielScheduler:
         plain Python and must still run — tying them to an optional dependency would
         make proactivity silently vanish on a fresh install.
         """
+        # When the Tier-6 engine owns the digest, the clock task must NOT also register
+        # it — two mechanisms delivering the same brief is a double-send, and the
+        # Notifier cannot dedupe what never passes through it.
+        engine_owns_digest = any(
+            t.name == "morning_digest" for t in getattr(self.trigger_engine, "triggers", []))
         if self._schedule is not None:
-            self._schedule.every().day.at("08:00").do(_morning_digest)
+            if not engine_owns_digest:
+                self._schedule.every().day.at("08:00").do(_morning_digest)
             self._schedule.every().day.at("23:00").do(self._trigger_cleanse)
         else:
             print("[SCHEDULER] 'schedule' library missing — clock tasks disabled.")
@@ -178,6 +238,15 @@ class CielScheduler:
 
     def _run_loop(self):
         """Check for pending work every 60 seconds."""
+        # Mark THIS thread as unsupervised, once. Everything the scheduler runs from
+        # here on inherits it, so any risky tool reached from a trigger defers instead
+        # of prompting an empty room. Set inside the thread (not before starting it)
+        # because the flag is thread-local — see CielCore.unattended.
+        if self.mark_unattended:
+            try:
+                self.mark_unattended()
+            except Exception:
+                pass
         while True:
             if self._schedule is not None:
                 try:

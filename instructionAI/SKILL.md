@@ -95,6 +95,30 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    reviewed — never to a tool name, or a step the loop invents later would inherit an
    approval the Master never gave. `DENY` outranks every grant and `DISABLE_SAFETY_GATE`.
 
+7e. **Two memory stores, and the difference is a security boundary**
+   (`core/user_model.py`). `facts.json` is pull-only and may hold credentials; it is
+   NEVER injected. `user_model.json` IS injected into prompts and therefore refuses
+   anything matching `looks_like_secret()` — everything in it is sent to the provider on
+   every call that carries it. Never merge the two, and never inject the vault. Inside
+   the profile: what the Master **stated** outranks what Ciel **inferred** (a lower
+   authority cannot overwrite a higher one), non-stated traits **decay** so an offhand
+   remark cannot harden into a permanent trait, and `render()` is **hard-capped** by
+   `USER_MODEL_TOKEN_BUDGET` because this is a fixed tax on every call — the exact cost
+   pattern Tier 4 exists to control. It renders `""` when empty, so it costs nothing
+   until it knows something. Tier 7b learns unprompted, but only behind
+   `assess_preference()` — free Python that skips one-off wording ("hôm nay") outright
+   and decides the KIND itself; the model only proposes key/value, or it would always
+   claim `stated` and overwrite what the Master actually said.
+
+7f. **An unattended run can never be given consent by silence.** `decide(...,
+   attended=False)` returns `DEFER`, not `ASK`: the action goes to `DeferredStore` and is
+   raised at the next interaction. Session grants, plan approvals and
+   `DISABLE_SAFETY_GATE` are all ignored there — every one of them is evidence that a
+   human agreed *while present*. `CielCore.unattended` is thread-local and must be
+   propagated explicitly into any worker thread; a safety control that fails open in a
+   worker is worse than none. Deferred actions are never replayed automatically —
+   re-running a mutating decision against a changed world is a different action.
+
 7d. **Proactivity is opt-in, budgeted, and must never repeat itself**
    (`core/triggers.py`, `core/notifier.py`). A trigger's `check()` is plain Python over
    data already on disk — an idle Ciel costs zero tokens. Three rules hold it together:

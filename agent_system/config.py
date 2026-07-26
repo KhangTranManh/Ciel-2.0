@@ -88,7 +88,9 @@ AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 # Lets Ciel speak first when a condition it watches becomes true, instead of only ever
 # answering. OFF by default, and opt-in per trigger by name: this list will grow, and a
 # default-on trigger added later would start talking without anyone choosing it.
-# Known names: unfinished_task, daily_cost, repeated_failure.
+# Known names — A (Ciel watching itself): unfinished_task, daily_cost, repeated_failure,
+# deferred_approval | B (clock): digest, morning_digest | C (outside world, each needs its
+# threshold set below or it is silently skipped): price_alert, important_email, stale_todo.
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
 PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
 # Hard ceiling on interruptions per day. Beyond it, findings still survive — they drop to
@@ -105,6 +107,36 @@ PROACTIVE_UNFINISHED_MIN_AGE = float(os.getenv("PROACTIVE_UNFINISHED_MIN_AGE", "
 PROACTIVE_COST_USD_LIMIT = float(os.getenv("PROACTIVE_COST_USD_LIMIT", "0"))
 PROACTIVE_COST_TOKEN_LIMIT = int(os.getenv("PROACTIVE_COST_TOKEN_LIMIT", "0"))
 PROACTIVE_FAILURE_THRESHOLD = int(os.getenv("PROACTIVE_FAILURE_THRESHOLD", "3"))
+# Group C thresholds. Each is empty by default, and its trigger is skipped without one —
+# a condition trigger with no threshold is just a timer that pretends to be smart.
+# Format: "XAU/USD>2400, BTC/USDT<60000"  (>, <, >=, <= all accepted)
+PROACTIVE_PRICE_ALERTS = os.getenv("PROACTIVE_PRICE_ALERTS", "")
+PROACTIVE_IMPORTANT_SENDERS = [s.strip() for s in
+                               os.getenv("PROACTIVE_IMPORTANT_SENDERS", "").split(",") if s.strip()]
+PROACTIVE_STALE_TODO_DAYS = float(os.getenv("PROACTIVE_STALE_TODO_DAYS", "7"))
+PROACTIVE_DIGEST_HOUR = int(os.getenv("PROACTIVE_DIGEST_HOUR", "8"))
+PROACTIVE_DIGEST_MINUTE = int(os.getenv("PROACTIVE_DIGEST_MINUTE", "0"))
+# After this many interrupts about the SAME finding, it goes quiet (drops to the digest).
+# The Master has evidently decided not to act on it, and repeating only teaches them to
+# ignore the channel. Muting is per finding, not per trigger.
+PROACTIVE_REPEAT_LIMIT = int(os.getenv("PROACTIVE_REPEAT_LIMIT", "4"))
+
+# --- Tier-7 user model (see core/user_model.py) ---
+# The PUSH side of memory. facts.json is pull-only (the model must guess a key and choose
+# to look it up), which is why it is still empty; this small profile is injected into the
+# Worker prompts where a preference actually changes the output. It renders to "" while
+# empty, so leaving it on costs nothing until it has learned something.
+USER_MODEL_ENABLED = os.getenv("USER_MODEL_ENABLED", "true").lower() in ("true", "1", "yes")
+# HARD ceiling on the injected block. This is a FIXED tax on every call that carries it —
+# the same cost pattern Tier 4 exists to control — so it is capped, not merely tidy.
+USER_MODEL_TOKEN_BUDGET = int(os.getenv("USER_MODEL_TOKEN_BUDGET", "250"))
+# Tier 7b — learn a preference WITHOUT being told to remember it. A deterministic gate
+# (`assess_preference`) runs first and is free, so an ordinary turn costs nothing; only a
+# turn containing explicit durable wording ("từ giờ", "luôn", "đừng bao giờ") spends one
+# extraction call, on a background thread so the reply is never delayed.
+USER_MODEL_LEARN_ENABLED = os.getenv("USER_MODEL_LEARN_ENABLED", "true").lower() in ("true", "1", "yes")
+# Ceiling on extraction calls per day, so a chatty session cannot multiply the cost.
+USER_MODEL_LEARN_DAILY_LIMIT = int(os.getenv("USER_MODEL_LEARN_DAILY_LIMIT", "20"))
 
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —

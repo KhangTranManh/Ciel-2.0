@@ -160,6 +160,12 @@ AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
 AGENT_PARALLEL_ENABLED=true
 AGENT_PARALLEL_MAX_WORKERS=4
 
+# --- User model: the PUSH side of memory (facts.json stays pull-only + never injected) ---
+USER_MODEL_ENABLED=true          # renders to "" while empty, so it costs 0 until it learns
+USER_MODEL_TOKEN_BUDGET=250      # HARD cap on the injected profile block
+USER_MODEL_LEARN_ENABLED=true    # notice a preference unprompted; gated by free Python
+USER_MODEL_LEARN_DAILY_LIMIT=20  # ceiling on extraction calls per day
+
 # --- Proactivity: let Ciel speak first. OFF by default, opt-in per trigger by name. ---
 PROACTIVE_ENABLED=false
 PROACTIVE_TRIGGERS=              # unfinished_task,daily_cost,repeated_failure
@@ -170,6 +176,16 @@ PROACTIVE_UNFINISHED_MIN_AGE=1800     # don't nag about a job you may still be w
 PROACTIVE_COST_USD_LIMIT=0       # 0 = off; a wrong ceiling fires every single day
 PROACTIVE_COST_TOKEN_LIMIT=0     # 0 = off
 PROACTIVE_FAILURE_THRESHOLD=3    # same tool failing N times in an hour
+PROACTIVE_REPEAT_LIMIT=4         # a finding you keep ignoring goes quiet after N interrupts
+PROACTIVE_PRICE_ALERTS=          # "XAU/USD>2400, BTC/USDT<60000" — fires on the CROSSING
+PROACTIVE_IMPORTANT_SENDERS=     # comma-separated addresses; unread mail from these only
+PROACTIVE_STALE_TODO_DAYS=7      # todos open longer than this (age — the store has no due date)
+PROACTIVE_DIGEST_HOUR=8          # when the daily digest / morning brief goes out
+PROACTIVE_DIGEST_MINUTE=0
+
+# Risky tools cleared to run with NOBODY watching. Per-tool and opt-in: unattended runs
+# otherwise DEFER every risky step rather than treating silence as approval.
+CIEL_UNATTENDED_AUTO_TOOLS=
 
 # --- Permissions (comma-separated tool names) ---
 CIEL_DENY_TOOLS=              # refused outright; no grant or open gate can reach past this
