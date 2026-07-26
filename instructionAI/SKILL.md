@@ -95,6 +95,17 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    reviewed — never to a tool name, or a step the loop invents later would inherit an
    approval the Master never gave. `DENY` outranks every grant and `DISABLE_SAFETY_GATE`.
 
+7d. **Proactivity is opt-in, budgeted, and must never repeat itself**
+   (`core/triggers.py`, `core/notifier.py`). A trigger's `check()` is plain Python over
+   data already on disk — an idle Ciel costs zero tokens. Three rules hold it together:
+   a `Notification` with no `action` cannot interrupt (it is demoted to the digest);
+   its `key` must come from the identity of the underlying thing, never the message
+   text, or the per-key cooldown cannot turn a standing condition into a single event;
+   and `PROACTIVE_DAILY_BUDGET` caps interruptions in Python, never by asking a model to
+   restrain itself. Delivery routes by **liveness** — a running process is not a present
+   human. New checks that read `thoughts.log` must use `_iter_entries`: the live log is
+   CRLF, and a parser that misses that reports "nothing wrong" forever.
+
 7b. **The Tier-1 loop decides in code, plans with the LLM** (`core/continuation.py`).
    `ContinuationPolicy.assess()` is pure Python and costs nothing, so an ordinary request
    spends zero extra calls; only when a deterministic signal fires does one planner call

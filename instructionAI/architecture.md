@@ -193,6 +193,62 @@ Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
 a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
 regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
+## Tier-6 Proactivity (`core/notifier.py` + `core/triggers.py`, added July 2026)
+
+`scheduler.py` could only fire on a wall-clock time and held one hardcoded task, so Ciel
+could say "good morning" but never "that job you started is still stuck". Group A —
+three triggers that watch **Ciel itself** — closes that, at zero token cost.
+
+```
+TriggerEngine.tick(now)          rides the scheduler's existing daemon thread
+  └─ Trigger.check(now)          plain Python over data already on disk
+       └─ Notification           key · title · detail · action · urgency
+            └─ Notifier.deliver(now)
+                 contract → cooldown → budget → first LIVE channel
+```
+
+**The message contract is enforced in code.** A `Notification` with no `action` is
+demoted to the digest and can never interrupt (`effective_urgency()`). A trigger author
+who forgets it gets a quieter assistant, not a louder one.
+
+**Routing is by liveness, not configuration.** A live process is not a live human:
+`Presence` counts the CLI/app as a channel only while the last interaction is inside
+`PROACTIVE_IDLE_SECONDS`; past that, delivery falls through to Telegram. `main.py` blocks
+in `input()`, so a `NOTIFY` is queued and flushed between prompts (never into a half-typed
+line) while an `ASK` prints immediately — an unseen question is worse than a broken line.
+An `ASK` left unanswered escalates to the fallback channel; any keystroke calls
+`ack_seen()`, because escalation only ever chases an *absent* Master.
+
+**Edge, not level.** The hard part is not detecting a condition, it is not repeating
+yourself. Each `key` is built from the identity of the underlying thing (a task id, a
+tool name, a date bucket) — never from message text — and the Notifier enforces a per-key
+cooldown, so a condition that merely *stays* true is announced once.
+
+**Budget.** `PROACTIVE_DAILY_BUDGET` caps interruptions per day, counted in Python. Over
+budget, findings still survive — they drop to the digest instead of being lost.
+
+| Trigger | Watches | Source |
+|---|---|---|
+| `unfinished_task` | a job abandoned past `PROACTIVE_UNFINISHED_MIN_AGE` | Tier-2 `TaskStore` |
+| `daily_cost` | today's tokens/USD over a ceiling you set | `thoughts.log` + `core/cost.py` |
+| `repeated_failure` | one tool failing N times in a window | `thoughts.log` |
+
+Opt-in **by name** via `PROACTIVE_TRIGGERS` (empty = nothing runs), for the same reason
+skills are opt-in: the list will grow, and a default-on trigger added later would start
+talking without anyone choosing it. Everything is off by default.
+
+**Gotcha, found the hard way.** `_log_thought` writes the log in text mode, so on Windows
+`thoughts.log` is **100% CRLF**, while the tail is read in binary to bound its size.
+Without `_read_tail`'s newline normalisation the entry separator never matches and every
+log-reading check silently reports "nothing found" — a monitoring trigger that never
+fires is indistinguishable from a healthy system. Any new check that parses the log must
+go through `_iter_entries`.
+
+Tests: `backtest/test_proactive.py` (78 assertions, no LLM, no network). Every decision
+function takes `now` as a parameter and never reads the clock, so a full day — cooldowns
+expiring, budget filling, escalation, midnight rollover — is simulated in milliseconds.
+**Keep that property**: a check that calls `time.time()` internally is untestable.
+
 ## Tier-3 Permissions (`core/permissions.py`, added July 2026)
 
 Approval used to be binary and per-call: a tool was either in `_HIGH_RISK_TOOLS` (asked

@@ -11,9 +11,12 @@ email templates. This is the "what is true right now" file — for the stable ar
 
 ## Agent-capability tiers (roadmap, as of 2026-07-26)
 
-Five tiers were identified as the gap between "executes commands" and "pursues goals".
-Three are done. The ordering matters: each one was only worth building once the previous
-had removed the reason the model kept being asked to compensate in prose.
+Five tiers were first identified as the gap between "executes commands" and "pursues
+goals". Two more were added once it became clear the original five would produce a
+cheaper, steadier agent but still not a JARVIS: 4 and 5 only optimise what already runs,
+while 6 and 7 add behaviour that has never existed here. The ordering matters — each
+tier was only worth building once the previous had removed the reason the model kept
+being asked to compensate in prose.
 
 | Tier | What it fixes | Status |
 |------|---------------|--------|
@@ -22,6 +25,13 @@ had removed the reason the model kept being asked to compensate in prose.
 | **3 — Permissions** | Approval was binary and arrived mid-execution, so "no" left work half-done. | ✅ `core/permissions.py` |
 | **4 — Context discipline** | **99% of every Brain call is fixed overhead** (4,291 tok: router prompt 37%, tool list 33%, persona 28%, the actual request **0.4%**). Injections are added ad hoc in `process()`; there is no single assembler and no token budget. | ⬜ measured, not built |
 | **5 — Ergonomics** | A long request cannot be interrupted — `main.py` is a blocking `input()` loop, so the only way out of a 566s call is killing the process. | ⬜ not started |
+| **6 — Proactivity** | Ciel only ever answers. It could fire on a clock, but never on a *condition* — so it could say "good morning" and not "that job is still stuck". | 🟡 Group A done (`core/notifier.py`, `core/triggers.py`); condition triggers on the outside world pending |
+| **7 — User model** | The fact vault is **pull-only and empty**: nothing injects facts into context, so the model must guess an exact snake_case key *and* choose to call `get_fact`. Proactivity without this is spam. | ⬜ next |
+
+Tiers 6 and 7 were promoted ahead of 4 and 5 deliberately (see the 2026-07-26 entry).
+7 should land before the rest of 6: what makes an interruption welcome is knowing what
+this person cares about, and the morning digest already proves the point — it sends the
+same three forex pairs every day because it has no way to know.
 
 Not a tier, but done alongside: **parallel tool execution** (`core/parallel.py`).
 
@@ -129,6 +139,53 @@ to a component that only ever emits JSON. The 4,291-token floor is also the hard
 for small/local models — a 4K-context model cannot run this at all.
 
 ## Changelog (most recent first)
+
+### 2026-07-26 — Tier-6 Group A: Ciel speaks first, about itself
+
+`core/notifier.py` + `core/triggers.py`, wired into the scheduler's existing daemon
+thread. Three triggers watching Ciel itself — `unfinished_task`, `daily_cost`,
+`repeated_failure` — because that set needs no network, no API budget and no rate limit,
+cannot spam (the events are genuinely rare), and is the most assistant-like thing
+available: a system that notices it is unwell and says so.
+
+The design rule is the same as every tier before it: **deterministic Python decides
+whether to speak; nothing here calls an LLM at all.**
+
+- **Contract enforced in code** — a `Notification` with no `action` is demoted to the
+  digest and can never interrupt. "FYI" messages are what make an assistant tiresome.
+- **Edge, not level** — the `key` comes from the identity of the thing (task id, tool
+  name, date), and a per-key cooldown means a condition that *stays* true is announced
+  once, not on every poll.
+- **Routing by liveness** — a running process is not a present human. Past
+  `PROACTIVE_IDLE_SECONDS` the CLI stops counting and delivery falls to Telegram. A
+  `NOTIFY` is queued and flushed between prompts (never into a half-typed line); an
+  `ASK` prints immediately and escalates if the Master never came back.
+- **Budget in Python** — `PROACTIVE_DAILY_BUDGET` caps interruptions; over it, findings
+  drop to the digest rather than being lost.
+- Off by default, opt-in **by name** — a blacklist would silently include triggers added
+  later, exactly as it would for auto-registered skills.
+
+**The bug worth remembering.** Both log-reading checks initially found *zero* entries in
+the real `thoughts.log`. `_log_thought` writes in text mode, so on Windows the live log
+is **100% CRLF**, while the tail is read in binary (to bound its size) and therefore
+skips Python's newline translation — the entry separator never matched. The unit suite
+passed throughout, because `write_text` produced the same CRLF and the tests only
+compared the parser against itself. It surfaced only when run against the production
+log. **A monitoring trigger that silently never fires looks exactly like a healthy
+system**, which makes this the most expensive class of bug to ship. Fixed in
+`_read_tail`; after the fix the same log parses 2,492 entries.
+
+Verified: `backtest/test_proactive.py` — **78 assertions, no LLM, no network**. Every
+decision takes `now` as a parameter, so a full day (cooldowns expiring, budget filling,
+escalation at +30min, midnight rollover) simulates in milliseconds. Plus a live wiring
+run on the real core, which caught a real interrupted job (287 minutes idle) and
+reported 1,191,796 real tokens — and exposed a second, smaller bug: the action text read
+"chạy nốt **0** bước còn lại", because an interrupted record often holds only the steps
+that *finished*. The count is now quoted only when the record proves work is outstanding.
+
+Still open in Tier 6: condition triggers on the outside world (needs Tier 7 to filter
+them), the digest reader, and the permission ceiling for unattended runs — today the
+scheduler bypasses Tier 3 entirely, which is safe only because these triggers read.
 
 ### 2026-07-26 — The email bypass was removed (it was costing what it claimed to save)
 

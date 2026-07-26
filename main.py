@@ -31,6 +31,51 @@ def _voice_capture(lang: str):
     return text or None
 
 
+def _setup_proactive(ciel, scheduler):
+    """TIER 6: wire condition triggers to the CLI + Telegram channels.
+
+    Returns (presence, notifier), or (None, None) when proactivity is off. Any failure
+    here is swallowed: Ciel answering normally matters more than Ciel speaking first,
+    so a misconfigured trigger degrades to the previous behaviour instead of blocking
+    start-up.
+    """
+    from agent_system import config
+    if not config.PROACTIVE_ENABLED or not config.PROACTIVE_TRIGGERS:
+        return None, None
+    try:
+        from core.notifier import Presence, CliChannel, TelegramChannel, Notifier
+        from core.triggers import TriggerEngine, build_group_a
+
+        presence = Presence(idle_threshold=config.PROACTIVE_IDLE_SECONDS)
+        # Order is priority: the terminal in front of the Master first, Telegram as the
+        # channel that still reaches them once they have walked away.
+        notifier = Notifier(
+            state_path=ciel.core.base_dir / "ciel_data" / "state" / "notify.json",
+            channels=[CliChannel(presence), TelegramChannel()],
+            daily_budget=config.PROACTIVE_DAILY_BUDGET,
+            ask_escalate_seconds=config.PROACTIVE_ASK_ESCALATE_SECONDS,
+        )
+        triggers = build_group_a(
+            ciel.core.tasks,
+            ciel.core.base_dir / "ciel_data" / "logs" / "thoughts.log",
+            enabled_names=config.PROACTIVE_TRIGGERS,
+            unfinished_min_age=config.PROACTIVE_UNFINISHED_MIN_AGE,
+            cost_usd_limit=config.PROACTIVE_COST_USD_LIMIT,
+            cost_token_limit=config.PROACTIVE_COST_TOKEN_LIMIT,
+            failure_threshold=config.PROACTIVE_FAILURE_THRESHOLD,
+        )
+        if not triggers:
+            print(Fore.YELLOW + f"[Proactive] No known trigger in PROACTIVE_TRIGGERS="
+                  f"{','.join(config.PROACTIVE_TRIGGERS)} — nothing enabled." + Style.RESET_ALL)
+            return None, None
+        scheduler.trigger_engine = TriggerEngine(notifier, triggers,
+                                                 logger=ciel.core._log_thought)
+        return presence, notifier
+    except Exception as e:
+        print(Fore.YELLOW + f"[Proactive] disabled: {type(e).__name__}: {e}" + Style.RESET_ALL)
+        return None, None
+
+
 def main():
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
     # Voice mode: `--voice` flag or INPUT_MODE=voice makes speech the default input.
@@ -90,6 +135,9 @@ def main():
             ciel.core.confirm_callback = lambda n, p, a: True  # auto-approve everything
             print(Fore.YELLOW + "[System] Safety gate open (permissive mode for non-violent categories)" + Style.RESET_ALL)
 
+        # Must precede start_background(): the engine rides the scheduler's daemon thread.
+        presence, notifier = _setup_proactive(ciel, scheduler)
+
         scheduler.start_background()
         print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
 
@@ -124,8 +172,23 @@ def main():
 
     while True:
         try:
+            # TIER 6: flush what the trigger engine queued while we sat blocked in
+            # input(). Printing here — from this thread, between prompts — is what keeps
+            # a proactive message out of the middle of a half-typed line.
+            if notifier:
+                for line in notifier.drain_cli():
+                    print(Fore.YELLOW + "\n" + line + Style.RESET_ALL)
+
             prompt = "\nMaster (Enter=speak): " if voice_default else "\nMaster: "
             user_input = input(Fore.GREEN + prompt + Style.RESET_ALL).strip()
+
+            # Any keystroke proves the Master is here: it refreshes presence (so the CLI
+            # keeps counting as a live channel) and clears pending questions from the
+            # escalation queue — they have demonstrably been seen, whether or not the
+            # Master chose to answer them.
+            if presence:
+                presence.touch()
+                notifier.ack_seen()
 
             # Voice triggers: explicit ":v"/":voice" anytime, or empty line in voice mode.
             if user_input.lower() in (":v", ":voice") or (voice_default and user_input == ""):

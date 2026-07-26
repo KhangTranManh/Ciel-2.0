@@ -160,6 +160,17 @@ AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
 AGENT_PARALLEL_ENABLED=true
 AGENT_PARALLEL_MAX_WORKERS=4
 
+# --- Proactivity: let Ciel speak first. OFF by default, opt-in per trigger by name. ---
+PROACTIVE_ENABLED=false
+PROACTIVE_TRIGGERS=              # unfinished_task,daily_cost,repeated_failure
+PROACTIVE_DAILY_BUDGET=8         # max interruptions/day; the rest drop to the digest
+PROACTIVE_IDLE_SECONDS=600       # past this, the CLI stops counting as a watched channel
+PROACTIVE_ASK_ESCALATE_SECONDS=1800   # unanswered question re-routes to Telegram
+PROACTIVE_UNFINISHED_MIN_AGE=1800     # don't nag about a job you may still be watching
+PROACTIVE_COST_USD_LIMIT=0       # 0 = off; a wrong ceiling fires every single day
+PROACTIVE_COST_TOKEN_LIMIT=0     # 0 = off
+PROACTIVE_FAILURE_THRESHOLD=3    # same tool failing N times in an hour
+
 # --- Permissions (comma-separated tool names) ---
 CIEL_DENY_TOOLS=              # refused outright; no grant or open gate can reach past this
 CIEL_AUTO_TOOLS=              # extra tools to treat as read-only / never prompt

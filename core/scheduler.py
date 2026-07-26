@@ -138,6 +138,10 @@ class CielScheduler:
 
     def __init__(self):
         self.cleanse_callback = None
+        # TIER 6: condition-based proactivity. The engine rides this existing daemon
+        # thread rather than starting its own — one background thread is easier to
+        # reason about, and every trigger already throttles itself via `every_seconds`.
+        self.trigger_engine = None
         try:
             import schedule
             self._schedule = schedule
@@ -146,24 +150,48 @@ class CielScheduler:
             self._schedule = None
 
     def start_background(self):
-        """Register tasks and start daemon thread."""
-        if self._schedule is None:
-            print("[SCHEDULER] Skipping — schedule library missing.")
-            return
+        """Register clock tasks and start the daemon thread.
 
-        # Register daily tasks
-        self._schedule.every().day.at("08:00").do(_morning_digest)
-        self._schedule.every().day.at("23:00").do(self._trigger_cleanse)
+        A missing `schedule` library disables the clock tasks only. Tier-6 triggers are
+        plain Python and must still run — tying them to an optional dependency would
+        make proactivity silently vanish on a fresh install.
+        """
+        if self._schedule is not None:
+            self._schedule.every().day.at("08:00").do(_morning_digest)
+            self._schedule.every().day.at("23:00").do(self._trigger_cleanse)
+        else:
+            print("[SCHEDULER] 'schedule' library missing — clock tasks disabled.")
+
+        if self._schedule is None and self.trigger_engine is None:
+            return                              # nothing to run; don't spawn an idle thread
 
         # Start daemon thread (dies when main process exits)
         thread = threading.Thread(target=self._run_loop, daemon=True)
         thread.start()
-        print("[System] CielScheduler started. Morning Digest scheduled at 08:00 daily.")
+        bits = []
+        if self._schedule is not None:
+            bits.append("Morning Digest at 08:00")
+        if self.trigger_engine is not None:
+            names = ", ".join(t.name for t in self.trigger_engine.triggers) or "none"
+            bits.append(f"triggers: {names}")
+        print(f"[System] CielScheduler started ({'; '.join(bits)}).")
 
     def _run_loop(self):
-        """Check for pending tasks every 60 seconds."""
+        """Check for pending work every 60 seconds."""
         while True:
-            self._schedule.run_pending()
+            if self._schedule is not None:
+                try:
+                    self._schedule.run_pending()
+                except Exception as e:
+                    print(f"[SCHEDULER] clock task error: {e}")
+            if self.trigger_engine is not None:
+                try:
+                    # The engine absorbs per-trigger errors itself; this guard only
+                    # covers the engine failing wholesale, which must not kill the
+                    # thread and take the clock tasks down with it.
+                    self.trigger_engine.tick(time.time())
+                except Exception as e:
+                    print(f"[SCHEDULER] trigger engine error: {e}")
             time.sleep(60)
 
     def _trigger_cleanse(self):

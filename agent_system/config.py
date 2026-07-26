@@ -84,6 +84,28 @@ AGENT_LOOP_MAX_SECONDS = float(os.getenv("AGENT_LOOP_MAX_SECONDS", "120"))
 AGENT_PARALLEL_ENABLED = os.getenv("AGENT_PARALLEL_ENABLED", "true").lower() in ("true", "1", "yes")
 AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 
+# --- Tier-6 proactivity (see core/triggers.py + core/notifier.py) ---
+# Lets Ciel speak first when a condition it watches becomes true, instead of only ever
+# answering. OFF by default, and opt-in per trigger by name: this list will grow, and a
+# default-on trigger added later would start talking without anyone choosing it.
+# Known names: unfinished_task, daily_cost, repeated_failure.
+PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
+PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
+# Hard ceiling on interruptions per day. Beyond it, findings still survive — they drop to
+# the digest instead of interrupting. Counted in Python, never left to model restraint.
+PROACTIVE_DAILY_BUDGET = int(os.getenv("PROACTIVE_DAILY_BUDGET", "8"))
+# A live process is not a live human: past this idle time the CLI/app stops counting as
+# a channel anyone is watching, and notifications route to the fallback (Telegram).
+PROACTIVE_IDLE_SECONDS = float(os.getenv("PROACTIVE_IDLE_SECONDS", "600"))
+# An unanswered question re-routes to the fallback channel after this long.
+PROACTIVE_ASK_ESCALATE_SECONDS = float(os.getenv("PROACTIVE_ASK_ESCALATE_SECONDS", "1800"))
+# Per-trigger thresholds. The two cost limits default to 0 = disabled, because a wrong
+# ceiling fires every single day and gets proactivity switched off wholesale.
+PROACTIVE_UNFINISHED_MIN_AGE = float(os.getenv("PROACTIVE_UNFINISHED_MIN_AGE", "1800"))
+PROACTIVE_COST_USD_LIMIT = float(os.getenv("PROACTIVE_COST_USD_LIMIT", "0"))
+PROACTIVE_COST_TOKEN_LIMIT = int(os.getenv("PROACTIVE_COST_TOKEN_LIMIT", "0"))
+PROACTIVE_FAILURE_THRESHOLD = int(os.getenv("PROACTIVE_FAILURE_THRESHOLD", "3"))
+
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —
 # different from an outright connection error) hangs the client forever, and the
