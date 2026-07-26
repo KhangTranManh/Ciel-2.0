@@ -87,6 +87,14 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    Make tools idempotent, or split preview/confirm and declare the pairing with
    `make_result(confirm={"tool": …, "args": …})` rather than editing core.
 
+7c. **Three agent-capability tiers are live; read `architecture.md` before changing any
+   of them.** Tier 1 = the observe/re-plan loop (`continuation.py`), Tier 2 = durable task
+   state (`task_state.py`), Tier 3 = `AUTO`/`ASK`/`DENY` permissions with plan-level
+   approval (`permissions.py`). All three share one rule: **the decision is deterministic
+   Python, the LLM only plans.** Plan approvals are scoped to the exact `(tool + args)`
+   reviewed — never to a tool name, or a step the loop invents later would inherit an
+   approval the Master never gave. `DENY` outranks every grant and `DISABLE_SAFETY_GATE`.
+
 7b. **The Tier-1 loop decides in code, plans with the LLM** (`core/continuation.py`).
    `ContinuationPolicy.assess()` is pure Python and costs nothing, so an ordinary request
    spends zero extra calls; only when a deterministic signal fires does one planner call
@@ -104,3 +112,11 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
 10. **`.env` is the single source for credentials + provider config.** Swap providers via
     `BRAIN_PROVIDER`/`WORKER_PROVIDER`/`MIDDLEWARE_PROVIDER` with no code changes. Gotcha: the Worker
     model reads `CODER_MODEL`, not `WORKER_MODEL`.
+
+11. **Measure a model alias before adopting it — gateways inject hidden prompts.** Measured
+    on the same endpoint and key: `ccf/claude-opus-4-8` added **~6,500 tokens to every call**
+    (unsuppressable), while `nt/cx/gpt-5.6-sol` added ~10. Switching between them changed
+    nothing but one `.env` line, yet cut Brain tokens 52% and latency 51% at identical
+    11/11 correctness — ~79% of the old cost was text nobody sent. To check: issue one
+    trivial request and compare the provider's reported `input_tokens` against what you
+    actually sent. See the provider table in `../note.md`.

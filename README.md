@@ -151,6 +151,23 @@ TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 
+# --- Agent loop (observe → re-plan → act). Costs nothing when it does not fire. ---
+AGENT_LOOP_ENABLED=true
+AGENT_LOOP_MAX_ROUNDS=2       # extra rounds beyond the first
+AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
+
+# --- Parallel tool execution ---
+AGENT_PARALLEL_ENABLED=true
+AGENT_PARALLEL_MAX_WORKERS=4
+
+# --- Permissions (comma-separated tool names) ---
+CIEL_DENY_TOOLS=              # refused outright; no grant or open gate can reach past this
+CIEL_AUTO_TOOLS=              # extra tools to treat as read-only / never prompt
+
+# --- Escape hatch: plan email sends with regex instead of the Brain. Off by default;
+#     only needed for a provider whose content filter blocks email routing calls. ---
+EMAIL_BYPASS_BRAIN=false
+
 # --- Optional voice I/O (all have working defaults) ---
 STT_BACKEND=google            # google | whisper | gemini
 TTS_BACKEND=edge              # edge | pyttsx3 | space
@@ -198,6 +215,9 @@ In the UI, click the 🔇 → 🔊 button beside the input box to have Ciel read
 ### Routing & Execution
 - **Three-Tier Architecture** — Brain (intent routing/planning) → Worker (content/code generation) → Middleware (scoped finalizer for email/report bodies, fail-open by design).
 - **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or `multi_tool`, each with its own execution path.
+- **Agent loop — observe, re-plan, act** (`core/continuation.py`) — a plan is a flat list of calls chosen before anything runs, so *"check git status, and if it's clean, commit"* used to be **structurally unrepresentable**. The loop closes that: after a plan executes, five deterministic signals decide whether to look again with the real results in view (conditional wording · an unresolved `{step_N}` reaching a tool · a step that failed while later steps ran · fan-out over a set of unknown size · an optional planner hint). Whether to loop is decided in **pure Python**, so an ordinary request pays **zero extra tokens** and no model — however confused — can make it unbounded. Every ceiling (rounds, planner calls, wall-clock, steps per round) is enforced in code, and any failure quietly keeps the first round's answer.
+- **Parallel tool execution** (`core/parallel.py`) — provably independent steps in one plan run concurrently. Opt-in per tool (`parallel_safe` in a skill's factory), because auto-registration means a blacklist would silently parallelise a newly added mutating tool. Measured on tool time alone: 9.3× on file fan-out, 2.3× on web scrapes.
+- **Durable task state** (`core/task_state.py`) — a job interrupted by a crash, restart or closed terminal leaves a record instead of vanishing; the CLI reports it on the next launch. `đang làm gì` / `status` is answered straight from that record — **0 LLM calls, ~0.1s**.
 - **Deterministic Workflow Safeguards** — if a plan is missing its terminal send step (email intent + address) or write step (explicit path + write verb), it's auto-appended in code, not left to the Brain to remember. The same layer enforces an explicitly-requested email subject (`subject exactly '...'`) and blocks any unsynthesized `[SYNTHESIZE…]`-style placeholder from reaching a file or an inbox — matched by pattern, so it holds even when the Brain paraphrases the marker.
 - **Dependent multi-tool steps** — a later step can consume an earlier one's real output via `{{prev}}` / `{{step_N}}` tokens in its args, substituted deterministically at run time (no LLM). Independent-tool plans are unchanged.
 - **Self-Healing with a Skip-List** — multi-attempt autonomous recovery for tool/code errors, but skips error classes no retry can ever fix (missing library, network timeout, geo-restriction) instead of burning a guaranteed-to-fail Worker call.
@@ -206,7 +226,11 @@ In the UI, click the 🔇 → 🔊 button beside the input box to have Ciel read
 
 ### Safety
 - **Decoupled Safety Model** — content-filter permissiveness (`SAFETY_OPEN`) and the destructive-action confirmation gate (`DISABLE_SAFETY_GATE`) are independent flags on purpose; a denied confirmation can never be silently overridden by the content-filter setting.
+- **Three-way permissions** (`core/permissions.py`) — every `(tool, args)` resolves to `AUTO` (read-only, never interrupts), `ASK`, or `DENY` (`CIEL_DENY_TOOLS` — refused outright, unreachable by any grant or by an open safety gate).
+- **Approve the plan, not the fragments** — a multi-step plan raises **one** prompt listing every step that needs approval, **before the first step runs**. Declining means *nothing ran*; the old per-call gate asked about step 3 only once steps 1–2 had already happened. Approvals are scoped to the exact `(tool + args)` reviewed, so a step the agent loop invents later — same tool, different arguments — is still asked about.
+- **Session grants** — answer `A` at a prompt to stop being asked about that one tool for the rest of the run. Held in memory only, never written to disk, and refused for deny-listed tools.
 - **High-Risk Tool Gate** — eight tools that touch the outside world (`delete_file`, `execute_shell_command`, the three Gmail send tools, `trash_email`, `git_confirm_push`, `vision_act`) require an explicit `Y/N` before running.
+- **Confirmations survive a restart** — a preview tool declares its own follow-up via `make_result(confirm=…)`; a later bare "yes" executes it with **zero LLM calls**, and the pending action is persisted, so it is not lost if the process dies. Only one can be outstanding: a new risky request while one is pending is refused deterministically rather than silently dropping it.
 - **Dangerous-Code Gate** — any Worker-written script or file (not just the known high-risk tools) is scanned for destructive patterns — drive format, `shutil.rmtree`, fork bombs — and gated behind the same confirmation.
 - **Sandboxed Filesystem** — file tools are quarantined to `ciel_workspace/` / `agent_output/`; paths that escape raise an error.
 

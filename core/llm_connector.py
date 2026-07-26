@@ -30,6 +30,7 @@ from .continuation import (
 )
 from .parallel import plan_batches, collect_parallel_safe
 from .task_state import TaskStore
+from .permissions import PermissionPolicy, Decision
 from . import rag_manager
 
 import sys
@@ -92,6 +93,15 @@ _DANGEROUS_CODE_PATTERNS = (
     r"shutdown\s+/[rsf]", r"os\.system\([^)]*\brm\b", r"DROP\s+DATABASE", r"DROP\s+TABLE",
     r"mkfs\.", r"diskutil\s+erasedisk", r":(){ :\|:& };:",
 )
+
+
+# ONE definition of "an email address", used everywhere one is extracted or stripped.
+# The `+` in the local part is the reason this is centralised: seven copies of a
+# `+`-blind pattern had drifted through the file, and three of them extract the RECIPIENT.
+# Against "first.last+tag@sub.domain.com" such a pattern matches only "tag@sub.domain.com",
+# i.e. it would have addressed the mail to the wrong person — silently, since the result
+# is still a valid-looking address. Gmail's +tag form is common, so this is not exotic.
+_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w.\-]+\.\w+")
 
 
 def _find_dangerous_code_patterns(text: str) -> list:
@@ -222,6 +232,12 @@ class CielCore:
         # trace the Master can act on instead of vanishing. Deliberately NOT fed to the
         # Brain (see core/task_state.py).
         self.tasks = TaskStore(self.base_dir / "ciel_data" / "state" / "tasks.json")
+        # TIER 3 — AUTO / ASK / DENY. Built once here so session grants survive the whole
+        # run; `_HIGH_RISK_TOOLS` stays the source of truth for what counts as risky.
+        self.permissions = PermissionPolicy(
+            risky_names=self._HIGH_RISK_TOOLS,
+            gate_disabled=os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes"),
+        )
 
         # Live per-tier LLM call counter — incremented at the single logging chokepoint
         # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
@@ -309,7 +325,7 @@ class CielCore:
         """
         if any(kw in lowered for kw in cls._EMAIL_INTENT_KEYWORDS):
             return True
-        has_address = bool(re.search(r'[\w.\-]+@[\w.\-]+\.\w+', user_input))
+        has_address = bool(_EMAIL_RE.search(user_input))
         has_send_verb = any(v in lowered for v in cls._SEND_VERBS)
         return has_address and has_send_verb
 
@@ -655,14 +671,21 @@ class CielCore:
                 tool_args = dict(tool_args)
                 tool_args[body_key] = reviewed
 
-        # SAFETY GATE: require confirmation for high-risk tools.
-        # Controlled ONLY by DISABLE_SAFETY_GATE (default OFF = gate active / fail-safe).
+        # SAFETY GATE (Tier 3): AUTO / ASK / DENY — see core/permissions.py.
         # NOTE: SAFETY_OPEN governs Brain LLM content-filtering, a separate concern —
         # it must NOT influence the destructive-tool confirmation gate.
-        disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
-        if tool_name in self._HIGH_RISK_TOOLS and not disable_gate:
+        decision, why = self.permissions.decide(tool_name, tool_args)
+        if decision == Decision.DENY:
+            self._log_thought("SAFETY", "denied", f"{tool_name}: {why}")
+            return (f"[CANCELLED] {tool_name} is on the deny list and will not be run, Master. "
+                    f"Remove it from CIEL_DENY_TOOLS if that was not intended.")
+        if decision == Decision.ASK:
             if not self._request_confirmation(tool_name, tool_args):
                 return f"[CANCELLED] Master denied execution of {tool_name}. No action was taken."
+        elif why not in ("read-only", "not classified as risky"):
+            # Only worth logging when a risky tool was let through for a REASON (a session
+            # grant, plan approval, or an open gate) — that is the audit-relevant case.
+            self._log_thought("SAFETY", "auto_allowed", f"{tool_name}: {why}")
 
         # send_gmail_message transmits its body as text/html (langchain), so raw '\n'
         # collapse into a wall of text on the recipient side. Render the clean plain
@@ -1130,6 +1153,59 @@ class CielCore:
                               f"User asked for an exact subject; replaced '{old}' with '{requested}'.")
         return send_args
 
+    def _review_plan_permissions(self, tools: list) -> str:
+        """TIER 3 plan-level approval. Returns a refusal string to abort, or "" to run.
+
+        Called BEFORE the first step, which is the whole point: the old per-call gate
+        asked about step 3 only once steps 1-2 had already happened, so declining left
+        the work half-done. Here the Master sees every step needing approval, answers
+        once, and a "no" means nothing ran at all.
+        """
+        # Fresh slate: a grant from an earlier plan must never carry into this one.
+        self.permissions.clear_plan_grants()
+
+        review = self.permissions.review_plan(tools)
+        denied, asked = review[Decision.DENY], review[Decision.ASK]
+
+        if denied:
+            self._log_thought("SAFETY", "plan_denied", f"deny-listed steps: {denied}")
+            return (f"[CANCELLED] This plan needs {', '.join(sorted(set(denied)))}, which "
+                    f"is on the deny list, Master. Nothing was run.")
+
+        if not asked or self.confirm_callback is None:
+            return ""       # nothing to approve, or no UI to ask through (per-call gate still applies)
+
+        lines = ["This plan needs your approval before anything runs:", ""]
+        for i, t in enumerate(tools or [], 1):
+            name = (t.get("tool_name") or "?") if isinstance(t, dict) else "?"
+            mark = "!" if name in asked else " "
+            args = json.dumps((t.get("tool_args") or {}) if isinstance(t, dict) else {},
+                              ensure_ascii=False)[:120]
+            lines.append(f" {mark} {i}. {name}({args})")
+        lines += ["", f"Steps marked ! need approval: {', '.join(sorted(set(asked)))}"]
+        preview = "\n".join(lines)
+
+        self._log_thought("SAFETY", "plan_confirm_requested", f"steps needing approval: {asked}")
+        try:
+            approved = self.confirm_callback("plan", preview, {"steps": asked})
+        except Exception as e:
+            self._log_thought("SAFETY", "plan_confirm_error", f"{type(e).__name__}: {e}")
+            approved = False
+
+        if not approved:
+            self._log_thought("SAFETY", "plan_denied_by_master", str(asked))
+            return "[CANCELLED] Master declined the plan. Nothing was run."
+
+        # Grant the exact STEPS reviewed, not their tool names: a later step the Master
+        # never saw (e.g. one the Tier-1 loop invents) must still be asked about, even if
+        # it happens to use a tool that appeared in this plan.
+        approved_steps = [t for t in (tools or [])
+                          if isinstance(t, dict) and (t.get("tool_name") or "").strip() in asked]
+        granted = self.permissions.grant_for_plan(approved_steps)
+        self._log_thought("SAFETY", "plan_approved",
+                          f"{len(granted)} exact step(s) approved for this plan only")
+        return ""
+
     def _run_steps(self, steps: list, response_hint: str, user_input: str,
                    results: list, step_outputs: list, records: list, label: str = "") -> bool:
         """Execute `steps` in order, running provably-independent ones concurrently.
@@ -1316,6 +1392,14 @@ class CielCore:
         results = []
         step_outputs = []   # raw result of each executed step, for {{prev}}/{{step_N}} refs
         records = []        # (tool, args, result) per step — the agent loop's observations
+
+        # TIER 3 — review the WHOLE plan before running any of it, so the Master sees
+        # what is about to happen instead of being stopped after step 2 of 4 with the
+        # first two already carried out. Returns early on refusal: nothing has run yet.
+        blocked = self._review_plan_permissions(tools)
+        if blocked:
+            return blocked
+
         # Execute non-send tools first. Dependent chains ({{prev}}/{{step_N}}) are
         # resolved per step inside _run_steps, which also batches provably-independent
         # steps to run concurrently.
@@ -2063,11 +2147,25 @@ RULES:
             # deterministically before routing ever runs, so the Brain can no longer
             # reach this point while one is outstanding.
 
-            # Proactive bypass for email sends: avoid calling the Brain router at all
-            # when the request is clearly about sending email. This prevents the
-            # Vilao content filter from ever being triggered on the routing call.
-            if self._is_email_send_intent(user_input, lowered):
-                log.system("Email send request detected — bypassing Brain router to avoid content filter.")
+            # EMAIL ROUTING. There used to be a PROACTIVE bypass here: any request that
+            # looked like an email send skipped the Brain entirely and was planned by
+            # regex heuristics instead, so the provider's content filter could never fire
+            # on it. That cost far more than it saved — the heuristics ignored the
+            # Master's stated subject, could not resolve "3pm tomorrow" into a date, and
+            # once split a request at the first send-verb so the search query became
+            # literally "viết một", producing an email that reported finding no data.
+            #
+            # It is also redundant: the `except` below ALREADY falls back to the same
+            # heuristics when a filter actually blocks the call — reactively, so the cost
+            # is paid only when it is real. Measured on the current Brain: 3/3 email
+            # requests routed with no filtering at all, and every plan beat the heuristic
+            # one (correct subject, resolved dates, better query, real articles).
+            #
+            # EMAIL_BYPASS_BRAIN=true restores the old proactive behaviour for a provider
+            # that filters aggressively enough to need it.
+            if (os.getenv("EMAIL_BYPASS_BRAIN", "false").lower() in ("true", "1", "yes")
+                    and self._is_email_send_intent(user_input, lowered)):
+                log.system("EMAIL_BYPASS_BRAIN set — planning the email without the Brain.")
                 decision = self._fallback_direct_action(user_input)
             else:
                 try:
@@ -2100,7 +2198,7 @@ RULES:
             if action == "tool":
                 _tool_name_pre = decision.get("tool_name", "")
                 if _tool_name_pre not in ("send_gmail_message", "send_gmail_html_message"):
-                    _to_match_pre = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+                    _to_match_pre = _EMAIL_RE.search(user_input)
                     _send_verb_pre = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
                     if _to_match_pre and _send_verb_pre:
                         decision = dict(decision)
@@ -2208,7 +2306,7 @@ RULES:
                 # the wording that triggered this bug). A concrete email address plus
                 # any send verb is a reliable, low-false-positive signal on its own.
                 has_send_step = any(t.get("tool_name") in ("send_gmail_message", "send_gmail_html_message") for t in tools)
-                to_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+                to_match = _EMAIL_RE.search(user_input)
                 send_verb_present = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
 
                 if not has_send_step and to_match and send_verb_present:
@@ -2264,12 +2362,15 @@ RULES:
             else:
                 self.tasks.finish("done")
 
+            # A plan-scoped approval must not outlive its plan — see permissions.py.
+            self.permissions.clear_plan_grants()
             return response
 
         except Exception as e:
             log.error(f"Pipeline error: {e}")
             traceback.print_exc()
             self.tasks.finish("failed", f"{type(e).__name__}: {str(e)[:120]}")
+            self.permissions.clear_plan_grants()
             return f"An error occurred: {str(e)[:200]}"
 
     def _fallback_direct_action(self, user_input: str) -> dict:
@@ -2283,7 +2384,7 @@ RULES:
         if self._is_email_send_intent(user_input, lowered):
             # Extract recipient email if present, otherwise default to the known test address
             import re
-            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
+            match = _EMAIL_RE.search(user_input)
             to_addr = match.group(0) if match else "kxctran@gmail.com"
 
             # Detect which assets the user ACTUALLY named — do not hardcode XAU/BTC.
@@ -2385,9 +2486,34 @@ RULES:
             # content, handled by the referential-send override in process(), not a fresh search.
             if any(w in lowered for w in research_words) and not self._is_referential_send(user_input):
                 # Build a search query from the request minus the send/recipient noise.
-                query = re.sub(r'[\w.\-]+@[\w.\-]+\.\w+', '', user_input)
-                query = re.split(r'\b(?:và |sau đó |rồi |then |and )?(?:gửi|gởi|send|email|mail)\b', query, 1, re.IGNORECASE)[0].strip()
-                query = query or user_input
+                #
+                # This used to SPLIT on the first send-verb and keep only what came
+                # BEFORE it, assuming the shape "<topic> … then send it to X". That is
+                # only one of the two natural phrasings. Observed live: "viết một email
+                # ngắn gửi tới <addr> … tóm tắt tình hình kinh tế Việt Nam hôm nay" put
+                # the word "email" third, so the query became literally "viết một" — the
+                # search returned essay-writing tutorials and the email that went out
+                # said it had found no economic data at all.
+                #
+                # Subtracting the noise instead of splitting on it keeps the topic
+                # wherever the Master happened to put it.
+                query = _EMAIL_RE.sub(' ', user_input)
+                query = re.sub(r'["\'“”‘’][^"\'“”‘’]{0,80}["\'“”‘’]', ' ', query)   # quoted subject
+                query = re.sub(
+                    r'\b(?:viết|soạn|tạo|compose|write|draft)\s+(?:một|1|an?|the)?\s*'
+                    r'(?:email|mail|thư|message)\b'                       # "viết một email"
+                    r'|\b(?:gửi|gởi|send|forward|chuyển)\s*(?:tới|cho|đến|to|qua)?\b'   # "gửi tới"
+                    r'|\b(?:email|mail|thư)\b'
+                    r'|\b(?:với|có)?\s*(?:tiêu\s*đề|chủ\s*đề|subject|title)\b'
+                    r'|\b(?:ngắn|gọn|ngắn\s*gọn|brief|short)\b',
+                    ' ', query, flags=re.IGNORECASE)
+                query = re.sub(r'\s{2,}', ' ', query).strip(" ,.-–—:;")
+                # If subtraction ate almost everything, the request was mostly noise —
+                # fall back to the raw text rather than searching for a fragment.
+                if len(query) < 8:
+                    query = _EMAIL_RE.sub(' ', user_input).strip()
+                self._log_thought("BRAIN", "fallback_search_query",
+                                  f"topic extracted from email request: {query!r}")
                 # Topic-based subject beats the generic/football default for a news summary.
                 topic = re.sub(r'^(vậy|hãy|please|xin|làm ơn)\s+', '', query, flags=re.IGNORECASE).strip()
                 research_subject = f"Tổng hợp thông tin: {topic[:70]}" if topic else subject

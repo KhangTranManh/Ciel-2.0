@@ -193,6 +193,36 @@ Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
 a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
 regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
+## Tier-3 Permissions (`core/permissions.py`, added July 2026)
+
+Approval used to be binary and per-call: a tool was either in `_HIGH_RISK_TOOLS` (asked
+every single time) or free. Worse, the prompt arrived **mid-execution** — declining at
+step 3 of 4 left steps 1-2 already carried out, so the Master was approving fragments.
+
+Every `(tool, args)` now resolves to one of three decisions:
+
+| | Meaning |
+|---|---|
+| `AUTO` | Read-only. Never interrupts. Explicit list + `CIEL_AUTO_TOOLS`. |
+| `ASK` | Has an effect. Needs confirmation. Source of truth stays `_HIGH_RISK_TOOLS`. |
+| `DENY` | Refused outright, not even offered as a prompt. `CIEL_DENY_TOOLS`. |
+
+**Plan-level approval** (`_review_plan_permissions`, called before the first step of a
+multi_tool plan): one prompt listing every step, answered once. A "no" means **nothing
+ran**. A deny-listed step aborts the plan without asking at all.
+
+**Two grant scopes, deliberately different:**
+- *session* — by tool name, opt-in via `A` at the CLI prompt, never written to disk.
+- *plan* — by **`(tool + exact args)` signature**, cleared when the plan ends. Keyed on
+  the whole call on purpose: approving `delete_file` for the reviewed plan must not
+  auto-approve a *different* `delete_file` that the Tier-1 loop invents two rounds later
+  and the Master never saw. It also makes a stale grant harmless — it can only ever
+  re-approve the identical action.
+
+`DENY` is checked first and cannot be overridden by a session grant, a plan approval, or
+`DISABLE_SAFETY_GATE`. The `AUTO` set is kept in agreement with `core/parallel.py`'s
+parallel-safe set (a test asserts no parallel-safe tool needs approval).
+
 ## Tier-2 Task State (`core/task_state.py`, added July 2026)
 
 Before this the only cross-turn state was ONE slot holding ONE action awaiting

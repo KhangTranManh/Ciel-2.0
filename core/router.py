@@ -18,7 +18,7 @@ from agent_system.config import (
 # An email address or a workspace path, or an action verb (EN + VI). Kept broad on purpose —
 # a false "needs Brain" only costs latency; a false "chat" would skip a real action.
 _TOOL_SIGNAL_RE = re.compile(
-    r"[\w.\-]+@[\w.\-]+\.\w+"                                          # email address
+    r"[\w.+\-]+@[\w.\-]+\.\w+"                                         # email address (+tag form included)
     r"|(?:ciel_workspace|agent_output)[\\/]"                            # workspace path
     r"|\.(?:py|txt|json|md|log|csv|pdf|docx|html|xlsx|png)\b"           # a filename token
     r"|\b(?:send|gửi|gởi|mail|email|read|đọc|write|ghi|save|lưu|create|tạo|delete|xóa|xoá|"

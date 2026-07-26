@@ -9,6 +9,27 @@ email templates. This is the "what is true right now" file — for the stable ar
 
 ---
 
+## Agent-capability tiers (roadmap, as of 2026-07-26)
+
+Five tiers were identified as the gap between "executes commands" and "pursues goals".
+Three are done. The ordering matters: each one was only worth building once the previous
+had removed the reason the model kept being asked to compensate in prose.
+
+| Tier | What it fixes | Status |
+|------|---------------|--------|
+| **1 — Agent loop** | A flat plan cannot express "if X then Y". Execute → observe → re-plan. | ✅ `core/continuation.py` |
+| **2 — Task state** | Interrupted work vanished; "what were you doing?" had to be guessed. | ✅ `core/task_state.py` |
+| **3 — Permissions** | Approval was binary and arrived mid-execution, so "no" left work half-done. | ✅ `core/permissions.py` |
+| **4 — Context discipline** | **99% of every Brain call is fixed overhead** (4,291 tok: router prompt 37%, tool list 33%, persona 28%, the actual request **0.4%**). Injections are added ad hoc in `process()`; there is no single assembler and no token budget. | ⬜ measured, not built |
+| **5 — Ergonomics** | A long request cannot be interrupted — `main.py` is a blocking `input()` loop, so the only way out of a 566s call is killing the process. | ⬜ not started |
+
+Not a tier, but done alongside: **parallel tool execution** (`core/parallel.py`).
+
+Tier 4 is also the blocker for **local/small models**: the 4,291-token floor means a
+4K-context model cannot run Ciel at all, regardless of how capable it is. The routing
+contract itself is already model-agnostic — verified by swapping the Brain to a much
+cheaper alias with no loss of correctness (see the provider section below).
+
 ## Current Status (as of 2026-07-25)
 
 **Model tiers — all on Vilao (OpenAI-compatible gateway):**
@@ -68,7 +89,98 @@ stronger model paraphrases it. Match by pattern/intent instead.**
 
 ---
 
+## Provider gotcha: gateway-injected prompts (measured 2026-07-26)
+
+**A model alias can silently add thousands of tokens to EVERY call.** Measure a new alias
+before adopting it — one probe call is enough:
+
+| Endpoint / alias | Injected per call | Suppressible? |
+|---|---|---|
+| Vilao `ccf/claude-opus-4-8` | **~6,500** | ❌ no — same with or without a system message |
+| Vilao `nt/cx/gpt-5.6-sol` | **~10** | ✅ (2,485 only if NO system message is sent) |
+| Vilao `op/deepseek/deepseek-v4-pro` | ~4 | ✅ |
+| TEM `claude-*` | ~1,750 | ❌ — model self-identifies as "Claude Code" |
+| TEM `gpt-5.6-*` | 0 | ✅ |
+
+Ciel always sends a SystemMessage to the Router, so it lands on the clean side of every
+alias that behaves this way — except the ones that inject unconditionally.
+
+**Switching `BRAIN_MODEL` from `ccf/claude-opus-4-8` to `nt/cx/gpt-5.6-sol` (same
+provider, same key, one line in `.env`): identical 11/11 correctness, Brain tokens
+74,273 → 35,687 (−52%), latency 218s → 107s (−51%), per-call 8,252 → 4,460 tokens.**
+~79% of the old Brain cost was injected text nobody asked for.
+
+How to check an alias: send one trivial request and compare the provider's reported
+`input_tokens` against what you actually sent. Anything above a handful is theirs.
+
+## Where a Brain call's tokens go (measured with tiktoken, 2026-07-26)
+
+| Component | Tokens | Share |
+|---|---|---|
+| `CIEL_ROUTER_PROMPT` | 1,591 | 37% |
+| Tool list (44 tools, ~32 each) | 1,437 | 33% |
+| Persona | 1,205 | 28% |
+| Deterministic injections | 42 | 1% |
+| **The user's actual request** | **16** | **0.4%** |
+
+**99% of every Brain call is fixed overhead resent verbatim.** Two consequences: every new
+skill permanently raises the cost of every call, and the 1,205-token persona is being sent
+to a component that only ever emits JSON. The 4,291-token floor is also the hard blocker
+for small/local models — a 4K-context model cannot run this at all.
+
 ## Changelog (most recent first)
+
+### 2026-07-26 — The email bypass was removed (it was costing what it claimed to save)
+
+Any request that looked like an email send used to skip the Brain entirely and be planned
+by regex heuristics, so the provider's content filter could never fire on it. Live testing
+showed the cure was worse than the disease:
+
+| | Heuristic bypass | Brain |
+|---|---|---|
+| Subject the Master asked for | ignored, invented its own | honoured verbatim |
+| "3 giờ chiều mai" | `"Email từ Ciel"` | `"Nhắc lịch họp lúc 15:00 ngày 27/07/2026"` |
+| Search query | split the request at the first send-verb → **`"viết một"`** | `"tình hình kinh tế Việt Nam hôm nay tin tức mới nhất"` |
+| Resulting email | *"không thu được dữ liệu thực tế nào"* | 5 real articles with dates and sources |
+
+**3/3 email requests routed through the Brain with no content filtering at all**, so the
+bypass was dodging a filter that no longer applies. It was also redundant: the `except`
+branch in `process()` already falls back to the same heuristics *reactively*, when a
+filter genuinely blocks the call — paying the cost only when it is real.
+
+`EMAIL_BYPASS_BRAIN=true` restores the old behaviour if a provider ever needs it.
+
+Two bugs found while testing this, both pre-existing:
+- **The search query was built by splitting at the first send-verb** and keeping what came
+  before, which only works for "\<topic\> … then send to X". "viết một email … tóm tắt tình
+  hình kinh tế" put the topic *after*, so the query became `"viết một"`. Now the noise is
+  subtracted rather than the sentence being cut in half.
+- **The email regex `[\w.\-]+@…` does not match `+` in the local part.** Against
+  `first.last+tag@gmail.com` it matches only `tag@gmail.com` — a valid-looking but WRONG
+  recipient, silently. Seven copies of that pattern had drifted through
+  `llm_connector.py`, three of them used to extract the recipient. All now share one
+  `_EMAIL_RE`.
+
+### 2026-07-26 — Tier-3 permissions (approve the plan, not the fragments)
+
+`core/permissions.py`. Approval was binary (`_HIGH_RISK_TOOLS` = always ask, else never)
+and arrived **mid-execution**, so declining step 3 of 4 left steps 1-2 already done. Now
+every `(tool, args)` is `AUTO` / `ASK` / `DENY`, and a multi_tool plan raises **one**
+prompt before the first step runs — a "no" means nothing ran.
+
+- `DENY` (`CIEL_DENY_TOOLS`) is unconditional: no session grant, plan approval or
+  `DISABLE_SAFETY_GATE` can reach past it.
+- Session grants (CLI `A` = "always this tool") are by name, in-memory, never persisted.
+- **Plan grants are keyed on `(tool + exact args)`, not the tool name.** The first cut
+  keyed on names, which meant approving `delete_file` for the reviewed plan silently
+  approved a *different* `delete_file` the Tier-1 loop proposed later — a step the Master
+  never saw. Signature-keying also makes a leftover grant harmless.
+- Verified: 2 risky steps → exactly 1 prompt (was 2); declining → 0 tools executed;
+  read-only plan → 0 prompts; deny-listed step → aborts without asking.
+
+Known gaps: no per-argument risk rules for `execute_shell_command` (the destructive-content
+scan still only covers `write_file`/`execute_code`), and `main_api.py` auto-approves when
+no WebSocket is attached (pre-existing, unlike the CLI which blocks).
 
 ### 2026-07-26 — Tier-2 task state (interrupted work stops vanishing)
 

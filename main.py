@@ -61,15 +61,30 @@ def main():
         disable_gate = os.getenv("DISABLE_SAFETY_GATE", "false").lower() in ("true", "1", "yes")
         if not disable_gate:
             def _cli_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
-                """Blocking CLI confirmation prompt for destructive tools."""
-                print(Fore.YELLOW + f"\n⚠️  SAFETY CHECK — {tool_name}" + Style.RESET_ALL)
+                """Blocking CLI confirmation. `tool_name == "plan"` is the Tier-3
+                plan-level prompt: one question covering every step that needs approval,
+                asked BEFORE anything runs."""
+                header = ("PLAN APPROVAL" if tool_name == "plan"
+                          else f"SAFETY CHECK — {tool_name}")
+                print(Fore.YELLOW + f"\n⚠️  {header}" + Style.RESET_ALL)
                 print(Fore.WHITE + preview + Style.RESET_ALL)
+                # "A" = approve and stop asking about this tool for the rest of the run.
+                # Offered only for a single tool: blanket-approving a whole plan's worth
+                # of tools for the session is exactly the over-broad grant to avoid.
+                opts = "Approve? (Y/N): " if tool_name == "plan" else "Approve? (Y/N/A=always this tool): "
                 while True:
-                    answer = input(Fore.YELLOW + "Approve? (Y/N): " + Style.RESET_ALL).strip().lower()
+                    answer = input(Fore.YELLOW + opts + Style.RESET_ALL).strip().lower()
                     if answer in ("y", "yes"):
                         return True
                     if answer in ("n", "no"):
                         return False
+                    if answer in ("a", "always") and tool_name != "plan":
+                        if ciel.core.permissions.grant_for_session(tool_name):
+                            print(Fore.YELLOW + f"[Safety] '{tool_name}' approved for this "
+                                  f"session only — never saved to disk." + Style.RESET_ALL)
+                            return True
+                        print(Fore.RED + f"[Safety] '{tool_name}' is deny-listed; cannot grant."
+                              + Style.RESET_ALL)
             ciel.core.confirm_callback = _cli_confirm
         else:
             ciel.core.confirm_callback = lambda n, p, a: True  # auto-approve everything
