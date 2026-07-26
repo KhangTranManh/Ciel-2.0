@@ -228,10 +228,26 @@ def main():
             if not user_input:
                 continue
 
-            output = ciel.run_step(user_input)
+            # TIER 5 — Ctrl+C DURING a request cancels the request; Ctrl+C at the prompt
+            # still exits. Before this, the only way out of a long run (one sat at 566s)
+            # was killing the process, which also threw away the Tier-2 record of what
+            # had been done. Now the job is closed as `cancelled`, so it is visible in
+            # `status` and distinguishable from a crash.
+            try:
+                output = ciel.run_step(user_input)
+            except KeyboardInterrupt:
+                ciel.core.request_cancel("Ctrl+C")
+                try:
+                    ciel.core.tasks.finish("cancelled", "Master pressed Ctrl+C")
+                except Exception:
+                    pass
+                print(Fore.YELLOW + "\n[Đã dừng] Yêu cầu bị huỷ. Những bước đã chạy xong "
+                      "vẫn giữ nguyên — hỏi 'đang làm gì' để xem." + Style.RESET_ALL)
+                continue
             print(Fore.BLUE + f"Ciel: {output}" + Style.RESET_ALL)
             _speak(output)
         except KeyboardInterrupt:
+            # Ctrl+C at the prompt itself — that IS a request to leave.
             break
 
 if __name__ == "__main__":

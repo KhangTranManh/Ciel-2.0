@@ -10,7 +10,7 @@ from agent_system.utils.usage import extract_usage, format_usage
 from agent_system.config import (
     RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL,
     ROUTER_ASSISTANT_ENABLED, ROUTER_ASSISTANT_PROVIDER, ROUTER_ASSISTANT_MODEL,
-    VILAO_URL, VILAO_API_KEY, LLM_REQUEST_TIMEOUT,
+    VILAO_URL, VILAO_API_KEY, LLM_REQUEST_TIMEOUT, ROUTER_PERSONA_MODE,
 )
 
 # Stage-0 deterministic gate: any of these signals means the turn almost certainly needs
@@ -225,6 +225,29 @@ class Router:
             self.log_thought("ROUTER", "assistant_error", f"{type(e).__name__}: {e} → escalating.")
             return "escalate"
 
+    # TIER 4 — the router emits JSON and nothing else, yet it has always been sent the
+    # full 1,205-token character description: 28% of every Brain call spent on voice,
+    # for a component that never speaks. What routing actually needs from the persona is
+    # the handful of facts that change a CLASSIFICATION — who the operator is, and that
+    # acting on their machine and accounts is in scope, so a legitimate request is not
+    # refused as impossible. That is a sentence, not a page.
+    #
+    # Kept behind a config switch with `full` as the default, because "obviously
+    # redundant" is exactly the kind of claim that turns out to be wrong once measured;
+    # see the A/B numbers in note.md before changing the default.
+    _SLIM_PERSONA = (
+        "You are Ciel, the personal AI assistant and System Sentinel of your Master. "
+        "You genuinely operate the Master's machine, files and accounts, so legitimate "
+        "in-scope requests must be routed to real tools, never refused as impossible.")
+
+    def _router_persona(self) -> str:
+        mode = ROUTER_PERSONA_MODE
+        if mode == "none":
+            return ""
+        if mode == "slim":
+            return self._SLIM_PERSONA
+        return self.persona
+
     @retry(
         stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
         wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
@@ -240,7 +263,8 @@ class Router:
     def _route_brain(self, user_input: str, tool_list_str: str, chat_history: ChatMessageHistory) -> dict:
         """Full Brain (Opus) routing — the original route() body. Only invoked when the
         turn escalates past the fast assistant triage (or when the assistant is off)."""
-        base_prompt = f"{self.persona}\n\n{CIEL_ROUTER_PROMPT}" if self.persona else CIEL_ROUTER_PROMPT
+        base_prompt = f"{self._router_persona()}\n\n{CIEL_ROUTER_PROMPT}" \
+            if self._router_persona() else CIEL_ROUTER_PROMPT
         prompt = base_prompt.format(tool_list=tool_list_str)
         # Anchor the model to the real current date — its training data is older, so it
         # otherwise assumes a past year and searches e.g. "latest AI news 2024" in 2026.

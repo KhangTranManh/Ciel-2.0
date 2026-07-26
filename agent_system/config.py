@@ -138,6 +138,22 @@ USER_MODEL_LEARN_ENABLED = os.getenv("USER_MODEL_LEARN_ENABLED", "true").lower()
 # Ceiling on extraction calls per day, so a chatty session cannot multiply the cost.
 USER_MODEL_LEARN_DAILY_LIMIT = int(os.getenv("USER_MODEL_LEARN_DAILY_LIMIT", "20"))
 
+# --- Tier-4 context discipline (see core/context.py) ---
+# A Brain call carries ~4,291 FIXED tokens — router prompt 37%, tool list 33%, persona
+# 28% — against a ~16-token request. 99% is overhead resent verbatim, and that floor is
+# what makes a 4K-context local model unable to run Ciel at all.
+# Ceiling on the assembled per-request context (recall + request + language + cwd).
+# 0 disables the budget entirely and restores pre-Tier-4 behaviour.
+CONTEXT_INPUT_BUDGET = int(os.getenv("CONTEXT_INPUT_BUDGET", "1200"))
+# Ceiling on RAG recall specifically. It is the only block whose size depends on
+# retrieved data rather than on code, so it is the one that can grow unnoticed.
+CONTEXT_RECALL_BUDGET = int(os.getenv("CONTEXT_RECALL_BUDGET", "600"))
+# How much persona the ROUTER carries. The router emits JSON and nothing else, yet it is
+# sent the full 1,205-token character description — 28% of every Brain call spent on
+# voice, for a component that never speaks. "slim" sends a one-line identity instead;
+# "none" sends none; "full" is the original. Change only with an A/B to back it.
+ROUTER_PERSONA_MODE = os.getenv("ROUTER_PERSONA_MODE", "full").strip().lower()
+
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —
 # different from an outright connection error) hangs the client forever, and the

@@ -31,6 +31,7 @@ from .continuation import (
 from .parallel import plan_batches, collect_parallel_safe
 from .task_state import TaskStore
 from .user_model import UserModel, assess_preference, learn_from_turn
+from .context import (ContextAssembler, P_REQUEST, P_CRITICAL, P_IMPORTANT, P_HELPFUL)
 from .permissions import PermissionPolicy, Decision, DeferredStore
 from . import rag_manager
 
@@ -47,6 +48,7 @@ from agent_system.config import (
     AGENT_PARALLEL_ENABLED, AGENT_PARALLEL_MAX_WORKERS,
     USER_MODEL_ENABLED, USER_MODEL_TOKEN_BUDGET,
     USER_MODEL_LEARN_ENABLED, USER_MODEL_LEARN_DAILY_LIMIT,
+    CONTEXT_INPUT_BUDGET, CONTEXT_RECALL_BUDGET, ROUTER_PERSONA_MODE,
 )
 from core.cost import estimate_cost
 
@@ -253,6 +255,12 @@ class CielCore:
         # security control that fails open in a worker thread is worse than none.
         self._ctx = threading.local()
         self.deferred = DeferredStore(self.base_dir / "ciel_data" / "state" / "deferred.json")
+        # TIER 5 — cooperative cancellation. A long plan used to be escapable only by
+        # killing the process (one run sat at 566s), which loses the Tier-2 record along
+        # with it. Set by Ctrl+C at the CLI or a `cancel` from the UI; checked at STEP
+        # boundaries, never mid-tool: aborting inside a half-written file or a half-sent
+        # email is not a cancellation, it is a corruption.
+        self._cancel_event = threading.Event()
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
         # where preferences actually change the output. It renders to "" while empty, so
@@ -588,6 +596,33 @@ class CielCore:
                 self._log_thought("USER_MODEL", "error", f"{type(e).__name__}: {e}")
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # ------------------------------------------------------------- TIER 5
+    def request_cancel(self, reason: str = "Master cancelled"):
+        """Ask the running request to stop at its next step boundary.
+
+        Safe to call from any thread, and safe to call when nothing is running. It does
+        NOT abort an in-flight tool: a plan stopped between steps leaves a coherent
+        world, one stopped inside `send_gmail_message` does not.
+        """
+        self._cancel_event.set()
+        self._cancel_reason = reason
+
+    def clear_cancel(self):
+        self._cancel_event.clear()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def _abort_if_cancelled(self, where: str) -> bool:
+        """Checked at step boundaries. Records WHY the plan stopped, so a cancelled job
+        is distinguishable in the task store from one that crashed."""
+        if not self._cancel_event.is_set():
+            return False
+        self._log_thought("SYSTEM", "cancelled", f"stopped at {where}: "
+                                                 f"{getattr(self, '_cancel_reason', '')}")
+        return True
 
     @property
     def unattended(self) -> bool:
@@ -1342,6 +1377,13 @@ class CielCore:
             # confirmed-and-run instead of deferred. Fail-open on a safety control.
             unattended_here = self.unattended
 
+            # TIER 5 — the cancellation point. Between batches, so whatever already ran
+            # completed cleanly and whatever has not simply never starts.
+            if self._abort_if_cancelled(f"before step batch ({len(prepared)} step(s))"):
+                results.append("[CANCELLED] Master dừng yêu cầu này. "
+                               "Các bước đã chạy xong vẫn giữ nguyên; phần còn lại không chạy.")
+                return False
+
             def _run(pair):
                 name, args = pair
                 self.unattended = unattended_here
@@ -1404,6 +1446,11 @@ class CielCore:
                             max_replans=AGENT_LOOP_MAX_ROUNDS,
                             max_seconds=AGENT_LOOP_MAX_SECONDS)
         while True:
+            # TIER 5 — checked before the planner call, not just before the steps: an
+            # extra round that the Master already cancelled costs a full Brain call and
+            # produces work nobody wants.
+            if self._abort_if_cancelled("agent loop"):
+                return
             verdict = ContinuationPolicy.assess(user_input, records, budget, model_requested)
             if not verdict.should_continue:
                 # Only worth a log line once a loop was actually plausible; otherwise
@@ -2124,6 +2171,10 @@ RULES:
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""
         self.chat_history.add_user_message(user_input)
+        # TIER 5 — a cancellation belongs to the request that was cancelled. Clearing it
+        # here (not when it fires) means a Ctrl+C that lands between turns cannot silently
+        # kill the NEXT request the Master types.
+        self.clear_cancel()
 
         # TIER 7b — learn a durable preference from this turn, if there is one. Placed
         # at the TOP rather than at the end because `process()` has many return points
@@ -2203,6 +2254,18 @@ RULES:
             self._log_thought("RAG", "recalled", recalled[:300])
 
         try:
+            # TIER 4 — recall is bounded HERE, at its source. It is the only block whose
+            # size depends on retrieved data rather than on code, so it is the only one
+            # that can grow without anyone changing a line; everything downstream (the
+            # translate call, the router prompt) then carries that growth. Bounding it
+            # after the merge would be too late — by then it is fused with the request
+            # and can no longer be dropped separately.
+            recall_ctx = ContextAssembler()
+            recall_ctx.add("recalled", recalled, P_HELPFUL)
+            recalled, recall_report = recall_ctx.render(budget_tokens=CONTEXT_RECALL_BUDGET)
+            if recall_report.dropped:
+                self._log_thought("CONTEXT", "recall_dropped", recall_report.summary())
+
             # Inject recalled context into the user input for the Router
             enriched_input = user_input
             if recalled:
@@ -2247,19 +2310,35 @@ RULES:
                 except Exception:
                     pass  # fall back to original if Worker fails
 
-            # Tell the Brain which language the request was ORIGINALLY written in. Added
-            # AFTER the translate step so it survives it — otherwise the Brain only ever
-            # sees English and builds English search queries for local-news requests.
-            enriched_input = f"{enriched_input}\n\n[USER LANGUAGE: {self._detect_language(user_input)}]"
+            # TIER 4 — from here the prompt is assembled in ONE place, with a budget and
+            # a log line, instead of by appending to a string. Semantics are unchanged:
+            # the blocks and their order are exactly what the `+=` chain produced. What
+            # is new is that the total is bounded and recorded, so a misbehaving prompt
+            # can be explained instead of reconstructed by reading the code path.
+            ctx = ContextAssembler()
+            ctx.add("request", enriched_input, P_REQUEST)
 
-            # Tell the Brain WHERE it is. Tools like git_status/git_diff take a repo_path
-            # the Brain has no way to know, so it either guessed "." or stopped to ask —
+            # Which language the request was ORIGINALLY written in. Added AFTER the
+            # translate step so it survives it — otherwise the Brain only ever sees
+            # English and builds English search queries for local-news requests.
+            ctx.add("language", f"[USER LANGUAGE: {self._detect_language(user_input)}]",
+                    P_IMPORTANT)
+
+            # WHERE it is. Tools like git_status/git_diff take a repo_path the Brain has
+            # no way to know, so it either guessed "." or stopped to ask —
             # non-deterministically, for the very same request (observed both live).
-            # Stating the working directory removes the guess.
+            # P_CRITICAL: dropping this brings back a wrong-path failure, so it outranks
+            # everything except the request itself.
             _cwd = self.base_dir.resolve()
-            enriched_input += (f"\n\n[WORKING DIRECTORY: {_cwd} — "
-                               f"{'a git repository' if (_cwd / '.git').exists() else 'not a git repository'}. "
-                               f"Use this path for any tool needing a repo/project path unless the Master names another.]")
+            ctx.add("cwd",
+                    f"[WORKING DIRECTORY: {_cwd} — "
+                    f"{'a git repository' if (_cwd / '.git').exists() else 'not a git repository'}. "
+                    f"Use this path for any tool needing a repo/project path unless the "
+                    f"Master names another.]", P_CRITICAL)
+
+            enriched_input, ctx_report = ctx.render(budget_tokens=CONTEXT_INPUT_BUDGET)
+            if ctx_report.dropped:
+                self._log_thought("CONTEXT", "assembled", ctx_report.summary())
 
             # NOTE: no [PENDING CONFIRMATION] note is injected here anymore — the
             # single-slot block above now resolves (or blocks on) every pending action

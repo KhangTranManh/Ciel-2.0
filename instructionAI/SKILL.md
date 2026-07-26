@@ -95,6 +95,15 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    reviewed — never to a tool name, or a step the loop invents later would inherit an
    approval the Master never gave. `DENY` outranks every grant and `DISABLE_SAFETY_GATE`.
 
+7g. **Prompts are assembled in one place, and long runs can be stopped.** Add context
+   through `ContextAssembler` (`core/context.py`), never by appending to a string:
+   blocks carry a priority so the budget knows what to shed, they are dropped **whole**
+   (a truncated `[WORKING DIRECTORY: …]` still reads as a fact while being wrong), and
+   every drop is logged. Bound anything data-sized at its source — RAG recall is the
+   only block that can grow without anyone editing code. For Tier 5, check
+   `_abort_if_cancelled()` at **step boundaries only**: stopping mid-tool is corruption,
+   not cancellation.
+
 7e. **Two memory stores, and the difference is a security boundary**
    (`core/user_model.py`). `facts.json` is pull-only and may hold credentials; it is
    NEVER injected. `user_model.json` IS injected into prompts and therefore refuses

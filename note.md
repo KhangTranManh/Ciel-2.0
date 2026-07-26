@@ -23,8 +23,8 @@ being asked to compensate in prose.
 | **1 — Agent loop** | A flat plan cannot express "if X then Y". Execute → observe → re-plan. | ✅ `core/continuation.py` |
 | **2 — Task state** | Interrupted work vanished; "what were you doing?" had to be guessed. | ✅ `core/task_state.py` |
 | **3 — Permissions** | Approval was binary and arrived mid-execution, so "no" left work half-done. | ✅ `core/permissions.py` |
-| **4 — Context discipline** | **99% of every Brain call is fixed overhead** (4,291 tok: router prompt 37%, tool list 33%, persona 28%, the actual request **0.4%**). Injections are added ad hoc in `process()`; there is no single assembler and no token budget. | ⬜ measured, not built |
-| **5 — Ergonomics** | A long request cannot be interrupted — `main.py` is a blocking `input()` loop, so the only way out of a 566s call is killing the process. | ⬜ not started |
+| **4 — Context discipline** | **99% of every Brain call is fixed overhead** (4,291 tok: router prompt 37%, tool list 33%, persona 28%, the actual request **0.4%**). Injections were added ad hoc in `process()`, with no assembler and no token budget. | ✅ `core/context.py` — budgeted assembler + measured router-persona A/B (−27% available) |
+| **5 — Ergonomics** | A long request cannot be interrupted — `main.py` is a blocking `input()` loop, so the only way out of a 566s call is killing the process. | ✅ cooperative cancel at step boundaries; Ctrl+C cancels the request, not the process |
 | **6 — Proactivity** | Ciel only ever answers. It could fire on a clock, but never on a *condition* — so it could say "good morning" and not "that job is still stuck". | ✅ `core/notifier.py`, `core/triggers.py` — 9 triggers in 3 groups, unattended permission ceiling, feedback muting |
 | **7 — User model** | The fact vault is **pull-only and empty**: nothing injects facts into context, so the model must guess an exact snake_case key *and* choose to call `get_fact`. Proactivity without this is spam. | ✅ `core/user_model.py` — bounded profile injected into prompts, learned unprompted behind a free gate |
 
@@ -138,6 +138,50 @@ to a component that only ever emits JSON. The 4,291-token floor is also the hard
 for small/local models — a 4K-context model cannot run this at all.
 
 ## Changelog (most recent first)
+
+### 2026-07-26 — Tiers 4 and 5: all seven tiers now built
+
+**Tier 4 — one place that decides what goes into a prompt.** `core/context.py` replaces
+six `enriched_input +=` lines with a `ContextAssembler`: named blocks, a token budget,
+and a log line saying what the call actually carried. Priority decides what is dropped;
+insertion order decides layout — separating those matters, because changing ordering AND
+adding a budget at once would make any A/B uninterpretable. Blocks drop **whole, never
+truncated**: half a `[WORKING DIRECTORY: …]` note still reads as a fact while being
+wrong. RAG recall is bounded at its source, since it is the only block whose size depends
+on retrieved data rather than on code.
+
+**The router persona A/B — measured, and it corrected me.** I expected the 1,205-token
+persona to be plainly redundant for a component that only emits JSON:
+
+| mode | persona tok | Brain input tok (11 cases) | decisions |
+|---|---|---|---|
+| `full` | 1,205 | 46,728 | baseline |
+| `slim` | 46 | **34,221 (−27%)** | 10/11 identical |
+
+The single disagreement looked like a real regression — `slim` produced an email plan
+with no `send_gmail_message` step. Re-running that case 3× per arm: **`full` produced the
+send step 2/3, `slim` 2/3.** Sampling noise, not a persona effect. So the saving is real
+and the regression was not — but 11 cases at one repetition is not enough to change a
+default silently, so `ROUTER_PERSONA_MODE` still ships as `full`. Set `slim` to take it.
+
+**A separate, pre-existing bug that re-run exposed:** for an explicit "gửi mail cho
+kxctran@gmail.com báo cáo tình hình vàng", the router omits the send step roughly **1 run
+in 3**, on BOTH persona modes. Ciel gathers the data and never sends the mail. Nothing to
+do with Tier 4 — it was always there, and only showed up because the A/B repeated one
+case instead of running it once. Worth fixing next.
+
+**Tier 5 — a request you can stop.** Ctrl+C during a request now cancels the *request*;
+Ctrl+C at the prompt still exits. The job closes as `cancelled`, so `status` tells it
+apart from a crash — before, killing the process destroyed the Tier-2 record along with
+the run. Cancellation is cooperative and checked **only at step boundaries** (`_run_steps`
+before each batch, `_continue_until_done` before each planner call): stopping inside a
+half-written file or a half-sent email is not a cancellation, it is a corruption. The
+flag clears at the *start* of `process()`, not when it fires, so a Ctrl+C landing between
+turns cannot silently kill the next request. `threading.Event`, so the UI can cancel the
+same way.
+
+Verified: `backtest/test_context.py` **33 assertions**; live — a cancelled plan returns
+`False` and runs **zero** tools, while the same plan uncancelled runs both.
 
 ### 2026-07-26 — Tiers 6 and 7 completed
 

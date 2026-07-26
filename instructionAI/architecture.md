@@ -193,6 +193,72 @@ Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
 a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
 regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
+## Tier-4 Context Discipline (`core/context.py`, added July 2026)
+
+Context used to be assembled by appending to a string in `process()` — six `enriched_input
++=` lines, each individually reasonable. Together they had no budget, no record of what a
+call actually carried, and an order that was just the order features were added in.
+
+`ContextAssembler` collects named blocks and renders them once:
+
+```
+ctx.add("request",  enriched_input, P_REQUEST)    # 100 — never dropped
+ctx.add("cwd",      "[WORKING DIRECTORY: …]", P_CRITICAL)   # 80
+ctx.add("language", "[USER LANGUAGE: …]", P_IMPORTANT)      # 60
+text, report = ctx.render(budget_tokens=CONTEXT_INPUT_BUDGET)
+```
+
+**Priority decides what is dropped; insertion order decides layout.** Keeping those
+separate is deliberate — emitting highest-priority-first is also defensible, but changing
+ordering *and* adding a budget at once makes an A/B uninterpretable. Blocks are dropped
+**whole, never truncated**: half a `[WORKING DIRECTORY: …]` note still reads as a fact
+while being wrong, which is the exact failure that note exists to prevent.
+
+RAG recall is bounded **at its source** (`CONTEXT_RECALL_BUDGET`), before it is fused
+with the request. It is the only block whose size depends on retrieved data rather than
+on code, so it is the only one that can grow without anyone editing a line; bounding it
+after the merge would be too late to drop it separately.
+
+Every drop is logged (`[CONTEXT] assembled`), because a silently truncated prompt is the
+worst kind to debug.
+
+### Router persona — measured, not assumed
+
+The router emits JSON and nothing else, yet carried the full 1,205-token persona: 28% of
+every Brain call spent on voice, for a component that never speaks. A/B over 11 routing
+cases:
+
+| mode | persona tok | Brain input tok | decisions |
+|---|---|---|---|
+| `full` | 1,205 | 46,728 | baseline |
+| `slim` | 46 | **34,221 (−27%)** | 10/11 identical |
+
+The one disagreement (an email plan missing its send step) was re-run 3× per arm: `full`
+produced it 2/3, `slim` 2/3 — **sampling noise, not a persona effect**. `ROUTER_PERSONA_MODE`
+defaults to `full` anyway: 11 cases at one repetition is not enough evidence to change a
+default silently. Set `slim` to take the saving.
+
+That re-run surfaced a **separate, pre-existing bug**: for an explicit "gửi mail cho X"
+request the router omits `send_gmail_message` about 1 time in 3, on both arms. Data is
+gathered and nothing is sent. Not caused by this tier; recorded in `note.md`.
+
+## Tier-5 Interruptibility (`CielCore.request_cancel`, added July 2026)
+
+`main.py` blocks in `input()`, so a long request could only be escaped by killing the
+process — which also destroyed the Tier-2 record of what had been done. One observed run
+sat at 566s.
+
+- **Ctrl+C during a request cancels the request**; Ctrl+C at the prompt still exits.
+- The job is closed as **`cancelled`**, so `status` distinguishes it from a crash.
+- Cancellation is **cooperative and checked at step boundaries only** — `_run_steps`
+  before each batch, `_continue_until_done` before each planner call. Never mid-tool:
+  aborting inside a half-written file or a half-sent email is not a cancellation, it is
+  a corruption.
+- The flag is cleared at the **start** of `process()`, not when it fires, so a Ctrl+C
+  landing between turns cannot silently kill the next request.
+- `request_cancel()` is thread-safe (`threading.Event`), so the UI can cancel over the
+  WebSocket the same way.
+
 ## Tier-7a User Model (`core/user_model.py`, added July 2026)
 
 A fact vault already existed (`skills/internal/memory_ops.py` + `ciel_data/facts.json`)

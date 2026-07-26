@@ -160,6 +160,14 @@ AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
 AGENT_PARALLEL_ENABLED=true
 AGENT_PARALLEL_MAX_WORKERS=4
 
+# --- Context discipline. 99% of a Brain call is fixed overhead; these bound it. ---
+CONTEXT_INPUT_BUDGET=1200        # ceiling on assembled per-request context; 0 = no budget
+CONTEXT_RECALL_BUDGET=600        # ceiling on RAG recall — the only data-sized block
+# full | slim | none. The router emits JSON only, yet `full` sends it the 1,205-token
+# persona. Measured: `slim` = -27% Brain input tokens, 10/11 identical decisions (the
+# 11th was sampling noise on both arms). Default stays `full` — see note.md.
+ROUTER_PERSONA_MODE=full
+
 # --- User model: the PUSH side of memory (facts.json stays pull-only + never injected) ---
 USER_MODEL_ENABLED=true          # renders to "" while empty, so it costs 0 until it learns
 USER_MODEL_TOKEN_BUDGET=250      # HARD cap on the injected profile block
