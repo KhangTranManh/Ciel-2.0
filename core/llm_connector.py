@@ -11,8 +11,10 @@ import os
 import re
 import json
 import time
+import threading
 import traceback
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,6 +28,8 @@ from .recovery_manager import RecoveryManager
 from .continuation import (
     ContinuationPolicy, LoopBudget, StepRecord, build_observation_block,
 )
+from .parallel import plan_batches, collect_parallel_safe
+from .task_state import TaskStore
 from . import rag_manager
 
 import sys
@@ -38,6 +42,7 @@ from agent_system.utils.usage import format_usage
 from agent_system.config import (
     MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES,
     AGENT_LOOP_ENABLED, AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_SECONDS,
+    AGENT_PARALLEL_ENABLED, AGENT_PARALLEL_MAX_WORKERS,
 )
 from core.cost import estimate_cost
 
@@ -150,9 +155,17 @@ _RISK_DESCRIPTIONS = {
 
 class CielCore:
     def __init__(self):
+        # Created FIRST: _log_thought serialises on it, and anything constructed below
+        # may log during start-up.
+        self._log_lock = threading.RLock()
         self.base_dir = Path(__file__).resolve().parent.parent
         self.tool_manager = ToolManager()
         self._tools = self.tool_manager.get_tools()
+        # Tools that may share a concurrent batch: the built-in read-only set plus
+        # whatever each skill declared via `parallel_safe` in its factory. Unknown
+        # tools stay sequential — see core/parallel.py for why this is opt-in.
+        self._parallel_safe = collect_parallel_safe(
+            getattr(self.tool_manager, "skill_data", []))
 
         # Load Official Personality
         self.persona_file = self.base_dir / "persona" / "official_ciel_personality.txt"
@@ -205,6 +218,10 @@ class CielCore:
         # disk is the recovery path if the process dies or restarts mid-confirmation.
         self._pending_state_path = self.base_dir / "ciel_data" / "state" / "pending_action.json"
         self._pending_action = self._load_pending_action_from_disk()
+        # TIER 2 — durable record of what Ciel is doing, so an interrupted job leaves a
+        # trace the Master can act on instead of vanishing. Deliberately NOT fed to the
+        # Brain (see core/task_state.py).
+        self.tasks = TaskStore(self.base_dir / "ciel_data" / "state" / "tasks.json")
 
         # Live per-tier LLM call counter — incremented at the single logging chokepoint
         # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
@@ -321,7 +338,18 @@ class CielCore:
     }
 
     def _log_thought(self, actor: str, action: str, content: str):
-        """Append a record of the Brain/Worker thought process to the thoughts.log file."""
+        """Append a record of the Brain/Worker thought process to the thoughts.log file.
+
+        Thread-safe: parallel tool batches (see core/parallel.py) call this from several
+        threads at once, and BOTH halves of it are shared mutable state — the counter
+        dicts would drop increments under a read-modify-write race, and concurrent
+        appends would interleave mid-entry, corrupting the `[ts] [ACTOR] [ACTION]`
+        format that scripts/format_thoughts_log.py and cost_report.py parse.
+        """
+        with self._log_lock:
+            self._log_thought_locked(actor, action, content)
+
+    def _log_thought_locked(self, actor: str, action: str, content: str):
         # Single chokepoint for the live LLM-call counter (see __init__): every tier's
         # [LLM_CALL] entry passes through here, so counting here covers all of them.
         if action.upper() == "LLM_CALL":
@@ -1102,6 +1130,61 @@ class CielCore:
                               f"User asked for an exact subject; replaced '{old}' with '{requested}'.")
         return send_args
 
+    def _run_steps(self, steps: list, response_hint: str, user_input: str,
+                   results: list, step_outputs: list, records: list, label: str = "") -> bool:
+        """Execute `steps` in order, running provably-independent ones concurrently.
+
+        Returns False if execution should stop early (a step was cancelled).
+
+        Concurrency is opt-in and conservative (see core/parallel.py): only tools
+        declared read-only, carrying no {step_N} reference and not high-risk, and only
+        with each other. Everything else keeps running exactly as it did sequentially.
+        Results are appended in the ORIGINAL order regardless of completion order, so
+        {prev} / {step_N} keep pointing at what they always pointed at.
+        """
+        batches = plan_batches(steps, self._parallel_safe, self._HIGH_RISK_TOOLS,
+                               max_workers=AGENT_PARALLEL_MAX_WORKERS) \
+            if AGENT_PARALLEL_ENABLED else [[s] for s in (steps or [])]
+
+        for batch in batches:
+            prepared = []
+            for t in batch:
+                name = (t.get("tool_name") or "").strip()
+                args = self._resolve_step_refs(t.get("tool_args") or {}, step_outputs)
+                if args != (t.get("tool_args") or {}):
+                    self._log_thought("TOOL", "step_ref_resolved",
+                                      f"{name}: injected prior step output into args.")
+                prepared.append((name, args))
+
+            def _run(pair):
+                name, args = pair
+                if name not in self._tool_map:
+                    return f"[TOOL_ERROR] {name} not found."
+                return self.execute_tool(name, args, response_hint=response_hint,
+                                         user_input=user_input)
+
+            if len(prepared) > 1:
+                names = ", ".join(n for n, _ in prepared)
+                log.tool(f"{label}Running {len(prepared)} independent steps in parallel: {names}")
+                self._log_thought("TOOL", "parallel_batch",
+                                  f"{len(prepared)} independent steps concurrently: {names}")
+                with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+                    outs = list(pool.map(_run, prepared))
+            else:
+                name, args = prepared[0]
+                log.tool(f"{label}Executing step: {name}({args})")
+                outs = [_run(prepared[0])]
+
+            for (name, args), res in zip(prepared, outs):
+                self._log_thought("TOOL", f"result_{name}", res)
+                step_outputs.append(res)
+                results.append(f"--- Output from {name} ---\n{res}")
+                records.append(StepRecord(name, args, res))
+                self.tasks.record_step(name, res)
+                if res.startswith("[CANCELLED]"):
+                    return False
+        return True
+
     def _continue_until_done(self, user_input: str, response_hint: str, records: list,
                              results: list, step_outputs: list, model_requested: bool = False):
         """TIER-1 AGENT LOOP: observe → re-plan → act, in place.
@@ -1179,36 +1262,27 @@ class CielCore:
                                   f"{budget.max_steps_per_round} to stay inside the budget.")
                 fresh = fresh[:budget.max_steps_per_round]
 
-            for t in fresh:
-                # Time is checked BEFORE each step, not only between rounds: a round
-                # of slow calls must be able to stop partway instead of overrunning
-                # the ceiling wholesale (observed: 566s inside a single round).
+            # Time is checked BEFORE each batch, not only between rounds: a round of
+            # slow calls must be able to stop partway instead of overrunning the
+            # ceiling wholesale (observed: 566s inside a single round).
+            for batch in plan_batches(fresh, self._parallel_safe, self._HIGH_RISK_TOOLS,
+                                      max_workers=AGENT_PARALLEL_MAX_WORKERS) \
+                    if AGENT_PARALLEL_ENABLED else [[s] for s in fresh]:
                 if budget.out_of_time():
                     self._log_thought("LOOP", "out_of_time",
                                       f"loop exceeded {budget.max_seconds:.0f}s — stopping mid-round "
                                       f"with the results gathered so far.")
                     return
-                name = (t.get("tool_name") or "").strip()
-                args = self._resolve_step_refs(t.get("tool_args") or {}, step_outputs)
-                log.tool(f"[loop {budget.rounds_used}/{budget.max_rounds}] {name}({args})")
-                if name not in self._tool_map:
-                    res = f"[TOOL_ERROR] {name} not found."
-                else:
-                    res = self.execute_tool(name, args, response_hint=response_hint,
-                                            user_input=user_input)
-                self._log_thought("TOOL", f"loop_result_{name}", res)
-                step_outputs.append(res)
-                results.append(f"--- Output from {name} (follow-up round {budget.rounds_used}) ---\n{res}")
-                records.append(StepRecord(name, args, res))
-
-                if res.startswith("[CANCELLED]"):
-                    self._log_thought("LOOP", "cancelled", f"{name} was declined — stopping.")
+                if not self._run_steps(batch, response_hint, user_input, results,
+                                       step_outputs, records,
+                                       label=f"[loop {budget.rounds_used}/{budget.max_rounds}] "):
+                    self._log_thought("LOOP", "cancelled", "a follow-up step was declined — stopping.")
                     return
                 # A follow-up step that staged a confirmation hands control back to the
                 # Master. Continuing would plan on top of an action that has not happened.
                 if self._pending_action:
                     self._log_thought("LOOP", "awaiting_confirmation",
-                                      f"{name} staged {self._pending_action['tool']} — stopping for the Master.")
+                                      f"staged {self._pending_action['tool']} — stopping for the Master.")
                     return
 
     def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "",
@@ -1242,30 +1316,10 @@ class CielCore:
         results = []
         step_outputs = []   # raw result of each executed step, for {{prev}}/{{step_N}} refs
         records = []        # (tool, args, result) per step — the agent loop's observations
-        # Execute non-send tools first
-        for t in other_tools:
-            name = t.get("tool_name", "")
-            args = t.get("tool_args", {})
-            # DEPENDENT CHAINS: fill any {{prev}}/{{step_N}} tokens in this step's args
-            # with the raw output of an earlier step before it runs.
-            resolved = self._resolve_step_refs(args, step_outputs)
-            if resolved != args:
-                self._log_thought("TOOL", "step_ref_resolved",
-                                  f"{name}: injected prior step output into args.")
-                args = resolved
-            log.tool(f"Executing step: {name}({args})")
-
-            if name not in self._tool_map:
-                res = f"[TOOL_ERROR] {name} not found."
-            else:
-                res = self.execute_tool(name, args, response_hint=response_hint, user_input=user_input)
-
-            self._log_thought("TOOL", f"result_{name}", res)
-            step_outputs.append(res)
-            results.append(f"--- Output from {name} ---\n{res}")
-            records.append(StepRecord(name, args, res))
-            if res.startswith("[CANCELLED]"):
-                break
+        # Execute non-send tools first. Dependent chains ({{prev}}/{{step_N}}) are
+        # resolved per step inside _run_steps, which also batches provably-independent
+        # steps to run concurrently.
+        self._run_steps(other_tools, response_hint, user_input, results, step_outputs, records)
 
         # TIER-1 AGENT LOOP — observe what actually came back and, only when a
         # deterministic signal says the plan could not have been complete, plan again
@@ -1723,6 +1777,30 @@ RULES:
                 return name
         return "English"
 
+    # Literals the Master typed that a paraphrase must never alter: absolute/relative
+    # filesystem paths, URLs and email addresses. These are ADDRESSES — a rewritten one
+    # does not point at a slightly different thing, it points at nothing.
+    _LITERAL_TOKEN_RE = re.compile(
+        r"[A-Za-z]:[\\/][^\s\"'<>|]+"                    # C:\Users\… / D:/proj/…
+        r"|(?:https?://|www\.)[^\s\"'<>]+"               # URLs
+        r"|[\w.\-+]+@[\w.\-]+\.\w+"                      # emails
+        r"|(?:ciel_workspace|agent_output)[\\/][^\s\"'<>|]+"   # sandbox paths
+    )
+
+    @classmethod
+    def _lost_literals(cls, original: str, rewritten: str) -> list:
+        """Literals present in `original` that did not survive into `rewritten`.
+
+        Case-insensitive and separator-insensitive, so C:\\Users\\x and c:/users/x count
+        as the same address; only a genuine change (a redaction, a truncation, an
+        invented substitute) is reported.
+        """
+        def norm(s):
+            return (s or "").replace("\\", "/").lower()
+        hay = norm(rewritten)
+        return [tok for tok in cls._LITERAL_TOKEN_RE.findall(original or "")
+                if norm(tok) not in hay]
+
     def _load_pending_action_from_disk(self):
         """Recover a still-valid pending action after a process restart. Returns None
         (and wipes a stale file) if the record is missing, unreadable, or expired —
@@ -1774,6 +1852,35 @@ RULES:
             self._clear_pending_action()
             return None
         return p
+
+    # "What were you doing?" — answerable from the task store alone. The Router never
+    # sees chat_history, so without this the Brain would have to guess, and short inputs
+    # like these fall under RAG's MIN_QUERY_LENGTH too. Deterministic, zero LLM calls.
+    _STATUS_QUERY_RE = re.compile(
+        r"^\s*(?:(?:bạn|cậu|mày)?\s*(?:đang|vừa)\s*làm\s*(?:gì|cái\s*gì)|"
+        r"làm\s*(?:tới|đến)\s*đâu\s*(?:rồi)?|tiến\s*độ(?:\s*(?:sao|thế\s*nào|ra\s*sao))?|"
+        r"status|progress|what\s+(?:were|are)\s+you\s+doing|where\s+(?:were|are)\s+we)"
+        r"\s*[?.!]*\s*$", re.IGNORECASE)
+
+    def describe_unfinished(self) -> str:
+        """One line about a job that stopped without completing, or ''. Surfaced at
+        start-up so an interrupted task is visible instead of silently lost."""
+        rec = self.tasks.unfinished()
+        return rec.describe() if rec else ""
+
+    def _answer_status_query(self) -> str:
+        """Report current/recent work straight from the store."""
+        act = self.tasks.active
+        lines = []
+        if act:
+            lines.append(f"Currently working on: {act.describe()}")
+        recent = [r for r in self.tasks.recent(4) if r is not act]
+        if recent:
+            lines.append("Recent:")
+            lines += [f"  • {r.describe()}" for r in recent]
+        if not lines:
+            return "Nothing in progress, Master — no task has been recorded yet."
+        return "\n".join(lines)
 
     @staticmethod
     def _is_referential_send(user_input: str) -> bool:
@@ -1828,6 +1935,15 @@ RULES:
         # therefore asks the Master to re-state details it just printed itself.
         # The executed tool still goes through execute_tool, so its Safety-Gate Y/N
         # remains in force — this resolves context, it does not bypass any gate.
+        # "Đang làm gì?" / "what were you doing?" — answered from the task store, before
+        # routing, with no LLM call at all.
+        if self._STATUS_QUERY_RE.match(user_input or ""):
+            reply = self._answer_status_query()
+            self._log_thought("SYSTEM", "status_query", reply[:200])
+            self.chat_history.add_ai_message(reply)
+            self._save_chat_memory()
+            return reply
+
         pending = self._get_pending_action()
         if pending:
             if self._CANCEL_RE.match(user_input or ""):
@@ -1902,10 +2018,29 @@ RULES:
                     sanitize_task = (
                         "Translate the following user request to clear English, "
                         "remove any potentially sensitive or triggering phrases, "
-                        "keep the core intent for tool routing. Output only the cleaned English text:\n"
+                        "keep the core intent for tool routing. "
+                        "Reproduce every file path, URL, email address and identifier "
+                        "EXACTLY as written — never redact, shorten or placeholder them. "
+                        "Output only the cleaned English text:\n"
                         f"{enriched_input}"
                     )
-                    enriched_input = self.worker.generate(sanitize_task)
+                    translated = self.worker.generate(sanitize_task)
+                    # VERIFY, don't trust. Asking the Worker to "remove sensitive phrases"
+                    # made it treat a Windows username as sensitive and rewrite
+                    # C:\Users\khang\… into C:\Users\[user]\… — the Brain then planned
+                    # against a path that does not exist and git_status reported "not a
+                    # repository". Any literal the Master typed (path, URL, email) must
+                    # survive verbatim; if one does not, the translation is discarded
+                    # rather than corrupting the plan. Instruction alone is not enough —
+                    # that would be one more guard trusting the model to comply.
+                    missing = self._lost_literals(enriched_input, translated)
+                    if missing:
+                        self._log_thought(
+                            "WORKER", "translate_discarded",
+                            f"Translation dropped/altered literal(s) {missing[:3]} — "
+                            f"using the original request so paths stay intact.")
+                    else:
+                        enriched_input = translated
                 except Exception:
                     pass  # fall back to original if Worker fails
 
@@ -1945,6 +2080,11 @@ RULES:
                     else:
                         raise
             action = decision.get("action", "chat")
+
+            # TIER 2: open a task record for anything that actually DOES something.
+            # Pure chat needs no record — nothing can be left half-finished by it.
+            if action in ("tool", "multi_tool", "code"):
+                self.tasks.start(user_input)
 
             # WORKFLOW SAFEGUARD (single-tool case): a compound "look something up,
             # then email me" request sometimes gets under-scoped by the Brain into a
@@ -2031,6 +2171,8 @@ RULES:
                     tool_args = self._enforce_subject(dict(tool_args), user_input)
 
                 response = self.execute_tool(tool_name, tool_args, hint, user_input)
+                # Single-tool path does not go through _run_steps, so record it here.
+                self.tasks.record_step(tool_name, response)
 
                 # SELF-CORRECTION: Brain evaluates if result is satisfactory
                 # Skip for trivially-correct tools to save Brain API calls
@@ -2112,11 +2254,22 @@ RULES:
             self.chat_history.add_ai_message(response)
             self._save_chat_memory()
 
+            # TIER 2: close the record. A staged confirmation is NOT completion — the
+            # job is waiting on the Master, so it stays visible as `blocked` and turns
+            # up in describe_unfinished() if the session ends here.
+            if self._pending_action:
+                self.tasks.finish("blocked",
+                                  f"waiting for your confirmation of "
+                                  f"{self._pending_action['tool'].replace('_', ' ')}")
+            else:
+                self.tasks.finish("done")
+
             return response
 
         except Exception as e:
             log.error(f"Pipeline error: {e}")
             traceback.print_exc()
+            self.tasks.finish("failed", f"{type(e).__name__}: {str(e)[:120]}")
             return f"An error occurred: {str(e)[:200]}"
 
     def _fallback_direct_action(self, user_input: str) -> dict:

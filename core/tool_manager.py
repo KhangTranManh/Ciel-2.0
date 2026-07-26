@@ -16,6 +16,9 @@ class ToolManager:
         # new skills/*.py file surfaces in the UI with ZERO frontend/API changes. Never
         # hardcode a skill list against this; always read the manifest.
         self.skills_manifest = []
+        # Raw factory dicts, kept so consumers can read OPTIONAL keys a skill declares
+        # (currently `parallel_safe`) without this class having to know about each one.
+        self.skill_data = []
 
         # Auto-discover and load all skill modules
         self._auto_load_skills("skills.internal", Path(__file__).resolve().parent.parent / "skills" / "internal")
@@ -55,6 +58,7 @@ class ToolManager:
 
                 if tools:
                     self.tools.extend(tools)
+                    self.skill_data.append(data)
                     if prompt:
                         self.system_prompts.append(prompt)
                     # Record in the dynamic manifest (category = internal/external from the package name)

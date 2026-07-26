@@ -63,10 +63,73 @@ stronger model paraphrases it. Match by pattern/intent instead.**
 | **Tolerant router JSON** | Slice the first balanced `{…}` (prose/trailing text tolerated) before `json.loads` | `_extract_json_object()` |
 | **Generic pending confirmation** | A preview tool declares its own follow-up via `make_result(confirm=…)`; a later bare "yes" executes it with **zero** LLM calls, survives restart, one slot only | `continuation`-adjacent: `_set_pending_action()`, `skills/_result.py` |
 | **Tier-1 loop policy** | Whether to observe-and-re-plan is decided by 5 structural signals in pure Python; all bounds (rounds/calls/time/steps) enforced in code, fail-open | `core/continuation.py` |
+| **Literal preservation across paraphrase** | Every path/URL/email the Master typed must survive the Brain-translate step verbatim; if one is redacted or altered the translation is DISCARDED | `_lost_literals()` |
+| **Parallel batching is opt-in** | Only tools explicitly declared read-only batch concurrently — a blacklist would silently parallelise a newly added mutating skill | `core/parallel.py` |
 
 ---
 
 ## Changelog (most recent first)
+
+### 2026-07-26 — Tier-2 task state (interrupted work stops vanishing)
+
+`core/task_state.py`. Until now the only cross-turn state was one slot holding one
+pending confirmation: a job killed by a crash, a restart or a closed terminal left no
+trace, and "đang làm gì?" had to be guessed by the model (the Router sees no
+`chat_history`, and the phrase is shorter than RAG's `MIN_QUERY_LENGTH`).
+
+- `TaskRecord` (goal · status · steps · note) persisted to `ciel_data/state/tasks.json`,
+  rolling 20. Opened only for tool/multi_tool/code — pure chat can leave nothing undone.
+- **Resumption:** a record still `active` at load time can only come from a dead process
+  (the constructor runs at start-up), so it becomes `interrupted` and `main.py` reports it.
+- **A staged confirmation closes the task as `blocked`, not `done`** — waiting on the
+  Master is not completion, and it stays visible.
+- `đang làm gì` / `status` / `what were you doing` answered from the store **before**
+  routing: measured 0 Brain calls, 0 tokens, 0.1s.
+- The Brain never reads these records — that would re-open the cross-request
+  contamination removed in July 2026 and cost tokens every turn.
+- Reuses the loop's existing `StepRecord` data instead of keeping a second list that
+  could drift out of sync.
+
+Verified live on the swapped TEM model stack (4/4), including **killing a real Ciel
+process mid-request** and having a fresh core report it, rather than simulating the crash
+by editing the file. Thread-safe under the new parallel executor: 6 threads × 25 steps →
+150/150 recorded, no duplicate ordinals.
+
+### 2026-07-26 — Parallel tool execution, and a path-corruption bug it uncovered
+
+**Parallel execution** (`core/parallel.py`): provably-independent steps in one plan now
+run concurrently. Opt-in per tool (`parallel_safe` in a skill's factory, or
+`_DEFAULT_PARALLEL_SAFE`), because auto-registration means a blacklist would silently
+parallelise a new mutating tool. `_log_thought` now holds a lock — it both appends to the
+shared log and accumulates the token/cost dicts, so unsynchronised callers corrupted the
+audit format and dropped counter increments (verified with an 8-thread × 40-write stress).
+
+Measured on tool time alone: **9.3× / 1.9× / 2.3× / 1.05×** across file-read, mixed-fast,
+web-scrape and search scenarios. Honest caveat: that is 0.15–2.8s inside requests taking
+15–55s, so **ordinary requests show no wall-clock change** — the payoff is slow-network
+fan-out (an earlier run spent 566s on five sequential scrapes).
+
+**The bug it uncovered — nothing to do with parallelism, and pre-existing.** An A/B
+(parallel on vs off) was run to check for regressions; one case failed *both* ways. The
+Brain-translate step is instructed to "remove any potentially sensitive phrases", and the
+Worker duly treated a Windows username as sensitive:
+
+```
+typed:    C:\Users\khang\AppData\Local\Temp\ciel_c_repo_x1
+planned:  C:\Users\[user]\AppData\Local\Temp\ciel_c_repo_x1
+```
+
+The path no longer existed, so `git_status` answered "not a Git repository" — surfacing as
+a baffling *tool* error whose real cause was a paraphrase two steps earlier. Any request
+naming a path under `C:\Users\<name>\…` was affected, and the step is live whenever
+`BRAIN_PROVIDER=vilao`.
+
+Fixed the project way — **instruct, then verify**: the Worker is now told to reproduce
+paths/URLs/emails verbatim, AND `_lost_literals()` checks afterwards that each one
+survived, discarding the whole translation if not. The instruction alone would have been
+one more guard trusting a model to comply. Note for honesty: in the confirming run the
+verification never had to fire — the instruction sufficed that time. The guard exists for
+the times it does not.
 
 ### 2026-07-26 — Tier-1 agent loop (observe → re-plan → act)
 A plan is a **flat list of tool calls fixed before anything runs**, so *"check git status, and

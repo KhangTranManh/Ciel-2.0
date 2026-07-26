@@ -193,6 +193,74 @@ Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
 a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
 regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
+## Tier-2 Task State (`core/task_state.py`, added July 2026)
+
+Before this the only cross-turn state was ONE slot holding ONE action awaiting
+confirmation, so a job interrupted by a crash, a restart or a closed terminal simply
+vanished, and "what were you doing?" could only be answered by the model guessing —
+the Router never sees `chat_history`, and such short inputs fall below RAG's
+`MIN_QUERY_LENGTH`.
+
+```
+TaskRecord: id · goal · status · steps[] · note · created/updated
+status:     active → done | blocked | failed | interrupted | cancelled
+file:       ciel_data/state/tasks.json   (rolling, newest 20)
+```
+
+- **Opened** in `process()` only for `tool` / `multi_tool` / `code` — pure chat can leave
+  nothing half-finished, so it gets no record.
+- **Steps recorded** where they already happen (`_run_steps`, and the single-tool path).
+  `records` (the loop's `StepRecord` list) held this data already; Tier 2 gives it an
+  owner and a home rather than duplicating it into a second list that can drift.
+- **Closed** at every exit: `done`, `failed` on exception, or **`blocked`** when a
+  confirmation was staged — waiting on the Master is not completion.
+- **Resumption.** Any record still `active` at load time must belong to a process that no
+  longer exists (the constructor only runs at start-up), so it is reclassified
+  `interrupted`. `main.py` prints it on launch; `describe_unfinished()` exposes it.
+- **`đang làm gì` / `status` / `what were you doing`** is matched by `_STATUS_QUERY_RE`
+  before routing and answered from the store — **0 LLM calls, ~0.1s** (measured).
+
+**The Brain never reads these records.** Feeding them into routing would re-open the
+cross-request contamination this codebase deliberately closed, and cost tokens every
+turn. They exist for the Master and for resumption; every decision is plain Python.
+
+Thread-safe: `_run_steps` appends from parallel worker threads, so every mutation holds a
+lock (verified with 6 threads × 25 steps — 150/150 kept, no duplicate ordinals).
+
+Deliberately **not** a scheduler, queue or priority system: one active task at a time,
+matching the pending-confirmation slot and how conversation actually works.
+
+## Parallel Tool Execution (`core/parallel.py`, added July 2026)
+
+Steps in one plan that are **provably independent** run concurrently instead of one
+after another. `plan_batches()` walks the steps in order and only ever *groups* them —
+it never reorders or drops any — so results are collected back in the original order and
+`{prev}` / `{step_N}` keep meaning exactly what they meant sequentially.
+
+A step may share a batch only if **all three** hold:
+1. its tool is declared parallel-safe, 2. its args carry no `{step_N}`/`{prev}`
+reference, 3. it is not high-risk (those block on a Y/N prompt — several threads racing
+for one stdin is a deadlock, not a speed-up).
+
+**Opt-in, never a blacklist.** Skills auto-register, so "parallelise everything except
+writes/sends" would silently parallelise a new mutating tool the day someone adds one.
+Built-ins live in `_DEFAULT_PARALLEL_SAFE`; a skill adds its own:
+
+```python
+def get_my_tools():
+    return {"tools": [...], "prompt": "...", "parallel_safe": ["my_search"]}
+```
+
+`_log_thought` takes a lock: it appends to the shared `thoughts.log` **and** accumulates
+the per-tier token/cost dicts, so concurrent callers would otherwise interleave mid-entry
+(breaking the format `scripts/cost_report.py` parses) and lose counter increments.
+
+**Measured, tool time only** (LLM excluded — it dominates wall-clock and hides this):
+7 file reads 9.3×, 4 mixed fast tools 1.9×, 4 web scrapes 2.3×, 3 searches 1.05× (the
+search source rate-limits, so concurrency cannot help there). In absolute terms that is
+0.15–2.8s against requests that take 15–55s, i.e. **invisible on ordinary requests** and
+worth real minutes only on slow-network fan-out. Off-switch: `AGENT_PARALLEL_ENABLED=false`.
+
 ## Multi-Provider Support
 
 Each tier (Brain / Worker / Middleware) selects its provider and model independently via

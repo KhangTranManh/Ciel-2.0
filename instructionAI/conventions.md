@@ -83,6 +83,11 @@ sources and units belong in the tool output (see `stealth_search`'s `Published:`
 Add the tool to `_TOOLS_NEEDING_FORMAT` / `_RETRIEVAL_TOOLS` in `core/llm_connector.py` if
 it needs the completeness-oriented formatting rules rather than the terse default.
 
+**7b. Declare `parallel_safe` only for tools with no outside effect.** A tool listed there
+may run concurrently with others in the same plan (`core/parallel.py`). Omit it and the
+tool simply stays sequential — the safe default. Never list a tool that writes, sends,
+deletes, or mutates shared state, and never list one that is not thread-safe.
+
 **7. Destructive tools go in `_RISK_DESCRIPTIONS`** (`core/llm_connector.py`) so the Y/N
 safety gate covers them. This is separate from point 2: the gate asks before *this* call,
 `confirm=` carries an action across *turns*. Risky tools usually want both.

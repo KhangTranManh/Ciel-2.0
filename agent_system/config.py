@@ -76,6 +76,14 @@ AGENT_LOOP_MAX_ROUNDS = int(os.getenv("AGENT_LOOP_MAX_ROUNDS", "2"))
 # Wall-clock ceiling for the whole loop, so a slow provider cannot strand a request.
 AGENT_LOOP_MAX_SECONDS = float(os.getenv("AGENT_LOOP_MAX_SECONDS", "120"))
 
+# --- Parallel tool execution (see core/parallel.py) ---
+# Provably-independent read-only steps in one plan run concurrently instead of one after
+# another. Opt-in per tool, so an unknown/new skill stays sequential by default. Helps
+# most on fan-out and slow network tools (a run once spent 566s on five sequential
+# scrapes); barely moves a 2-3 fast-tool plan, where the LLM calls dominate.
+AGENT_PARALLEL_ENABLED = os.getenv("AGENT_PARALLEL_ENABLED", "true").lower() in ("true", "1", "yes")
+AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
+
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —
 # different from an outright connection error) hangs the client forever, and the

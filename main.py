@@ -77,6 +77,18 @@ def main():
 
         scheduler.start_background()
         print(Fore.BLUE + "Ciel: Online. Awaiting your command, Master." + Style.RESET_ALL)
+
+        # TIER 2: a job that stopped without finishing (crash, closed terminal, or one
+        # left waiting on a confirmation) is reported instead of vanishing silently.
+        try:
+            unfinished = ciel.core.describe_unfinished()
+            if unfinished:
+                print(Fore.YELLOW + f"[Task] Unfinished from a previous session:\n  {unfinished}"
+                      + Style.RESET_ALL)
+                print(Fore.YELLOW + "       Ask 'đang làm gì' / 'status' any time for details."
+                      + Style.RESET_ALL)
+        except Exception:
+            pass
         if voice_default:
             print(Fore.MAGENTA + f"[Voice] Voice input ON (lang={stt_lang}). "
                   "Press Enter on an empty line to speak, or just type to override." + Style.RESET_ALL)
