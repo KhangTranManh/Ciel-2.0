@@ -138,6 +138,7 @@ User Input (text or voice transcript) → CielCore.process()
       "multi_tool" → Sequential tool execution → Worker synthesizes report (before final send)
                      → dependent steps: {{prev}} / {{step_N}} in a later step's args are
                        replaced with an earlier step's raw output (deterministic, no LLM)
+                     → TIER-1 AGENT LOOP (core/continuation.py) — see below
                      → deferred write/send body filled with the synthesized report; any
                        leftover synthesis placeholder is blocked (see safety_and_risk.md)
                      → explicit "subject exactly '...'" is enforced onto the send step
@@ -148,6 +149,49 @@ User Input (text or voice transcript) → CielCore.process()
   → _trim_history(): overflow messages → archived into ChromaDB
   → Response saved → returned to user → optionally spoken aloud (TTS)
 ```
+
+## Tier-1 Agent Loop (`core/continuation.py`, added July 2026)
+
+A plan is a **flat list of tool calls chosen before anything runs**, so a request like
+*"check git status, and if it's clean, commit"* is not merely hard to plan — it is
+**structurally unrepresentable**. The loop closes that gap: execute → observe → re-plan.
+
+```
+execute round-0 steps  →  records = [(tool, args, result), …]
+        ↓
+ContinuationPolicy.assess()          ← pure Python, ZERO tokens
+        ↓ only if a signal fires
+Router.route(request + observations) ← 1 planner call, reuses the SAME plan schema
+        ↓
+novel_steps()  → drop anything already executed   ← no-progress guard
+        ↓
+execute fresh steps  → append to records → loop (bounded)
+        ↓
+Worker synthesizes over ALL rounds, then the deferred send/write runs ONCE
+```
+
+**Five signals may open a round.** All but the last are properties of the request or of
+what actually came back — never a model self-report:
+
+| | Signal | Example |
+|---|---|---|
+| S1 | Request is conditional | "nếu sạch **thì** commit", "only if the tests pass" |
+| S2 | An unresolved `{step_N}` / `{{step_N}}` reached a real tool | the single-brace bug — the tool ran on literal `{step_1}` |
+| S3 | A step failed while **later** steps still ran | read_file 404s, the summary step then invents content |
+| S4 | Fan-out over a set of unknown size | "liệt kê file rồi đọc **từng** file" — 4 listed, 1 step ran |
+| S5 | Planner set the optional `"needs_followup": true` | strictly opt-in; omitting it breaks nothing |
+
+**Bounds are enforced in code, not by model good behaviour** (`LoopBudget`): extra rounds
+(`AGENT_LOOP_MAX_ROUNDS`, default 2), planner calls, wall-clock
+(`AGENT_LOOP_MAX_SECONDS`, default 120 — tested **before every step**, not merely between
+rounds), and `max_steps_per_round` (4). It is **fail-open**: any exception, unparseable
+re-plan, or empty follow-up quietly keeps the first round's answer.
+
+Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
+
+**Cost on ordinary requests is exactly zero extra calls** — `assess()` is free Python, and
+a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
+regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
 
 ## Multi-Provider Support
 

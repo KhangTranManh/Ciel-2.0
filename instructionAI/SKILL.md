@@ -80,6 +80,21 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    `{"tools": [...], "prompt": "..."}`. `ToolManager` discovers it; the UI skill grid updates from
    `GET /skills` with zero frontend edits. No manual registration.
 
+   **Because nothing in `core/` gates a new pack, the burden is on the pack.** Read
+   *Skill Contract* in `conventions.md` before adding one. The rule that most often bites:
+   **a tool can be invoked more than once per request** — self-healing (3), Brain
+   self-correction (2), and the Tier-1 loop (`AGENT_LOOP_MAX_ROUNDS`) can each re-run it.
+   Make tools idempotent, or split preview/confirm and declare the pairing with
+   `make_result(confirm={"tool": …, "args": …})` rather than editing core.
+
+7b. **The Tier-1 loop decides in code, plans with the LLM** (`core/continuation.py`).
+   `ContinuationPolicy.assess()` is pure Python and costs nothing, so an ordinary request
+   spends zero extra calls; only when a deterministic signal fires does one planner call
+   happen. Every bound (rounds, planner calls, wall-clock — checked *before each step*, not
+   just between rounds — and steps per round) lives in `LoopBudget`. It is fail-open: any
+   error keeps the first round's answer. When adding a signal, add it to `assess()` with a
+   unit test; never make the loop's safety depend on the model saying a magic word.
+
 8. **Workspace file ops are sandboxed** to `ciel_workspace/` / `agent_output/` via `_is_safe_path()`.
    Never weaken that check.
 

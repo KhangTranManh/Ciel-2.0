@@ -63,6 +63,19 @@ MIDDLEWARE_TEMPERATURE = float(os.getenv("MIDDLEWARE_TEMPERATURE", "0.1"))
 MIDDLEWARE_SCOPE = os.getenv("MIDDLEWARE_SCOPE", "email").lower()
 MIDDLEWARE_MAX_PASSES = int(os.getenv("MIDDLEWARE_MAX_PASSES", "1"))
 
+# --- Tier-1 agent loop (observe → re-plan → act); see core/continuation.py ---
+# Ciel's plan is a flat list of tool calls fixed before anything runs, so a request
+# like "check git status, and if it's clean, commit" cannot be expressed at all. The
+# loop closes that gap. Whether a round happens is decided by deterministic Python,
+# never by asking the model "are we done?", so a plain one-shot request pays zero
+# extra tokens and a weaker/swapped model cannot make the loop unsafe or unbounded.
+AGENT_LOOP_ENABLED = os.getenv("AGENT_LOOP_ENABLED", "true").lower() in ("true", "1", "yes")
+# Extra observe-then-act rounds beyond the first. 2 covers "check → decide → act";
+# raising it mostly buys diminishing returns at one planner call each.
+AGENT_LOOP_MAX_ROUNDS = int(os.getenv("AGENT_LOOP_MAX_ROUNDS", "2"))
+# Wall-clock ceiling for the whole loop, so a slow provider cannot strand a request.
+AGENT_LOOP_MAX_SECONDS = float(os.getenv("AGENT_LOOP_MAX_SECONDS", "120"))
+
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —
 # different from an outright connection error) hangs the client forever, and the

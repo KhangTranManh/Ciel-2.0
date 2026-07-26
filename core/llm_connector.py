@@ -23,6 +23,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from .tool_manager import ToolManager
 from .router import Router
 from .recovery_manager import RecoveryManager
+from .continuation import (
+    ContinuationPolicy, LoopBudget, StepRecord, build_observation_block,
+)
 from . import rag_manager
 
 import sys
@@ -32,7 +35,10 @@ from agent_system.models.worker import Worker
 from agent_system.models.middleware import Middleware
 from agent_system.utils.logger import log
 from agent_system.utils.usage import format_usage
-from agent_system.config import MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES
+from agent_system.config import (
+    MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES,
+    AGENT_LOOP_ENABLED, AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_SECONDS,
+)
 from core.cost import estimate_cost
 
 load_dotenv()
@@ -190,10 +196,15 @@ class CielCore:
         # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
         # Signature: confirm_callback(tool_name: str, preview: str, tool_args: dict) -> bool
         self.confirm_callback = None
-        # Set by a preview tool (see _PENDING_FOLLOWUPS); consumed by the next
-        # affirmation so "yes" resolves the pending action instead of reaching the
-        # Brain context-free.
-        self._pending_action = None
+        # Generic pending-confirmation slot: any preview-only tool can opt in by
+        # returning {"confirm": {"tool": ..., "args": {...}}} (see skills/_result.py
+        # make_result) instead of being hand-registered in core. Persisted to disk so
+        # it survives a process restart, not just a REPL turn — required for Ciel to
+        # eventually run "one process per command" like a real CLI instead of only the
+        # long-lived main.py loop. In-memory copy is authoritative during this process;
+        # disk is the recovery path if the process dies or restarts mid-confirmation.
+        self._pending_state_path = self.base_dir / "ciel_data" / "state" / "pending_action.json"
+        self._pending_action = self._load_pending_action_from_disk()
 
         # Live per-tier LLM call counter — incremented at the single logging chokepoint
         # (_log_thought) whenever an [LLM_CALL] entry is written, so it covers Brain
@@ -218,17 +229,18 @@ class CielCore:
     # Tools that require Master's explicit Y/N approval before execution
     _HIGH_RISK_TOOLS = set(_RISK_DESCRIPTIONS.keys())
 
-    # TWO-STEP TOOLS: a tool that only PREVIEWS an action, plus the tool that actually
-    # performs it and which of the preview's args carry over. `git_commit_and_push`
-    # literally ends its output with 'Say "yes" or "confirm" to commit and push' — a
-    # promise the pipeline could not keep: the Router deliberately never sees
-    # chat_history, and RAG skips inputs under MIN_QUERY_LENGTH (15), so a bare "yes"
-    # (3) or "confirm commit" (14) reached the Brain with zero context. Observed live:
-    # the Brain answered "what is your command?" and then asked for the repo path it
-    # had itself just printed. Capturing the follow-up deterministically closes that gap.
-    _PENDING_FOLLOWUPS = {
-        "git_commit_and_push": {"tool": "git_confirm_push", "carry": ("repo_path", "message")},
-    }
+    # TWO-STEP TOOLS: a preview-only tool (e.g. `git_commit_and_push`) opts into
+    # deterministic pending-confirmation by returning {"confirm": {"tool": ...,
+    # "args": {...}}} from skills/_result.py make_result — captured in execute_tool
+    # via _set_pending_action(). No per-tool registration lives in core; any skill
+    # can declare this.
+    #
+    # Why this exists at all: `git_commit_and_push` literally ends its output with
+    # 'Say "yes" or "confirm" to commit and push' — a promise the pipeline could not
+    # keep on its own. The Router deliberately never sees chat_history, and RAG skips
+    # inputs under MIN_QUERY_LENGTH (15), so a bare "yes" (3 chars) or "confirm commit"
+    # (14) reached the Brain with zero context. Observed live: the Brain answered "what
+    # is your command?" and then asked for the repo path it had itself just printed.
     _PENDING_TTL_SECONDS = 600     # a stale "yes" must never fire an old action
 
     _AFFIRM_RE = re.compile(
@@ -723,18 +735,12 @@ class CielCore:
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
-        # Remember a preview tool's follow-up so a later bare "yes" can execute it
-        # (see _PENDING_FOLLOWUPS). Args come from THIS call, so the confirm step never
-        # has to re-derive a repo path or message the Brain can no longer see.
-        followup = self._PENDING_FOLLOWUPS.get(tool_name)
-        if followup and not result_text.startswith(("[TOOL_ERROR", "[CANCELLED")):
-            carried = {k: tool_args[k] for k in followup["carry"] if k in tool_args}
-            if len(carried) == len(followup["carry"]):
-                self._pending_action = {"tool": followup["tool"], "args": carried,
-                                        "ts": time.time(), "from": tool_name}
-                self._log_thought("SYSTEM", "pending_action_set",
-                                  f"{tool_name} → awaiting confirmation for "
-                                  f"{followup['tool']}({carried}).")
+        # Remember a preview tool's follow-up so a later bare "yes" can execute it.
+        # The tool declares this itself via result["confirm"] (see skills/_result.py
+        # make_result) — core needs no per-tool registration, so any skill can opt in.
+        confirm_spec = result.get("confirm") if isinstance(result, dict) else None
+        if confirm_spec and not result_text.startswith(("[TOOL_ERROR", "[CANCELLED")):
+            self._set_pending_action(confirm_spec["tool"], confirm_spec.get("args", {}), source=tool_name)
 
         if tool_name in {"get_fact", "save_fact", "delete_fact"}:
             return self._format_fact_result(tool_name, result_text)
@@ -1021,7 +1027,15 @@ class CielCore:
     # Reference tokens a later multi_tool step may use to consume an EARLIER step's
     # raw output: {{prev}} = the immediately preceding step, {{step_N}} /
     # {{step_N.output}} = the N-th executed step (1-indexed). See _resolve_step_refs.
-    _STEP_REF_RE = re.compile(r"\{\{\s*(prev|step[_ ]?(\d+)(?:\.output)?)\s*\}\}", re.IGNORECASE)
+    #
+    # ONE OR TWO BRACES, deliberately. The router prompt asks for {{…}}, but models do
+    # not reliably produce it: two entirely different families (Claude and GPT, and every
+    # model tried since) emit {step_1}. Requiring the exact double-brace form meant the
+    # substitution silently no-op'd and the LITERAL text reached the tool — observed
+    # writing '{prev}' and '{prev} tỷ' into real files, with no error raised anywhere.
+    # This is the recurring lesson in this codebase: a guard keyed to an exact
+    # model-emitted string is fragile; match the intent instead.
+    _STEP_REF_RE = re.compile(r"\{{1,2}\s*(prev|step[_ ]?(\d+)(?:\.output)?)\s*\}{1,2}", re.IGNORECASE)
     _STEP_REF_MAXLEN = 4000
 
     def _resolve_step_refs(self, value, step_outputs: list):
@@ -1039,7 +1053,10 @@ class CielCore:
             return {k: self._resolve_step_refs(v, step_outputs) for k, v in value.items()}
         if isinstance(value, list):
             return [self._resolve_step_refs(v, step_outputs) for v in value]
-        if not isinstance(value, str) or "{{" not in value:
+        # Fast path: bail out on any string with no brace at all. It must test "{" and
+        # NOT "{{" — gating on the double brace re-introduced the exact bug _STEP_REF_RE
+        # was widened to fix, since a model-emitted "{step_1}" never reached the regex.
+        if not isinstance(value, str) or "{" not in value:
             return value
 
         def _sub(m):
@@ -1085,12 +1102,125 @@ class CielCore:
                               f"User asked for an exact subject; replaced '{old}' with '{requested}'.")
         return send_args
 
-    def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "") -> str:
+    def _continue_until_done(self, user_input: str, response_hint: str, records: list,
+                             results: list, step_outputs: list, model_requested: bool = False):
+        """TIER-1 AGENT LOOP: observe → re-plan → act, in place.
+
+        Appends any follow-up steps' output to `records`/`results`/`step_outputs`, so
+        the caller synthesizes over the full picture without knowing a loop happened.
+
+        Three properties matter more than what the loop achieves, and all three are
+        guaranteed by code rather than by the model behaving well:
+
+          * BOUNDED — rounds, planner calls and wall-clock are all capped up front
+            (see LoopBudget). A model that keeps insisting there is more to do simply
+            runs out of budget.
+          * MONOTONIC — a follow-up that only re-proposes work already done is dropped
+            by novel_steps(), so a confused planner terminates the loop instead of
+            ping-ponging forever.
+          * FAIL-OPEN — every failure path here returns quietly, leaving the first
+            round's results untouched. This can improve an answer; it can never leave
+            the pipeline worse off than before the loop existed.
+
+        Re-planning reuses Router.route() and the ordinary plan schema on purpose:
+        no second output format the model has to learn, and therefore no new way for a
+        weaker model to fail. Cost is one planner call per round, and only when a
+        deterministic signal already said the plan looked incomplete.
+        """
+        if not AGENT_LOOP_ENABLED:
+            return
+
+        budget = LoopBudget(max_rounds=AGENT_LOOP_MAX_ROUNDS,
+                            max_replans=AGENT_LOOP_MAX_ROUNDS,
+                            max_seconds=AGENT_LOOP_MAX_SECONDS)
+        while True:
+            verdict = ContinuationPolicy.assess(user_input, records, budget, model_requested)
+            if not verdict.should_continue:
+                # Only worth a log line once a loop was actually plausible; otherwise
+                # every ordinary request would spam "plan looks complete".
+                if budget.rounds_used:
+                    self._log_thought("LOOP", "done", verdict.reason)
+                return
+            self._log_thought("LOOP", "continue", verdict.reason)
+
+            try:
+                followup = (f"{user_input}\n\n"
+                            f"{build_observation_block(user_input, records)}")
+                budget.replans_used += 1
+                decision = self.router.route(followup, self._tool_list_str, self.chat_history)
+            except Exception as e:
+                self._log_thought("LOOP", "replan_failed",
+                                  f"{type(e).__name__}: {str(e)[:160]} — keeping results so far.")
+                return
+
+            action = (decision or {}).get("action")
+            if action not in ("tool", "multi_tool"):
+                self._log_thought("LOOP", "planner_finished",
+                                  f"planner returned action={action} — nothing further to run.")
+                return
+
+            proposed = decision.get("tools") or []
+            if not proposed and decision.get("tool_name"):
+                proposed = [{"tool_name": decision["tool_name"],
+                             "tool_args": decision.get("tool_args") or {}}]
+
+            fresh = ContinuationPolicy.novel_steps(proposed, records)
+            if not fresh:
+                self._log_thought("LOOP", "no_progress",
+                                  "follow-up proposed only already-executed steps — stopping.")
+                return
+
+            budget.rounds_used += 1
+            model_requested = bool(decision.get("needs_followup"))
+
+            if len(fresh) > budget.max_steps_per_round:
+                self._log_thought("LOOP", "round_trimmed",
+                                  f"planner proposed {len(fresh)} steps — running the first "
+                                  f"{budget.max_steps_per_round} to stay inside the budget.")
+                fresh = fresh[:budget.max_steps_per_round]
+
+            for t in fresh:
+                # Time is checked BEFORE each step, not only between rounds: a round
+                # of slow calls must be able to stop partway instead of overrunning
+                # the ceiling wholesale (observed: 566s inside a single round).
+                if budget.out_of_time():
+                    self._log_thought("LOOP", "out_of_time",
+                                      f"loop exceeded {budget.max_seconds:.0f}s — stopping mid-round "
+                                      f"with the results gathered so far.")
+                    return
+                name = (t.get("tool_name") or "").strip()
+                args = self._resolve_step_refs(t.get("tool_args") or {}, step_outputs)
+                log.tool(f"[loop {budget.rounds_used}/{budget.max_rounds}] {name}({args})")
+                if name not in self._tool_map:
+                    res = f"[TOOL_ERROR] {name} not found."
+                else:
+                    res = self.execute_tool(name, args, response_hint=response_hint,
+                                            user_input=user_input)
+                self._log_thought("TOOL", f"loop_result_{name}", res)
+                step_outputs.append(res)
+                results.append(f"--- Output from {name} (follow-up round {budget.rounds_used}) ---\n{res}")
+                records.append(StepRecord(name, args, res))
+
+                if res.startswith("[CANCELLED]"):
+                    self._log_thought("LOOP", "cancelled", f"{name} was declined — stopping.")
+                    return
+                # A follow-up step that staged a confirmation hands control back to the
+                # Master. Continuing would plan on top of an action that has not happened.
+                if self._pending_action:
+                    self._log_thought("LOOP", "awaiting_confirmation",
+                                      f"{name} staged {self._pending_action['tool']} — stopping for the Master.")
+                    return
+
+    def execute_multi_tool(self, tools: list, response_hint: str, user_input: str = "",
+                           model_requested: bool = False) -> str:
         """Execute multiple tools sequentially and synthesize the result.
 
         Special handling for send_gmail_message: execute other tools first, synthesize
         the final message body, then execute send with the synthesized body so the
         actual email contains the real content (not a placeholder from the initial plan).
+
+        `model_requested` is the plan's optional `needs_followup` hint, forwarded to the
+        Tier-1 loop. It can only ADD a reason to look again — never override a budget.
         """
         # Separate the send step if present (usually the last step for email requests).
         # Supports plain send_gmail_message and rich send_gmail_html_message.
@@ -1111,6 +1241,7 @@ class CielCore:
 
         results = []
         step_outputs = []   # raw result of each executed step, for {{prev}}/{{step_N}} refs
+        records = []        # (tool, args, result) per step — the agent loop's observations
         # Execute non-send tools first
         for t in other_tools:
             name = t.get("tool_name", "")
@@ -1132,8 +1263,17 @@ class CielCore:
             self._log_thought("TOOL", f"result_{name}", res)
             step_outputs.append(res)
             results.append(f"--- Output from {name} ---\n{res}")
+            records.append(StepRecord(name, args, res))
             if res.startswith("[CANCELLED]"):
                 break
+
+        # TIER-1 AGENT LOOP — observe what actually came back and, only when a
+        # deterministic signal says the plan could not have been complete, plan again
+        # with those results in view. Placed HERE on purpose: any send/deferred-write
+        # step was separated out above and still runs once, after synthesis, so extra
+        # rounds can enrich the data a report is built from but can never double-send.
+        self._continue_until_done(user_input, response_hint, records, results, step_outputs,
+                                  model_requested=model_requested)
 
         combined_results = "\n\n".join(results)
         
@@ -1583,6 +1723,44 @@ RULES:
                 return name
         return "English"
 
+    def _load_pending_action_from_disk(self):
+        """Recover a still-valid pending action after a process restart. Returns None
+        (and wipes a stale file) if the record is missing, unreadable, or expired —
+        never let a corrupt/ancient file resurrect a confirmation the Master forgot
+        about days ago."""
+        try:
+            if not self._pending_state_path.exists():
+                return None
+            p = json.loads(self._pending_state_path.read_text(encoding="utf-8"))
+            if not isinstance(p, dict) or time.time() - p.get("ts", 0) > self._PENDING_TTL_SECONDS:
+                self._pending_state_path.unlink(missing_ok=True)
+                return None
+            return p
+        except Exception:
+            return None
+
+    def _set_pending_action(self, tool: str, args: dict, source: str):
+        """Stage a follow-up action a bare affirmation should resolve to. Written to
+        disk immediately (not just held in RAM) so the confirmation survives a crash
+        or restart, not only the remainder of this REPL session."""
+        self._pending_action = {"tool": tool, "args": args, "ts": time.time(), "from": source}
+        try:
+            self._pending_state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._pending_state_path.write_text(
+                json.dumps(self._pending_action, ensure_ascii=False, default=str), encoding="utf-8")
+        except Exception as e:
+            log.error(f"Failed to persist pending action to disk: {e}")
+        self._log_thought("SYSTEM", "pending_action_set",
+                          f"{source} → awaiting confirmation for {tool}({args}).")
+
+    def _clear_pending_action(self):
+        """Resolve (or drop) the pending slot in both RAM and on disk."""
+        self._pending_action = None
+        try:
+            self._pending_state_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _get_pending_action(self):
         """The still-valid pending action, or None. Expires by TTL so a "yes" typed
         long after the preview can never fire a stale destructive action."""
@@ -1593,7 +1771,7 @@ RULES:
             self._log_thought("SYSTEM", "pending_action_expired",
                               f"{p['tool']} pending confirmation expired after "
                               f"{self._PENDING_TTL_SECONDS}s — cleared.")
-            self._pending_action = None
+            self._clear_pending_action()
             return None
         return p
 
@@ -1653,7 +1831,7 @@ RULES:
         pending = self._get_pending_action()
         if pending:
             if self._CANCEL_RE.match(user_input or ""):
-                self._pending_action = None
+                self._clear_pending_action()
                 self._log_thought("SYSTEM", "pending_action_cancelled",
                                   f"Master declined {pending['tool']} — cleared.")
                 reply = f"Cancelled. {pending['tool'].replace('_', ' ')} was not carried out, Master."
@@ -1661,7 +1839,7 @@ RULES:
                 self._save_chat_memory()
                 return reply
             if self._AFFIRM_RE.match(user_input or ""):
-                self._pending_action = None
+                self._clear_pending_action()
                 self._log_thought("SYSTEM", "pending_action_confirmed",
                                   f"Affirmation resolved to {pending['tool']}({pending['args']}).")
                 log.system(f"Confirmation accepted → executing {pending['tool']}")
@@ -1671,6 +1849,18 @@ RULES:
                 self.chat_history.add_ai_message(reply)
                 self._save_chat_memory()
                 return reply
+            # SINGLE-SLOT: neither a clean yes nor a clean no. Rather than let a
+            # second risky request slip past the Brain (which has no chat_history and
+            # could stage or run something else while this one is still unresolved),
+            # block deterministically and make the Master resolve THIS one first.
+            self._log_thought("SYSTEM", "pending_action_blocking",
+                              f"New input while {pending['tool']} still pending — held for resolution.")
+            reply = (f"There's already a pending confirmation for **{pending['tool'].replace('_', ' ')}** "
+                     f"(args: {pending['args']}), Master. Reply \"yes\"/\"confirm\" to proceed or "
+                     f"\"no\"/\"cancel\" to abort it before I take on anything new.")
+            self.chat_history.add_ai_message(reply)
+            self._save_chat_memory()
+            return reply
 
         # === NEW PATH CLARIFICATION LOGIC ===
         # If user wants to write/create/save/generate a file but didn't specify where,
@@ -1733,16 +1923,10 @@ RULES:
                                f"{'a git repository' if (_cwd / '.git').exists() else 'not a git repository'}. "
                                f"Use this path for any tool needing a repo/project path unless the Master names another.]")
 
-            # If an action is still awaiting confirmation and the reply was neither a
-            # clean yes nor a clean no (handled deterministically above), tell the Brain
-            # it exists — otherwise it re-asks for details it already has. Deterministic
-            # code covers the clear cases; this note covers the phrasings it can't match.
-            _pending = self._get_pending_action()
-            if _pending:
-                enriched_input += (
-                    f"\n\n[PENDING CONFIRMATION: '{_pending['tool']}' is awaiting the Master's "
-                    f"yes/no, with these already-known arguments: {_pending['args']}. "
-                    f"Resolve THIS action — never ask the Master to re-state arguments listed here.]")
+            # NOTE: no [PENDING CONFIRMATION] note is injected here anymore — the
+            # single-slot block above now resolves (or blocks on) every pending action
+            # deterministically before routing ever runs, so the Brain can no longer
+            # reach this point while one is outstanding.
 
             # Proactive bypass for email sends: avoid calling the Brain router at all
             # when the request is clearly about sending email. This prevents the
@@ -1791,6 +1975,35 @@ RULES:
                             f"Single-tool plan ({_tool_name_pre}) had email send intent with no "
                             f"send step — promoted to multi_tool so the send-step safeguard can append it.",
                         )
+
+            # TIER-1 LOOP REACHABILITY: a result-dependent request ("check X, and if
+            # it's clean, commit") is exactly the shape a flat plan cannot express, so
+            # the Brain typically under-scopes it to the first step alone — a single
+            # action="tool". The loop lives in execute_multi_tool, so promote that case
+            # here; otherwise the one request type this feature exists for would be the
+            # one it never sees. Promotion is free when nothing further turns out to be
+            # needed: the policy simply declines the round and synthesis proceeds.
+            if action == "tool" and AGENT_LOOP_ENABLED and decision.get("tool_name"):
+                # Distributive requests need this just as much as conditional ones:
+                # "list the files, then read EACH one" was planned as a lone
+                # list_workspace call, so it never reached execute_multi_tool and the
+                # fan-out signal never got to run. Observed: the listing was returned
+                # and not one file was read.
+                if (ContinuationPolicy.request_is_conditional(user_input)
+                        or ContinuationPolicy.request_is_distributive(user_input)):
+                    decision = dict(decision)
+                    decision["action"] = "multi_tool"
+                    decision["tools"] = [{
+                        "tool_name": decision.get("tool_name", ""),
+                        "tool_args": decision.get("tool_args", {}),
+                    }]
+                    action = "multi_tool"
+                    self._log_thought(
+                        "BRAIN", "tool_promoted_for_loop",
+                        f"Request is result-dependent but planned as a single "
+                        f"{decision['tools'][0]['tool_name']} call — promoted to multi_tool "
+                        f"so the observe-then-continue loop can evaluate the outcome.",
+                    )
 
             if action == "tool":
                 tool_name = decision.get("tool_name", "")
@@ -1889,7 +2102,8 @@ RULES:
                     self._log_thought("BRAIN", "multi_tool_write_step_added",
                                       f"Plan was missing a write step despite explicit target path — appended write_file to {path_match.group(1)}.")
 
-                response = self.execute_multi_tool(tools, hint, user_input)
+                response = self.execute_multi_tool(tools, hint, user_input,
+                                                   model_requested=bool(decision.get("needs_followup")))
 
             else:
                 task = decision.get("task", user_input)

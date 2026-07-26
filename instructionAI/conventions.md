@@ -35,6 +35,58 @@ per-tool guidance the Brain sees is `name` + `description[:80]` + arg schema, pl
 overrides in `core/llm_connector.py`. If a tool needs stronger routing guidance, add/extend a
 `_TOOL_HINTS` entry rather than assuming the manual is read.
 
+## Skill Contract — what a new tool MUST honour
+
+Auto-discovery means a new pack never touches `core/`. That is exactly why these
+invariants matter: nothing will stop you breaking them, and the failure shows up later
+as wrong output rather than an import error.
+
+**1. A tool may be invoked MORE THAN ONCE per user request.** Three independent
+mechanisms can re-invoke it: self-healing (up to 3 attempts on error), Brain
+self-correction (up to 2), and the Tier-1 loop (up to `AGENT_LOOP_MAX_ROUNDS`). Design
+every tool to be **idempotent or preview-only**:
+
+- Read/query tools — inherently fine.
+- Tools with outside effects (send, push, delete, pay, post) — split into a **preview**
+  tool and a **confirm** tool, and let the preview declare the pairing (point 2). The
+  loop deliberately stops the moment a confirmation is staged, so the Master decides.
+- Never make a single call both decide and act irreversibly.
+
+**2. Opt into confirmation via the result, never by editing core.**
+
+```python
+return make_result(
+    True, data={"message": preview_text}, tool_name="my_preview",
+    confirm={"tool": "my_commit", "args": {...}},   # ← the whole registration
+)
+```
+
+`CielCore.execute_tool` reads `result["confirm"]` generically. A bare "yes" later resolves
+it with zero LLM calls, and it survives a process restart via
+`ciel_data/state/pending_action.json`. There is **one** pending slot: a new risky request
+while one is outstanding is refused deterministically.
+
+**3. Return the standard envelope** — `make_result()` from `skills/_result.py`. Anything
+returning a bare string still works (ToolManager wraps it), but it can never opt into
+point 2, and `success=False` is the only thing self-healing recognises as failure.
+
+**4. Errors must be shaped, not prose.** `ContinuationPolicy` decides "this step failed"
+from the result's opening (`[TOOL_ERROR`, `Error:`, `Lỗi:`, `not found`, `[]`). A tool that
+reports failure as a cheerful sentence is invisible to both the healer and the loop.
+
+**5. If a tool lists things, list them line-per-item.** The fan-out signal counts entries
+matching bullet / `1.` / bare-filename lines. A listing returned as one comma-joined blob
+reads as a single item, and "do X for each of them" will silently stop after the listing.
+
+**6. Long results: hand over the facts, don't assume the model infers them.** Dates,
+sources and units belong in the tool output (see `stealth_search`'s `Published:` labels).
+Add the tool to `_TOOLS_NEEDING_FORMAT` / `_RETRIEVAL_TOOLS` in `core/llm_connector.py` if
+it needs the completeness-oriented formatting rules rather than the terse default.
+
+**7. Destructive tools go in `_RISK_DESCRIPTIONS`** (`core/llm_connector.py`) so the Y/N
+safety gate covers them. This is separate from point 2: the gate asks before *this* call,
+`confirm=` carries an action across *turns*. Risky tools usually want both.
+
 ## Router JSON Structure
 
 Every Router response follows this exact format:

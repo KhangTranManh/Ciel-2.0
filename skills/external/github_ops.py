@@ -455,7 +455,10 @@ def get_github_tools() -> dict:
             lines.append('   Say "no" or "cancel" to abort.')
             lines.append("═══════════════════════════════════════")
 
-            return _make_result(True, data={"message": "\n".join(lines)}, tool_name="git_commit_and_push")
+            return _make_result(
+                True, data={"message": "\n".join(lines)}, tool_name="git_commit_and_push",
+                confirm={"tool": "git_confirm_push", "args": {"repo_path": repo_path, "message": message}},
+            )
 
         tools.append(StructuredTool.from_function(
             func=git_commit_and_push,

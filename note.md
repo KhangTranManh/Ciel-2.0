@@ -61,10 +61,45 @@ stronger model paraphrases it. Match by pattern/intent instead.**
 | **Real-date recency filter** | Enforce the requested time window on actual `pubDate` (DuckDuckGo's `timelimit` let 8–16-day-old hits through a "past day" query) | `_WINDOW_DAYS` |
 | **Language-aware search** | `[USER LANGUAGE: X]` survives the translate step → Vietnamese question yields a Vietnamese query and Vietnamese outlets | `_detect_language()` + Router rule |
 | **Tolerant router JSON** | Slice the first balanced `{…}` (prose/trailing text tolerated) before `json.loads` | `_extract_json_object()` |
+| **Generic pending confirmation** | A preview tool declares its own follow-up via `make_result(confirm=…)`; a later bare "yes" executes it with **zero** LLM calls, survives restart, one slot only | `continuation`-adjacent: `_set_pending_action()`, `skills/_result.py` |
+| **Tier-1 loop policy** | Whether to observe-and-re-plan is decided by 5 structural signals in pure Python; all bounds (rounds/calls/time/steps) enforced in code, fail-open | `core/continuation.py` |
 
 ---
 
 ## Changelog (most recent first)
+
+### 2026-07-26 — Tier-1 agent loop (observe → re-plan → act)
+A plan is a **flat list of tool calls fixed before anything runs**, so *"check git status, and
+if it's clean, commit"* was **structurally unrepresentable** — not merely hard to plan. Adding
+tools could never fix that; the pipeline shape had to change.
+
+- **`core/continuation.py`** — a pure, LLM-free policy module. `ContinuationPolicy.assess()`
+  returns whether another round is warranted; `LoopBudget` holds every ceiling. Deliberately
+  does **not** ask the model "are we done?" — that would fire on the ~90% of requests that are
+  plainly one-shot, and would make loop safety depend on model quality.
+- **Five signals** open a round: S1 conditional wording · S2 an unresolved `{step_N}` reached a
+  real tool · S3 a step failed while later steps ran · S4 fan-out over a set of unknown size ·
+  S5 the optional `"needs_followup"` hint. Only S5 involves the model, and it is never required.
+- **Re-planning reuses `Router.route()` and the ordinary plan schema** — no second format for a
+  weaker model to fail at.
+- **Verified live on a swapped model stack** (all four tiers on a different provider): the
+  conditional branch commits when the repo is dirty and correctly does **nothing** when clean —
+  and in one run the loop *recovered from the Brain routing to the wrong repo* in round 0.
+- **Cost on ordinary requests: zero extra calls.** An 11-case regression spent the same 8 Brain
+  calls with the loop on as off.
+
+Three defects the hard multi-domain suite exposed, all fixed:
+1. **Fan-out was invisible** — "liệt kê file rồi đọc *từng* file" ran the listing and stopped.
+   No signal covered *unknown cardinality*; S4 added.
+2. **False positive on sequencing** — `kiểm tra X rồi Y` matched the conditional regex, so
+   "check git then summarise" burned a planner call. Now requires a decision verb after `rồi`.
+3. **The wall-clock ceiling did nothing** — it was tested only *between* rounds, so one round of
+   five slow `smart_scrape` calls ran **566s** past a 120s cap. Now checked before every step,
+   plus `max_steps_per_round=4`.
+
+Contract for new skills is in [`instructionAI/conventions.md`](instructionAI/conventions.md)
+("Skill Contract"). The one that bites: **a tool can now be invoked more than once per request** —
+make it idempotent, or split preview/confirm.
 
 ### 2026-07-25 — Web search overhaul (answers that state *when* and *what*)
 Symptom: news answers had no dates and stayed vague ("World Bank published an outlook
