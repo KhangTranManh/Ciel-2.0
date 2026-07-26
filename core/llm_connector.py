@@ -261,6 +261,11 @@ class CielCore:
         # boundaries, never mid-tool: aborting inside a half-written file or a half-sent
         # email is not a cancellation, it is a corruption.
         self._cancel_event = threading.Event()
+        # Recipients already delivered to during the CURRENT turn. Reset in process(),
+        # so "send X to A" twice in two separate requests still sends twice — it is only
+        # a duplicate when one request produces two deliveries. Guarded by _log_lock,
+        # which parallel step workers already share.
+        self._sent_this_turn = set()
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
         # where preferences actually change the output. It renders to "" while empty, so
@@ -705,6 +710,27 @@ class CielCore:
         self._log_thought("SAFETY", tag, tool_name)
         return approved
 
+    # Outbound tools whose second execution in one turn is a duplicate delivered to a
+    # real person, not a retry. Keyed by RECIPIENT, not by the full argument signature:
+    # the whole problem is that two mechanisms compose *different* subjects and bodies
+    # for the same intended message, so a signature over all args would never match.
+    _OUTBOUND_KEYS = {
+        "send_gmail_message": "to",
+        "send_gmail_html_message": "to",
+        "reply_to_email": "message_id",
+        "send_telegram": None,          # single destination; the tool itself is the key
+    }
+
+    def _outbound_key(self, tool_name: str, tool_args: dict):
+        """Identity of the message this call would deliver, or None if not outbound."""
+        if tool_name not in self._OUTBOUND_KEYS:
+            return None
+        arg = self._OUTBOUND_KEYS[tool_name]
+        if arg is None:
+            return tool_name
+        target = str((tool_args or {}).get(arg) or "").strip().lower()
+        return f"{tool_name}:{target}" if target else None
+
     def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "") -> str:
         """Execute a Ciel tool and format the result."""
         log.tool(f"Executing: {tool_name}({tool_args})")
@@ -712,6 +738,37 @@ class CielCore:
         if tool_name not in self._tool_map:
             log.error(f"Tool not found: {tool_name}")
             return f"[TOOL_ERROR] Tool '{tool_name}' not found."
+
+        # OUTBOUND IDEMPOTENCE — one delivery per recipient per turn.
+        #
+        # Two independent mechanisms both complete a plan that is missing its send step:
+        # the deterministic workflow safeguard in execute_multi_tool (which appends one),
+        # and the Tier-1 loop (which re-plans one when the Brain sets `needs_followup`).
+        # Neither knows about the other, so a request like "gửi mail cho X báo cáo Y"
+        # delivered the SAME report twice, with two different subjects. Reproduced live.
+        #
+        # The existing comment at the loop's call site — "extra rounds … can never
+        # double-send" — is true only for a send that was in the ORIGINAL plan, which is
+        # separated out and run once after synthesis. It never covered a send the loop
+        # invents. Guarding here, at the one choke point every path goes through, closes
+        # that and any future path too.
+        #
+        # Checked BEFORE the safety gate on purpose: asking the Master to approve a send
+        # that is about to be suppressed is worse than not asking.
+        # First delivery wins. That is also the better one structurally: the loop runs
+        # before synthesis, so the Brain's properly-subjected message goes out and the
+        # generic fallback ("Báo cáo từ Ciel") is the one dropped.
+        out_key = self._outbound_key(tool_name, tool_args)
+        if out_key:
+            with self._log_lock:
+                already = out_key in self._sent_this_turn
+            if already:
+                self._log_thought(
+                    "SAFETY", "duplicate_send_suppressed",
+                    f"{tool_name} to the same recipient already succeeded in this turn "
+                    f"({out_key}) — suppressed to avoid delivering the message twice.")
+                return (f"[SKIPPED] Đã gửi tới người nhận này trong yêu cầu hiện tại rồi, "
+                        f"Master. Bỏ qua lần gửi thứ hai để tránh trùng.")
 
         # STALE-YEAR FIX for web search: the Brain is trained on older data and often
         # injects a past year into "latest news" queries (observed: user asked for the
@@ -908,6 +965,13 @@ class CielCore:
                 return f"Sorry, {friendly}"
             except Exception:
                 return f"[TOOL_ERROR] {tool_name}: {result_text}"
+
+        # Recorded only on SUCCESS — this branch is past the error return above. A send
+        # that failed must stay retryable; marking it delivered would turn one provider
+        # hiccup into a message that never goes out and never reports why.
+        if out_key:
+            with self._log_lock:
+                self._sent_this_turn.add(out_key)
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
@@ -1590,7 +1654,7 @@ RULES:
    illustrative placeholders. Every number in your output must come from a tool result in THIS run.
 4. If any tool returned an error, 'file not found', or empty result, report that honestly. Do NOT fabricate fake data, fake file contents, or fake execution output.
 5. NEVER disclose internal file paths (agent_output/, ciel_workspace/, etc.) in the final report or email body sent to external parties. Use only generic professional language such as 'the detailed evaluation has been prepared' or provide the content directly in the message. Do not reference storage locations.
-6. ONLY claim that an email was sent (e.g. "Đã gửi", "email sent", "Message sent") if there is a successful send_gmail_message tool result with a Message Id in the outputs above. If the send tool was not executed or failed, explicitly say the report is ready but do not claim it was emailed.
+6. ONLY claim that an email was sent (e.g. "Đã gửi", "email sent", "Message sent") if there is a successful send_gmail_message tool result with a Message Id in the outputs above. If there is no such result, do NOT narrate delivery status AT ALL — do not write "chưa gửi", "not sent yet", "chưa có kết quả gửi" or any equivalent. A send step in this plan may still be pending and will run AFTER you write this; the system appends the real outcome itself once it knows. Just write the report.
 7. For any email send (market or other), synthesize a professional email body based on the user's exact request and the real data from tools. Make it clear, well-structured, polite and useful like a proper sent email (use Vietnamese if appropriate). Do not force any specific dashboard template or HTML structure unless the user explicitly requested visual/dashboard style. Use ONLY real data from this run's tool results. Never leave [brackets], meta tags, or invent numbers.
 8. If this is an email send, your ENTIRE output IS the email body and will be sent verbatim. Output ONLY the email body — start directly with the subject/greeting. Do NOT include: chain-of-thought or "[COGNITION]"/"[MARKET_DATA]"-style tag prefixes; any statement that the email was/wasn't sent or any "Message Id"; any label like "Email body:", "Nội dung email:", "Lưu ý:"; any nested/duplicated copy of the email; any note about tools, file writes, or storage paths.
 """
@@ -1640,11 +1704,70 @@ RULES:
             results.append(f"--- Output from {send_name} ---\n{send_res}")
             # Claim sent ONLY when a real Message Id is present (no loose 'sent' substring).
             if "Message Id" in send_res:
+                # The body was synthesized BEFORE this send ran, so at that moment there
+                # was no Message Id and the anti-fabrication rule correctly made the
+                # Worker write "chưa gửi … chưa có kết quả gửi thực tế". That sentence is
+                # now stale, and appending the truth underneath it left the Master reading
+                # both — a denial and a confirmation of the same send. Observed live: the
+                # mail went out (Message Id 19f9efdcfee2657d) while the reply opened with
+                # "Chưa gửi email tới kxctran@gmail.com".
+                #
+                # Removed deterministically, and only here, where the real outcome is
+                # already known from the tool result — never by asking the model to
+                # remember not to mention it.
+                formatted = self._strip_stale_send_status(formatted)
                 formatted = formatted.rstrip() + "\n\n[EMAIL] Sent successfully (Message Id in tool log)."
             else:
                 formatted = formatted.rstrip() + "\n\n[EMAIL] Report prepared but NOT confirmed sent (no Message Id returned)."
 
         return formatted
+
+    # A claim that the mail has NOT gone out. Matched by INTENT (a negation next to a
+    # send word), not by any exact sentence the model produced — the recurring lesson in
+    # this codebase is that a guard keyed to an exact model string breaks the moment a
+    # stronger model paraphrases it.
+    #
+    # Only negative claims are stripped, never positive ones. The asymmetry is deliberate:
+    # this runs solely on the branch where a real Message Id came back, so a "not sent"
+    # sentence is provably false, while a "sent" sentence is provably true and must
+    # survive. Anti-fabrication is never weakened by this — it only ever removes a
+    # statement the tool result has already disproved.
+    _STALE_SEND_STATUS_RE = re.compile(
+        r"[^.!?\n]*?"
+        r"(?:chưa\s+(?:được\s+|thể\s+)?gửi"
+        r"|chưa\s+có\s+kết\s+quả\s+gửi"
+        r"|chưa\s+(?:được\s+)?xác\s+nhận\s+(?:đã\s+)?gửi"
+        r"|không\s+thể\s+xác\s+nhận\s+(?:đã\s+)?gửi"
+        r"|(?:has\s+)?not\s+(?:yet\s+)?been\s+sent"
+        r"|not\s+(?:yet\s+)?sent"
+        r"|no\s+confirmation\s+of\s+(?:the\s+)?send"
+        r"|unable\s+to\s+confirm\s+(?:the\s+)?send)"
+        r"[^.!?\n]*[.!?]?",
+        re.IGNORECASE)
+
+    def _strip_stale_send_status(self, text: str) -> str:
+        """Remove "not sent yet" claims from a report whose send has since succeeded.
+
+        Called ONLY after a real Message Id is in hand, so every sentence it deletes is
+        one the tool result has already contradicted. Whitespace is tidied afterwards so
+        the removal does not leave an orphaned blank line where a sentence used to be.
+        """
+        try:
+            cleaned = self._STALE_SEND_STATUS_RE.sub("", text or "")
+            if cleaned == text:
+                return text
+            # Collapse the gaps the removal leaves behind.
+            cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+            cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
+            cleaned = "\n".join(ln.rstrip() for ln in cleaned.splitlines())
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            self._log_thought(
+                "SYSTEM", "stale_send_status_stripped",
+                "Report was synthesized before the send ran and claimed it had not been "
+                "sent; the send then returned a Message Id, so the stale claim was removed.")
+            return cleaned or text
+        except Exception:
+            return text             # never let tidying break a report that is otherwise fine
 
     def _self_correct(self, user_input: str, tool_name: str, tool_args: dict, result: str, max_attempts: int = 2) -> str:
         """Brain evaluates tool result and tries alternative approach if unsatisfactory."""
@@ -2175,6 +2298,9 @@ RULES:
         # here (not when it fires) means a Ctrl+C that lands between turns cannot silently
         # kill the NEXT request the Master types.
         self.clear_cancel()
+        # A new request may legitimately mail the same person again.
+        with self._log_lock:
+            self._sent_this_turn = set()
 
         # TIER 7b — learn a durable preference from this turn, if there is one. Placed
         # at the TOP rather than at the end because `process()` has many return points

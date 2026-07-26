@@ -139,6 +139,81 @@ for small/local models — a 4K-context model cannot run this at all.
 
 ## Changelog (most recent first)
 
+### 2026-07-26 — The email was sent TWICE (fixed), and a correction to yesterday's note
+
+I reported earlier that the router "drops the send step ~1 run in 3, so the mail is never
+sent". **That was wrong, and the truth is worse.**
+
+Capturing the router's full decision showed it does not drop anything. It sometimes
+*defers* the send deliberately — `needs_followup: true`, with the send described in
+`response_hint` ("…rồi gửi tới kxctran@gmail.com") — which is a plan shape the router
+prompt explicitly permits under RESULT-DEPENDENT REQUESTS. It wants the data before
+composing.
+
+Two independent mechanisms then complete that plan, and **neither knows about the other**:
+
+1. the deterministic workflow safeguard in `execute_multi_tool` (llm_connector.py ~2510),
+   which appends a send step with the generic subject `"Báo cáo từ Ciel"`;
+2. the Tier-1 loop, whose re-plan routes to `send_gmail_message` with the Brain's own
+   subject.
+
+Both fire. Reproduced live: two emails to the same address, two different subjects.
+
+The comment at the loop's call site — *"extra rounds … can never double-send"* — is true
+only for a send present in the ORIGINAL plan, which is separated out and run once after
+synthesis. It never covered a send the loop invents. My Tier-1 work added the second
+path and I did not notice.
+
+**Fix: outbound idempotence at the one choke point every send passes through**
+(`execute_tool`). Keyed by RECIPIENT, not by a full argument signature — the whole
+problem is that the two mechanisms compose different subjects and bodies for the same
+intended message, so a signature over all args would never match. Scoped to one turn, so
+two separate requests may still mail the same person. Recorded only on SUCCESS, so a
+failed send stays retryable. Checked BEFORE the safety gate: asking the Master to approve
+a send that is about to be suppressed is worse than not asking. First delivery wins,
+which is also structurally the better one — the loop runs before synthesis, so the
+Brain's properly-subjected message goes out and the generic fallback is the one dropped.
+
+Verified: `backtest/test_outbound.py` **22 assertions** (tool layer stubbed), plus two
+LIVE runs to the Master's test address. The deferred shape that used to double-send now
+delivers once (`Message Id: 19f9efa2bc961789`), with the log showing the second attempt
+suppressed 57 seconds later; the ordinary path still delivers exactly once
+(`19f9efdcfee2657d`) with the guard never firing.
+
+**A separate, pre-existing bug found while verifying this — also fixed.** On the ordinary
+path the report is synthesized BEFORE the send runs, so — correctly obeying the
+anti-fabrication rule — it wrote *"Chưa gửi email … chưa có kết quả gửi thực tế từ công
+cụ"*. The send then succeeded and `[EMAIL] Sent successfully` was appended underneath, so
+the Master read **a denial and a confirmation of the same send**, one after the other.
+The Middleware had even caught the status text and stripped it from the EMAIL
+(`[MIDDLEWARE] [REVISED] … Nội dung chứa mô tả trạng thái gửi email`) — but not from the
+copy shown to the Master. Confirmed not caused by the idempotence guard: the log shows no
+suppression in that run (`Message Id: 19f9efdcfee2657d`).
+
+Root cause was synthesis rule 6, which told the Worker that when there is no send result
+it should "explicitly say the report is ready but do not claim it was emailed" — inviting
+exactly that sentence, at a moment when a send step was still *pending*. Fixed the way
+the path-redaction bug was: **instruct AND verify.**
+
+- *Instruct* — rule 6 now forbids narrating delivery status at all when no Message Id is
+  present, and says outright that a send may still run afterwards and that the system
+  appends the real outcome itself.
+- *Verify* — `_strip_stale_send_status()` removes "not sent" claims, and runs **only** on
+  the branch where a real Message Id already came back, so every sentence it can delete
+  has been disproved by the tool result. Deliberately asymmetric: negative claims are
+  stripped, positive ones never are, so anti-fabrication is never weakened. Matched by
+  intent (a negation beside a send word) rather than any exact string — the recurring
+  lesson that a guard keyed to a model's exact wording breaks on the next paraphrase.
+
+Verified live three times: exactly one send per turn, and the reply now ends with
+`[EMAIL] Sent successfully` and no contradiction. Notably the strip **never fired** — the
+prompt fix alone was enough in all three runs, so it stands as the backstop rather than
+the mechanism. Suite: `backtest/test_outbound.py` is now **36 assertions**, including
+that a true "Đã gửi … Message Id" line is never touched.
+
+Minor, unfixed, cosmetic: one run produced an English subject ("Current Gold Price
+(XAU/USD)") on a Vietnamese body.
+
 ### 2026-07-26 — Tiers 4 and 5: all seven tiers now built
 
 **Tier 4 — one place that decides what goes into a prompt.** `core/context.py` replaces

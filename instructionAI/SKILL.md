@@ -95,6 +95,16 @@ ANY other project (not specific to Ciel), see `references/portable_instruction_g
    reviewed — never to a tool name, or a step the loop invents later would inherit an
    approval the Master never gave. `DENY` outranks every grant and `DISABLE_SAFETY_GATE`.
 
+7h. **One delivery per recipient per turn.** `execute_tool` suppresses a second
+   outbound send (`send_gmail_message`, `send_gmail_html_message`, `reply_to_email`,
+   `send_telegram`) to the same recipient within one request. This exists because TWO
+   mechanisms independently complete a plan missing its send step — the workflow
+   safeguard in `execute_multi_tool` and the Tier-1 loop's re-plan — and they delivered
+   the same report twice with different subjects. Key on the RECIPIENT, never on a full
+   argument signature: the duplicates differ in subject and body by construction. Record
+   only on SUCCESS (a failed send must stay retryable), reset per turn, and check before
+   the safety gate. Any new path that can send must go through `execute_tool`.
+
 7g. **Prompts are assembled in one place, and long runs can be stopped.** Add context
    through `ContextAssembler` (`core/context.py`), never by appending to a string:
    blocks carry a priority so the budget knows what to shed, they are dropped **whole**
