@@ -41,6 +41,16 @@ MIN_RELEVANCE_SCORE = 0.65     # Ignore results below this similarity threshold
 MIN_QUERY_LENGTH = 15          # Skip RAG for very short/trivial inputs
 MAX_MEMORY_SNIPPET_CHARS = 1800
 
+_SELFMATCH_STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _normalize_for_selfmatch(text: str) -> str:
+    """Collapse whitespace/punctuation/case so a recalled question can be compared
+    against the current one. Deliberately crude — it only has to catch "the same
+    question asked again", not paraphrases; a paraphrase is exactly the case genuine
+    recall should still be allowed to help with."""
+    return _SELFMATCH_STRIP_RE.sub("", (text or "").strip().lower())
+
 NOISY_TOOL_NAMES = (
     "smart_scrape",
     "git_diff",
@@ -175,6 +185,17 @@ def search_similar(query: str, top_k: int = DEFAULT_TOP_K) -> str:
 
         # Filter by relevance score (cosine distance: 0 = identical, 2 = opposite)
         # Convert to similarity: similarity = 1 - (distance / 2)
+        #
+        # Bug found live: asking "phân tích thêm về tin đó" after Ciel had already failed
+        # to resolve a vague follow-up recalled the PREVIOUS occurrence of that exact same
+        # question — including its own unhelpful "please specify" reply — as "past
+        # context". A near-identical question is the single most similar thing in the
+        # store BY CONSTRUCTION, so this is not a rare edge case: any repeated or
+        # rephrased follow-up self-recalls its own failure, and the model then repeats
+        # the same non-answer. Filtered here rather than downstream, because once this
+        # merges into the prompt there is no way to tell "genuine past context" from
+        # "the question echoing itself".
+        query_norm = _normalize_for_selfmatch(query)
         relevant = []
         for doc, distance, meta in zip(
             results["documents"][0],
@@ -182,9 +203,14 @@ def search_similar(query: str, top_k: int = DEFAULT_TOP_K) -> str:
             results["metadatas"][0],
         ):
             similarity = 1 - (distance / 2)
-            if similarity >= MIN_RELEVANCE_SCORE:
-                date = meta.get("date", "unknown")
-                relevant.append(f"[{date}] {doc}")
+            if similarity < MIN_RELEVANCE_SCORE:
+                continue
+            human_part = doc.split("|", 1)[0]
+            human_text = human_part.split("Human:", 1)[-1]
+            if _normalize_for_selfmatch(human_text) == query_norm:
+                continue
+            date = meta.get("date", "unknown")
+            relevant.append(f"[{date}] {doc}")
 
         if not relevant:
             return ""

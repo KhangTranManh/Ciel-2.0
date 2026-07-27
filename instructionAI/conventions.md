@@ -1,55 +1,58 @@
 # Conventions — Ciel 2.0
 
-Code patterns, naming rules, and gotchas for working on this project.
+Code patterns, naming rules, and gotchas for working on this project. For what each of
+the seven agent-capability tiers *does* and *why*, see `architecture.md` — this file is
+about the patterns that keep them safe to extend.
 
-## Brain → Middleware → Worker Separation
+## Brain → Router → Middleware → Worker Separation
 
 The system strictly separates **routing**, **verification**, and **generation**:
 
-- **Brain** — Decides what to do. Outputs JSON with `hidden_thought` + action. Never generates content.
-- **Middleware** *(optional, email-scoped)* — Semantically reviews outbound email/report bodies AFTER
-  the deterministic sanitizer, BEFORE the safety-gate preview. Catches what regex can't (topic
-  mismatch, internal numeric contradictions, hollow templated shells). Acts as a FINALIZER (edits
-  the body in place) not a blocking gate, and is **fail-open** on any error — a Middleware hiccup
-  must never block a send. Disabled by default (`MIDDLEWARE_ENABLED=false`).
-- **Worker** — Generates text/code. Never makes routing decisions. Has tenacity retry protection.
-- **Router** — Uses Brain to classify intent into `chat`, `tool`, `code`, or `multi_tool`.
+- **Brain / Router** — decides what to do. Outputs JSON with `hidden_thought` + action.
+  Never generates final content. For `action == "chat"`, its `task` field is a *hint*,
+  not the reply — see the Known Gotchas entry below; a strong model routinely tries to
+  pre-write the answer into it.
+- **Middleware** *(optional, email-scoped)* — semantically reviews outbound
+  email/report bodies AFTER the deterministic sanitizer, BEFORE the safety-gate
+  preview. Catches what regex can't (topic mismatch, internal numeric contradictions,
+  hollow templated shells). A FINALIZER (edits the body in place), not a blocking gate,
+  and **fail-open** on any error. Disabled by default (`MIDDLEWARE_ENABLED=false`).
+- **Worker** — generates text/code. Never makes routing decisions. Tenacity retry
+  protection.
 
-Each tier is a separate LLM instance, independently configurable (provider + model + temperature)
-via `.env`. Brain runs deterministic-leaning (low temperature) for routing; Worker runs slightly
+Each tier is a separate LLM instance, independently configurable (provider + model +
+temperature) via `.env`. Brain runs low-temperature for routing; Worker runs slightly
 higher for natural generation.
 
 ## Tool Pack Registration
 
-New tools are added by creating a module in `skills/internal/` or `skills/external/`:
-
 1. Create a file (e.g., `skills/external/my_ops.py`).
-2. Define a function matching `get_*_tools()` that returns `{"tools": [StructuredTool, ...], "prompt": "..."}`.
-3. `ToolManager.__init__()` auto-discovers all `*.py` files in `skills/internal/` and `skills/external/`.
-4. No manual registration needed — just drop the file in the right folder. The UI's skill grid
-   (`GET /skills`) picks it up automatically too.
+2. Define a function matching `get_*_tools()` returning
+   `{"tools": [StructuredTool, ...], "prompt": "..."}`.
+3. `ToolManager.__init__()` auto-discovers all `*.py` files in `skills/internal/` and
+   `skills/external/` — no manual registration. The UI's skill grid (`GET /skills`)
+   picks it up automatically too.
 
-The `prompt` string is the tool's "manual." **Caveat (see `PROMPT_INVENTORY.md`):** these per-skill
-manuals are collected but not fed to the live Brain prompt in the current build — the actual
-per-tool guidance the Brain sees is `name` + `description[:80]` + arg schema, plus `_TOOL_HINTS`
-overrides in `core/llm_connector.py`. If a tool needs stronger routing guidance, add/extend a
-`_TOOL_HINTS` entry rather than assuming the manual is read.
+The `prompt` string is the tool's "manual." **Caveat** (see `PROMPT_INVENTORY.md`):
+these per-skill manuals are collected but not fed to the live Brain prompt — the actual
+per-tool guidance the Brain sees is `name` + `description[:80]` + arg schema, plus
+`_TOOL_HINTS` overrides in `core/llm_connector.py`. If a tool needs stronger routing
+guidance, extend `_TOOL_HINTS` rather than assuming the manual is read.
 
 ## Skill Contract — what a new tool MUST honour
 
 Auto-discovery means a new pack never touches `core/`. That is exactly why these
-invariants matter: nothing will stop you breaking them, and the failure shows up later
-as wrong output rather than an import error.
+invariants matter: nothing stops you breaking them, and the failure shows up later as
+wrong output, not an import error.
 
 **1. A tool may be invoked MORE THAN ONCE per user request.** Three independent
-mechanisms can re-invoke it: self-healing (up to 3 attempts on error), Brain
-self-correction (up to 2), and the Tier-1 loop (up to `AGENT_LOOP_MAX_ROUNDS`). Design
-every tool to be **idempotent or preview-only**:
-
+mechanisms can re-invoke it: self-healing (up to 3), Brain self-correction (up to 2),
+and the Tier-1 loop (up to `AGENT_LOOP_MAX_ROUNDS`). Design every tool to be
+**idempotent or preview-only**:
 - Read/query tools — inherently fine.
 - Tools with outside effects (send, push, delete, pay, post) — split into a **preview**
-  tool and a **confirm** tool, and let the preview declare the pairing (point 2). The
-  loop deliberately stops the moment a confirmation is staged, so the Master decides.
+  tool and a **confirm** tool; let the preview declare the pairing (point 2). The loop
+  stops the moment a confirmation is staged, so the Master decides.
 - Never make a single call both decide and act irreversibly.
 
 **2. Opt into confirmation via the result, never by editing core.**
@@ -61,40 +64,44 @@ return make_result(
 )
 ```
 
-`CielCore.execute_tool` reads `result["confirm"]` generically. A bare "yes" later resolves
-it with zero LLM calls, and it survives a process restart via
-`ciel_data/state/pending_action.json`. There is **one** pending slot: a new risky request
-while one is outstanding is refused deterministically.
+`CielCore.execute_tool` reads `result["confirm"]` generically. A bare "yes" later
+resolves it with zero LLM calls and survives a process restart
+(`ciel_data/state/pending_action.json`). One pending slot: a new risky request while
+one is outstanding is refused deterministically.
 
-**3. Return the standard envelope** — `make_result()` from `skills/_result.py`. Anything
-returning a bare string still works (ToolManager wraps it), but it can never opt into
-point 2, and `success=False` is the only thing self-healing recognises as failure.
+**3. Return the standard envelope** — `make_result()` from `skills/_result.py`. A bare
+string still works (`ToolManager` wraps it), but it can never opt into point 2, and
+`success=False` is the only thing self-healing recognises as failure.
 
 **4. Errors must be shaped, not prose.** `ContinuationPolicy` decides "this step failed"
-from the result's opening (`[TOOL_ERROR`, `Error:`, `Lỗi:`, `not found`, `[]`). A tool that
-reports failure as a cheerful sentence is invisible to both the healer and the loop.
+from the result's opening (`[TOOL_ERROR`, `Error:`, `Lỗi:`, `not found`, `[]`). A tool
+reporting failure as a cheerful sentence is invisible to both the healer and the loop.
 
-**5. If a tool lists things, list them line-per-item.** The fan-out signal counts entries
-matching bullet / `1.` / bare-filename lines. A listing returned as one comma-joined blob
-reads as a single item, and "do X for each of them" will silently stop after the listing.
+**5. If a tool lists things, list them line-per-item.** The fan-out signal (Tier 1, S4)
+counts entries matching bullet / `1.` / bare-filename lines. A listing returned as one
+comma-joined blob reads as a single item, and "do X for each of them" silently stops
+after the listing.
 
 **6. Long results: hand over the facts, don't assume the model infers them.** Dates,
-sources and units belong in the tool output (see `stealth_search`'s `Published:` labels).
-Add the tool to `_TOOLS_NEEDING_FORMAT` / `_RETRIEVAL_TOOLS` in `core/llm_connector.py` if
-it needs the completeness-oriented formatting rules rather than the terse default.
+sources, and units belong in the tool output (see `stealth_search`'s `Published:`
+labels). Add the tool to `_TOOLS_NEEDING_FORMAT` / `_RETRIEVAL_TOOLS` in
+`core/llm_connector.py` if it needs completeness-oriented formatting over the terse
+default.
 
-**7b. Declare `parallel_safe` only for tools with no outside effect.** A tool listed there
-may run concurrently with others in the same plan (`core/parallel.py`). Omit it and the
-tool simply stays sequential — the safe default. Never list a tool that writes, sends,
-deletes, or mutates shared state, and never list one that is not thread-safe.
-
-**7. Destructive tools go in `_RISK_DESCRIPTIONS`** (`core/llm_connector.py`) so the Y/N
-safety gate covers them. This is separate from point 2: the gate asks before *this* call,
+**7. Destructive tools go in `_RISK_DESCRIPTIONS`** (`core/llm_connector.py`) so the
+Y/N safety gate covers them. Separate from point 2: the gate asks before *this* call,
 `confirm=` carries an action across *turns*. Risky tools usually want both.
 
-## Router JSON Structure
+**8. Declare `parallel_safe` only for tools with no outside effect.** A tool listed
+there may run concurrently with others in the same plan (`core/parallel.py`). Omit it
+and the tool stays sequential — the safe default. Never list a tool that writes, sends,
+deletes, mutates shared state, or is not thread-safe.
 
-Every Router response follows this exact format:
+**9. An outbound tool must go through `CielCore.execute_tool`**, never a side path —
+that is the one choke point where the duplicate-recipient guard and the unattended
+`DEFER` ceiling apply (see `safety_and_risk.md`).
+
+## Router JSON Structure
 
 ```json
 {
@@ -108,35 +115,38 @@ Every Router response follows this exact format:
 }
 ```
 
-The `hidden_thought` is logged to `thoughts.log` for debugging but never saved to `memory_bank.json`.
-`Router.route()` does NOT feed raw `chat_history` into the routing call (removed deliberately —
-see architect.md Changelog) to avoid conflating an old unresolved request with a new unrelated one;
-cross-turn continuity flows through RAG recall and a deterministic `_is_referential_send()` check.
+`hidden_thought` is logged to `thoughts.log` but never saved to `memory_bank.json`.
+`Router.route()` does **not** feed raw `chat_history` into the routing call —
+deliberate, to avoid conflating an old unresolved request with a new unrelated one.
+Cross-turn continuity for the *response* flows through `_recent_turns_block()`
+(Tier 4) and RAG recall instead; the Router only ever sees the current request plus a
+recall block bounded and filtered against self-match.
+
+For `action == "chat"`, `task` is a hint the Router may set — it is never handed to the
+Worker as the request. See the Known Gotchas entry for why.
 
 ## Naming Conventions
 
-- **Modules**: `snake_case` ending in `_ops.py` for tool packs (e.g., `gmail_ops.py`, `trading_ops.py`).
+- **Modules**: `snake_case` ending in `_ops.py` for tool packs.
 - **Factory functions**: `get_*_tools()` — must match this pattern for auto-discovery.
-- **Tool names**: `snake_case` matching the function name (e.g., `get_market_price`, `execute_shell_command`).
-- **Log actors**: `BRAIN`, `WORKER`, `MIDDLEWARE`, `ROUTER`, `HEALING`, `RAG`, `USER`, `SAFETY` —
-  used in `_log_thought()`. `MIDDLEWARE` actions: `REVIEWED`, `REVISED`, `FLAGGED_UNFIXABLE`,
-  `REVIEW_ERROR`. Every real LLM invocation across all three tiers also logs a
-  `[<TIER>] [LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line (see Cost Tracking below).
+- **Tool names**: `snake_case` matching the function name.
+- **Log actors**: `BRAIN`, `WORKER`, `MIDDLEWARE`, `ROUTER`, `HEALING`, `RAG`, `USER`,
+  `SAFETY`, `SYSTEM`, `CONTEXT`, `TRIGGER`, `USER_MODEL` — used in `_log_thought()`.
+  Every real LLM invocation, across all tiers, also logs a
+  `[<TIER>] [LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line.
 - **Config keys**: `UPPER_SNAKE_CASE` in both `.env` and `agent_system/config.py`.
 
-## Cost Tracking (added July 2026)
+## Cost Tracking
 
-Every real LLM call (Brain/Worker/Middleware, including healing/syntax-check sub-calls) logs one
-`[LLM_CALL]` entry with EXACT provider token counts (`agent_system/utils/usage.py:extract_usage()`).
-`CielCore` accumulates per-tier call counts, token totals, and an ESTIMATED USD cost
-(`core/cost.py`, pricing overridable via `ciel_data/model_pricing.json` — no code change) at the
-single `_log_thought()` chokepoint. Live totals surface in the API's vitals feed;
-`scripts/cost_report.py` aggregates historical spend by tier/model/day from `thoughts.log`.
-**Do not** add a second place that counts LLM calls — extend the chokepoint instead.
+Every real LLM call (Brain/Worker/Middleware, including healing/syntax-check sub-calls)
+logs one `[LLM_CALL]` entry with EXACT provider token counts
+(`agent_system/utils/usage.py:extract_usage()`). `CielCore` accumulates per-tier call
+counts, token totals, and an ESTIMATED USD cost (`core/cost.py`, overridable via
+`ciel_data/model_pricing.json`) at the single `_log_thought()` chokepoint. Live totals
+surface in the API's vitals feed; `scripts/cost_report.py` aggregates historical spend.
+**Do not add a second place that counts LLM calls** — extend the chokepoint.
 
 ## Audit Trail (`thoughts.log`)
-
-Every Brain/Worker/Middleware decision is logged to `ciel_data/logs/thoughts.log` in this format:
 
 ```
 [2026-05-21 14:30:00] [ACTOR] [ACTION]
@@ -144,85 +154,144 @@ content
 ------------------------------------------------------------
 ```
 
-- **Never modify this format** — `scripts/format_thoughts_log.py`, `scripts/prompt_harness.py`,
-  and `scripts/cost_report.py` all parse it. In particular, the `[LLM_CALL]` content line must keep
-  `model=<id>` as the FIRST space-delimited token (existing `re.search(r"model=(\S+)")` consumers
-  depend on it).
-- Generated views (`thoughts_view.md`, `thoughts_view.jsonl`) are gitignored and disposable.
+**Never modify this format** — `scripts/format_thoughts_log.py`,
+`scripts/prompt_harness.py`, `scripts/cost_report.py`, and `core/triggers.py`'s
+`_iter_entries` all parse it. The `[LLM_CALL]` line must keep `model=<id>` as the FIRST
+space-delimited token. The file is opened in **text mode**, so on Windows it is 100%
+CRLF — any new reader that takes a raw/binary tail must normalise that itself
+(`_iter_entries` already does; copy its pattern, don't reinvent it).
+
+Generated views (`thoughts_view.md`, `thoughts_view.jsonl`) are gitignored and
+disposable.
 
 ## Safe vs Dangerous to Modify
 
 ### Safe to change
 
-- Add new tool pack in `skills/internal/` or `skills/external/` (auto-discovered).
+- Add a new tool pack in `skills/internal/` or `skills/external/` (auto-discovered).
 - Edit persona files in `persona/`.
-- Adjust RAG thresholds (`MIN_RELEVANCE_SCORE`, `MIN_QUERY_LENGTH`, `DEFAULT_TOP_K`) in `rag_manager.py`.
-- Add new scheduled tasks in `scheduler.py` (follow Ghost Mode pattern).
+- Adjust RAG thresholds (`MIN_RELEVANCE_SCORE`, `MIN_QUERY_LENGTH`, `DEFAULT_TOP_K`) in
+  `rag_manager.py`.
+- Add a new Trigger in `triggers.py` (take `now` as a parameter so it stays testable) —
+  preferred over adding a raw clock task to `scheduler.py`.
+- Add a context block via `ContextAssembler.add(name, text, priority)` — never by
+  appending to a prompt string.
+- Toggle any tier via `.env`: `AGENT_LOOP_*`, `AGENT_PARALLEL_*`, `CONTEXT_*`,
+  `ROUTER_PERSONA_MODE`, `USER_MODEL_*`, `PROACTIVE_*`. Every one degrades to the
+  pre-tier behaviour when off.
 - Update model names / provider selection in `.env`.
 - Add/override LLM prices in `ciel_data/model_pricing.json`.
 - Swap voice STT/TTS backends via `STT_BACKEND`/`TTS_BACKEND` in `.env`.
-- Add new tests in `backtest/`.
+- Add new tests in `backtest/` — prefer the no-LLM style (`test_context.py`,
+  `test_proactive.py`, `test_user_model.py`, `test_outbound.py`,
+  `test_conversation_bugs.py`) for anything that is pure Python decision logic.
 
 ### Dangerous to change
 
-- **`_log_thought()` format** in `llm_connector.py` — breaks log parsing and cost accumulation.
+- **`_log_thought()`'s format** in `llm_connector.py` — breaks log parsing, cost
+  accumulation, and `triggers.py::_iter_entries`'s CRLF normalisation.
+- **`_outbound_key()` / the duplicate-send guard** in `llm_connector.py` — the only
+  thing stopping two mechanisms from delivering the same email twice. Key on the
+  recipient, record on success only.
+- **`PermissionPolicy.decide(..., attended=)` and `CielCore.unattended`** — the
+  unattended ceiling. Keep `unattended` thread-local and keep propagating it into
+  parallel workers by hand.
+- **`_abort_if_cancelled()` call sites** — cancellation must stay at STEP boundaries.
+  Moving a check inside a tool turns a cancellation into a corruption.
+- **`ContinuationPolicy.assess()`'s scope veto** must stay the FIRST check, before
+  every continuation signal — see Tier 1 in `architecture.md`.
+- **The router's `task` field, for `action == "chat"`** — never hand it to
+  `execute_chat` as the request. See the Known Gotchas entry below;
+  `action == "code"`'s `task` is a different, untouched contract.
+- **`UserModel.looks_like_secret()`** — the boundary keeping credentials out of a store
+  injected into every prompt. Keep normalising `_`/`-` to spaces before matching.
 - **`_is_safe_path()` logic** in `system_ops.py` — weakens sandbox quarantine.
-- **`_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS`** in `llm_connector.py` — removing tools disables safety checks.
-- **`_find_dangerous_code_patterns()`** in `llm_connector.py` — the content-based gate for generated code.
-- **`_has_unsynthesized_placeholder()`** in `llm_connector.py` — the generalized synthesis-placeholder
-  detector. Keep it pattern-based (matches ANY paraphrased marker, not one fixed string), used by
-  BOTH the multi_tool deferred-write detection and the write/email placeholder guards. It exists
-  because a stronger Brain paraphrased the canonical `[..._TO_BE_SYNTHESIZED]` marker (e.g.
-  `[SYNTHESIZE_FROM_RESULTS: ...]`) and an exact-string check let a hollow shell reach disk.
-- **`_resolve_step_refs()`** in `llm_connector.py` — deterministic `{{prev}}`/`{{step_N}}`
-  substitution that lets a multi_tool step consume an earlier step's raw output. Keep the
-  fast-path (`"{{" not in value`) so token-free plans are untouched (backward-compatible).
-- **`stealth_search`'s source chain** in `web_agent_ops.py` — Google News RSS is PRIMARY and
-  the `ddgs` fallbacks exist because that endpoint is unofficial; don't collapse it back to a
-  single source. Equally, don't drop `_is_generic_news_query()` (top-stories feed vs keyword
-  search), the real-`pubDate` recency filter (DuckDuckGo's own `timelimit` is unreliable), or
-  the ordering: filter landing pages BEFORE trimming to `max_results`, or the "keep everything
-  if fewer than 3 survive" guard trips and lets index pages back in.
-- **Router JSON parsing** in `router.py` — `_extract_json_object()` slices the first balanced
-  `{...}` (tolerating prose/trailing text some models wrap around the decision) BEFORE `json.loads`;
-  the JSON SCHEMA itself must still match parsing in `CielCore.process()`.
-- **`memory_ops.py` imports** — must remain standalone (no `core/` or `agent_system/` deps).
-- **`thoughts.log` file path** — hardcoded in `llm_connector.py`, `main_api.py`, and `format_thoughts_log.py`.
-- **Coupling `SAFETY_OPEN` and `DISABLE_SAFETY_GATE`** — they are independent by design (see safety_and_risk.md).
-- **`to_speech()` normalizer being replaced by prompt changes** — voice cleanup must stay
-  deterministic post-processing, not a persona rewrite (see voice_and_interface.md).
+- **`_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS`** in `llm_connector.py` — removing tools
+  disables safety checks.
+- **`_find_dangerous_code_patterns()`** in `llm_connector.py` — the content-based gate
+  for generated code.
+- **`_has_unsynthesized_placeholder()`** in `llm_connector.py` — matches ANY paraphrased
+  synthesis-placeholder marker, not one fixed string. Used by both the multi_tool
+  deferred-write detection and the write/email placeholder guards; a stronger Brain
+  once paraphrased the canonical marker and an exact-string check let a hollow shell
+  reach disk.
+- **`_resolve_step_refs()`** in `llm_connector.py` — deterministic `{{prev}}`/
+  `{{step_N}}` substitution. Keep the fast-path (`"{{" not in value`) so token-free
+  plans stay untouched.
+- **`stealth_search`'s source chain** in `web_agent_ops.py` — Google News RSS is
+  PRIMARY specifically because it is unofficial and the `ddgs` fallbacks exist for
+  when it fails. Don't collapse the chain, drop `_is_generic_news_query()`, drop the
+  real-`pubDate` recency filter, or reorder past "filter landing pages BEFORE trimming
+  to `max_results`".
+- **Router JSON parsing** in `router.py` — `_extract_json_object()` slices the first
+  balanced `{...}` before `json.loads`, tolerating prose some models wrap around the
+  decision.
+- **`memory_ops.py` imports** — must remain standalone (no `core/`/`agent_system/`
+  deps).
+- **`thoughts.log`'s file path** — hardcoded in `llm_connector.py`, `main_api.py`, and
+  `format_thoughts_log.py`.
+- **Coupling `SAFETY_OPEN` and `DISABLE_SAFETY_GATE`** — independent by design (see
+  `safety_and_risk.md`).
+- **`to_speech()`'s normalizer being replaced by prompt changes** — voice cleanup stays
+  deterministic post-processing, never a persona rewrite.
 
 ## Known Gotchas
 
-1. **Windows paths**: The Router prompt includes WINDOWS SYSTEM ARCHITECT rules enforcing double-quoted
-   absolute paths and `python -m` prefix. Without this, tools fail on paths with spaces.
+**Environment / providers**
+1. `agent_system/config.py` reads the Worker's model from `CODER_MODEL`, not
+   `WORKER_MODEL` — a `.env` entry literally named `WORKER_MODEL` has no effect.
+2. Measure a new model alias before adopting it: gateways can inject thousands of
+   hidden, unsuppressable tokens per call. See the provider table in `note.md`.
 
-2. **Format string escaping**: Vision prompts in `vision_ops.py` use Python `.format()` — curly braces
-   in prompt text must be doubled (`{{` and `}}`) or the app crashes with `Single '}' in format string`.
+**Windows-specific**
+3. The Router prompt includes WINDOWS SYSTEM ARCHITECT rules enforcing double-quoted
+   absolute paths and a `python -m` prefix — without this, tools fail on paths with
+   spaces.
+4. `thoughts.log` is 100% CRLF on Windows (text-mode writes). A binary/raw tail read
+   must normalise newlines itself or every check silently reports "nothing found".
 
-3. **Gmail credential signature**: `langchain_google_community` has a known typo (`client_sercret_file`
-   vs `client_secrets_file`). The code in `gmail_ops.py` and `scheduler.py` handles both via
+**Integration quirks**
+5. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
+   text must be doubled (`{{`/`}}`) or the app crashes with `Single '}' in format
+   string`.
+6. `langchain_google_community` has a known typo (`client_sercret_file` vs
+   `client_secrets_file`); `gmail_ops.py` and `scheduler.py` handle both via
    `inspect.signature()`.
+7. `edge-tts` (default TTS) hits an unofficial Microsoft endpoint that intermittently
+   raises `NoAudioReceived` — the fix is `_edge_synth_bytes()`'s backoff retry, not a
+   different text/voice.
 
-4. **RAG lazy loading**: `rag_manager.py` lazy-loads ChromaDB and sentence-transformers on first use.
-   If these packages are missing, RAG degrades gracefully — CielCore still works with JSON-only
-   short-term memory.
+**Degradation and isolation**
+8. `rag_manager.py` lazy-loads ChromaDB/sentence-transformers; if missing, RAG degrades
+   gracefully and CielCore keeps working with JSON-only short-term memory.
+9. Self-correction retries (Brain evaluating tool results) are not saved to chat memory
+   or RAG, to prevent noise accumulation.
+10. Scheduled/legacy clock tasks must never write to `memory_bank.json` or call
+    `rag_manager.embed_and_save()` (Ghost Mode).
+11. `_HEALING_SKIP_PATTERNS` in `llm_connector.py` short-circuits error classes no
+    retry could ever fix (missing library, network timeout, geo-restriction) — removing
+    this is not "more robust", it just burns a guaranteed-to-fail Worker call each time.
 
-5. **Self-correction isolation**: Self-correction retries (Brain evaluating tool results) are not
-   saved to chat memory or RAG to prevent noise accumulation.
-
-6. **Scheduler Ghost Mode**: Scheduled tasks must never write to `memory_bank.json` or call
-   `rag_manager.embed_and_save()`. They use raw API calls and a single Worker call for formatting.
-
-7. **`WORKER_MODEL` naming trap**: `agent_system/config.py` reads the Worker's model from
-   `CODER_MODEL`, not `WORKER_MODEL`. A `.env` entry literally named `WORKER_MODEL` has no effect.
-
-8. **Healing skip-list**: not every tool error is worth an autonomous retry. `_HEALING_SKIP_PATTERNS`
-   in `llm_connector.py` short-circuits errors no parameter guess could ever fix (missing library,
-   network timeout, geo-restriction) — don't remove this expecting "more retries = more robust";
-   it was added because those retries were guaranteed to fail and cost a real LLM call each time.
-
-9. **Free/unofficial voice backends can be flaky**: the default TTS backend (`edge-tts`) hits an
-   unofficial Microsoft endpoint that intermittently raises `NoAudioReceived` — the fix is a
-   backoff retry (`_edge_synth_bytes()`), not a different text/voice. The default STT backend is
-   local `faster-whisper`, chosen specifically to avoid this class of problem for voice input.
+**Conversation-memory rules (found live — see Tier 4 in `architecture.md`)**
+12. `chat_history` reaches the model in exactly TWO places, both response-side, never
+    routing: `_recent_turns_block()` feeding `execute_chat` and the tool-result format
+    path. Do not add it to `router.route()`'s input — `test_conversation_bugs.py`
+    asserts the router never sees it.
+13. The router's `task` field, for `action == "chat"`, is a HINT — never the reply. A
+    strong Brain routinely pre-writes the actual final reply into it (once caught
+    literally: `"task": "Reply: \"...\""`), which bypasses the persona's
+    language-matching rule and any recent-turns context if handed to the Worker as the
+    request. `action == "code"`'s `task` is a different, untouched contract (a spec to
+    execute, not a pre-written answer).
+14. `ContinuationPolicy.assess()`'s scope veto must stay checked FIRST: an explicit
+    "chỉ … thôi" / "đừng …" / "only …" outranks every continuation signal, including
+    fan-out.
+15. **"send it to that email" is a RECIPIENT reference, not a content reference** — a
+    real email once went to the wrong address because only the body-referential guard
+    (`_is_referential_send`) existed. `_resolve_referential_recipient()` grounds `to` in
+    `chat_history` when the current turn names no address of its own, and must run at
+    the TOP of `execute_multi_tool` — before the report body is synthesized — or the
+    body ends up narrating the WRONG address even though the send itself goes to the
+    right one. When the override fires, the synthesis prompt must be told the confirmed
+    recipient explicitly (`recipient_override_note`); don't trust the model to have
+    reached the same correction on its own.

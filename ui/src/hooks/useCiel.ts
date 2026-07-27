@@ -2,29 +2,33 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { bus } from "../core/bus";
 import { ciel } from "../core/ws";
 import type { ConfirmRequest, Vitals } from "../core/types";
-import { ThoughtAccumulator, type ThoughtEntry } from "../lib/thoughtParser";
 
 export type ConnState = "connecting" | "open" | "closed";
 
 export interface ChatTurn {
   id: number;
-  role: "user" | "ciel" | "error";
+  role: "user" | "ciel" | "error" | "notice";
   text: string;
 }
 
-// Single React surface over the bus. Components read this; they never touch the
-// WebSocket directly. Voice input would call `send()` here too; voice output would
-// subscribe to the same bus "response" event outside React (see io/output/speaker).
+const MAX_CHAT = 200;
+
+// Bus ↔ React. No thoughts.log UI — chat + status + confirm + vitals only.
 export function useCiel() {
   const [connection, setConnection] = useState<ConnState>("connecting");
   const [chat, setChat] = useState<ChatTurn[]>([]);
-  const [thoughts, setThoughts] = useState<ThoughtEntry[]>([]);
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [status, setStatus] = useState<string>("");
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmRequest | null>(null);
 
   const turnId = useRef(1);
-  const accumulator = useRef(new ThoughtAccumulator());
+
+  const push = useCallback((role: ChatTurn["role"], text: string) => {
+    setChat((c) => {
+      const next = [...c, { id: turnId.current++, role, text }];
+      return next.length > MAX_CHAT ? next.slice(-MAX_CHAT) : next;
+    });
+  }, []);
 
   useEffect(() => {
     const offs = [
@@ -33,36 +37,72 @@ export function useCiel() {
       bus.on("vitals", setVitals),
       bus.on("response", (text) => {
         setStatus("");
-        setChat((c) => [...c, { id: turnId.current++, role: "ciel", text }]);
+        push("ciel", text);
       }),
       bus.on("error", (text) => {
         setStatus("");
-        setChat((c) => [...c, { id: turnId.current++, role: "error", text }]);
+        push("error", text);
       }),
+      bus.on("notice", (text) => push("notice", text)),
       bus.on("confirm", (req) => setPendingConfirm(req)),
-      bus.on("thought", (line) => {
-        const entry = accumulator.current.push(line);
-        if (entry) setThoughts((t) => [...t.slice(-299), entry]);
-      }),
+      // "thought" frames still arrive on the bus from main_api; intentionally ignored.
     ];
     ciel.connect();
     return () => {
       offs.forEach((off) => off());
     };
-  }, []);
+  }, [push]);
 
-  const send = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setChat((c) => [...c, { id: turnId.current++, role: "user", text: trimmed }]);
-    setStatus("processing");
-    ciel.send(trimmed);
-  }, []);
+  const send = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (!ciel.isOpen) {
+        push("notice", "Not connected — message was not sent. Wait for the socket to reopen.");
+        return;
+      }
+      push("user", trimmed);
+      setStatus("processing");
+      if (!ciel.send(trimmed)) {
+        setStatus("");
+        push("notice", "Send failed — socket closed mid-flight.");
+      }
+    },
+    [push]
+  );
 
   const respondConfirm = useCallback((approved: boolean) => {
     ciel.respondConfirm(approved);
     setPendingConfirm(null);
   }, []);
 
-  return { connection, chat, thoughts, vitals, status, pendingConfirm, send, respondConfirm };
+  const cancel = useCallback(() => {
+    if (!status) return;
+    if (!ciel.cancel()) {
+      bus.emit("notice", "Could not send cancel — socket not open.");
+      return;
+    }
+    setStatus("cancelling");
+  }, [status]);
+
+  const retryLast = useCallback(() => {
+    for (let i = chat.length - 1; i >= 0; i--) {
+      if (chat[i].role === "user") {
+        send(chat[i].text);
+        return;
+      }
+    }
+  }, [chat, send]);
+
+  return {
+    connection,
+    chat,
+    vitals,
+    status,
+    pendingConfirm,
+    send,
+    respondConfirm,
+    cancel,
+    retryLast,
+  };
 }

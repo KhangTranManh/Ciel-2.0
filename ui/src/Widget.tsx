@@ -1,42 +1,46 @@
 import { useEffect, useRef, useState } from "react";
-import { getCurrentWindow, currentMonitor, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import {
+  getCurrentWindow,
+  currentMonitor,
+  PhysicalPosition,
+  LogicalSize,
+} from "@tauri-apps/api/window";
 import { useCiel } from "./hooks/useCiel";
 import { Transcript } from "./io/output/Transcript";
 import { TextInput } from "./io/input/TextInput";
 import { VoiceInput } from "./io/input/VoiceInput";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { enableSpeaker, disableSpeaker, backendSpeak } from "./io/output/speaker";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 
 // Floating desktop widget — the "as simple as possible" alternative to the full
 // dashboard: a small always-on-top bubble that expands into a compact chat panel.
-// Chat + voice only, nothing else (no SkillGrid/Vitals/Orb) — reuses the exact same
-// bus/ws hook and input/output components the full App does, just in a tiny window
-// (see ui/src-tauri/tauri.conf.json's "widget" window).
+// Chat + voice + safety confirm — reuses the same bus/ws hook and I/O components
+// as App, just in a tiny window (src-tauri/tauri.conf.json "widget" window).
 //
-// Draggable like iOS AssistiveTouch via `data-tauri-drag-region` (Tauri's own native
-// drag mechanism — confirmed working live). Expand/collapse resizes the SAME window
-// in place, anchored to wherever the user last left it.
+// Browser-only `npm run dev` never loads this file as the root (main.tsx falls
+// back to App when not in a Tauri context).
 //
-// POSITION TRACKING: earlier versions called win.outerPosition()/outerSize() at
-// click-time to compute "where is the window right now" before resizing — that path
-// was never confirmed working (drag worked because startDragging() doesn't need to
-// read anything back first). This version instead tracks position/size PASSIVELY via
-// onMoved/onResized event listeners into a ref, so resizing never depends on a
-// synchronous read call succeeding — only on the writes (setSize/setPosition), which
-// are the same calls the working drag/initial-placement path already proved out.
+// Sizes are logical CSS pixels via LogicalSize so HiDPI screens match the CSS
+// 64×64 bubble / 340×460 panel. Position still uses physical coords from monitor
+// + onMoved (those events report physical units).
 
 const BUBBLE = { width: 64, height: 64 };
 const PANEL = { width: 340, height: 460 };
-const SCREEN_MARGIN = 16; // gap kept from the screen edge on initial placement
+const SCREEN_MARGIN = 16;
 
 export default function Widget() {
-  const { connection, chat, status, send } = useCiel();
+  const { connection, chat, status, pendingConfirm, send, respondConfirm, cancel } = useCiel();
   const [expanded, setExpanded] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
 
-  // Best-known current window position/size, kept fresh by onMoved/onResized —
-  // never read back synchronously from Tauri at click-time (see note above).
+  // Best-known current window position/size (physical), kept fresh by onMoved/onResized.
   const known = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  // Safety confirm must be visible even if the bubble is collapsed.
+  useEffect(() => {
+    if (pendingConfirm) setExpanded(true);
+  }, [pendingConfirm]);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -45,19 +49,33 @@ export default function Widget() {
 
     (async () => {
       try {
-        // Initial placement: bottom-right of the current monitor.
-        await win.setSize(new PhysicalSize(BUBBLE.width, BUBBLE.height));
+        await win.setSize(new LogicalSize(BUBBLE.width, BUBBLE.height));
         const monitor = await currentMonitor();
-        const x = monitor ? monitor.position.x + monitor.size.width - BUBBLE.width - SCREEN_MARGIN : SCREEN_MARGIN;
-        const y = monitor ? monitor.position.y + monitor.size.height - BUBBLE.height - SCREEN_MARGIN : SCREEN_MARGIN;
+        // Monitor position/size are physical; approximate scale for margin placement.
+        const scale = monitor ? monitor.scaleFactor || 1 : 1;
+        const bw = Math.round(BUBBLE.width * scale);
+        const bh = Math.round(BUBBLE.height * scale);
+        const margin = Math.round(SCREEN_MARGIN * scale);
+        const x = monitor
+          ? monitor.position.x + monitor.size.width - bw - margin
+          : SCREEN_MARGIN;
+        const y = monitor
+          ? monitor.position.y + monitor.size.height - bh - margin
+          : SCREEN_MARGIN;
         await win.setPosition(new PhysicalPosition(x, y));
-        known.current = { x, y, width: BUBBLE.width, height: BUBBLE.height };
+        known.current = { x, y, width: bw, height: bh };
 
         unlistenMoved = await win.onMoved(({ payload }) => {
-          if (known.current) { known.current.x = payload.x; known.current.y = payload.y; }
+          if (known.current) {
+            known.current.x = payload.x;
+            known.current.y = payload.y;
+          }
         });
         unlistenResized = await win.onResized(({ payload }) => {
-          if (known.current) { known.current.width = payload.width; known.current.height = payload.height; }
+          if (known.current) {
+            known.current.width = payload.width;
+            known.current.height = payload.height;
+          }
         });
       } catch (e) {
         console.error("[widget] initial placement/listeners failed:", e);
@@ -72,13 +90,12 @@ export default function Widget() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Expand/collapse: resize in place using the LAST KNOWN position (from the
-  // onMoved/onResized listeners above), keeping the current bottom-right corner
-  // fixed so the panel grows up-and-left from wherever the bubble is.
+  // Expand/collapse: resize in place using last known physical position, keep
+  // bottom-right corner fixed so the panel grows up-and-left from the bubble.
   const didInitialExpand = useRef(false);
   useEffect(() => {
     if (!didInitialExpand.current) {
-      didInitialExpand.current = true; // skip the mount-time run — already placed above
+      didInitialExpand.current = true;
       return;
     }
     const size = expanded ? PANEL : BUBBLE;
@@ -89,12 +106,18 @@ export default function Widget() {
 
     (async () => {
       try {
-        await win.setSize(new PhysicalSize(size.width, size.height));
+        await win.setSize(new LogicalSize(size.width, size.height));
         if (bottomRightX !== undefined && bottomRightY !== undefined) {
-          const newX = bottomRightX - size.width;
-          const newY = bottomRightY - size.height;
+          // After LogicalSize, onResized will update known; approximate physical
+          // target from previous scale so we don't jump before the event lands.
+          const scale =
+            k && k.width > 0 ? k.width / (expanded ? BUBBLE.width : PANEL.width) : 1;
+          const pw = Math.round(size.width * scale);
+          const ph = Math.round(size.height * scale);
+          const newX = bottomRightX - pw;
+          const newY = bottomRightY - ph;
           await win.setPosition(new PhysicalPosition(newX, newY));
-          known.current = { x: newX, y: newY, width: size.width, height: size.height };
+          known.current = { x: newX, y: newY, width: pw, height: ph };
         }
       } catch (e) {
         console.error("[widget] expand/collapse resize failed:", e);
@@ -108,17 +131,26 @@ export default function Widget() {
     return () => disableSpeaker();
   }, [speakerOn]);
 
+  const busy = Boolean(status);
+
   if (!expanded) {
     return (
       <button
         type="button"
         data-tauri-drag-region=""
-        className="widget-bubble"
+        className={`widget-bubble${pendingConfirm ? " needs-confirm" : ""}`}
         onClick={() => setExpanded(true)}
-        onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        title="Drag to move · click to chat with Ciel"
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        title={
+          pendingConfirm
+            ? "Safety confirmation waiting — click to open"
+            : "Drag to move · click to chat with Ciel"
+        }
       >
-        💬
+        {pendingConfirm ? "⚠" : "💬"}
       </button>
     );
   }
@@ -138,16 +170,33 @@ export default function Widget() {
             >
               {speakerOn ? "🔊" : "🔇"}
             </button>
-            <button type="button" className="widget-close" onClick={() => setExpanded(false)} title="Collapse">
+            <button
+              type="button"
+              className="widget-close"
+              onClick={() => setExpanded(false)}
+              title="Collapse"
+            >
               ✕
             </button>
           </div>
         </div>
         <Transcript chat={chat} status={status} />
-        <div className="input-dock">
+        <div className="input-dock liquid-glass">
           <TextInput onSubmit={send} disabled={connection !== "open"} />
-          <VoiceInput onSubmit={send} disabled={connection !== "open"} />
+          {busy ? (
+            <button
+              type="button"
+              className="cancel-btn"
+              onClick={cancel}
+              title="Stop at the next step boundary"
+            >
+              Stop
+            </button>
+          ) : (
+            <VoiceInput onSubmit={send} disabled={connection !== "open"} />
+          )}
         </div>
+        {pendingConfirm && <ConfirmDialog request={pendingConfirm} onRespond={respondConfirm} />}
       </div>
     </WidgetErrorBoundary>
   );

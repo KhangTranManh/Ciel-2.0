@@ -10,7 +10,9 @@ the centerpiece, flanked by the dynamic skills panel (left) and the conversation
 Both voice directions are wired: a mic button (browser STT) and a 🔊 toggle that reads
 replies aloud through the backend's edge-tts voice.
 
-## Run (dev)
+## Run (dev) — browser, no Tauri required
+
+The UI is **browser-first**. Tauri is optional desktop packaging of the same React app.
 
 Backend first (from repo root):
 
@@ -18,15 +20,31 @@ Backend first (from repo root):
 python main_api.py          # serves ws://localhost:8000/ws  +  GET /skills, /health, POST /tts
 ```
 
-Then the UI:
+Then the UI in a normal browser tab:
 
 ```bash
 cd ui
 npm install
-npm run dev                 # http://localhost:1420
+npm run dev                 # http://localhost:1420  → full dashboard (App)
 ```
 
 Point the UI at a non-default backend with `VITE_CIEL_WS_URL` (e.g. `ws://host:8000/ws`).
+
+### Layout (workbench)
+
+```
+[ Skills rail ]  [  Chat (hero)              ]
+  GET /skills     · user / Ciel turns
+  collapsible     · markdown replies
+                  [ › prompt · Stop · mic · TTS ]
+```
+
+- **No thoughts.log UI** — backend may still stream `thought` frames; the client ignores them
+- **Skills rail** — `GET /skills` + vitals activity
+- **Esc** while running → Stop (`{ type: "cancel" }`); ConfirmDialog owns Esc when open
+- **Vitals** · connection banner · Copy/Retry · confirm 60s
+
+**Desktop (Tauri):** main window only by default (`widget` starts hidden).
 
 ## Architecture (why it's laid out this way)
 

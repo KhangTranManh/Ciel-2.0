@@ -153,6 +153,13 @@ CONTEXT_RECALL_BUDGET = int(os.getenv("CONTEXT_RECALL_BUDGET", "600"))
 # voice, for a component that never speaks. "slim" sends a one-line identity instead;
 # "none" sends none; "full" is the original. Change only with an A/B to back it.
 ROUTER_PERSONA_MODE = os.getenv("ROUTER_PERSONA_MODE", "full").strip().lower()
+# Bug found by reading a real transcript: chat_history was stored, persisted and archived
+# into RAG, and never once read back into a prompt — so "tại sao lại thế" right after a
+# real answer produced a reply with no memory of it. This injects the last few turns into
+# the RESPONSE path only (never the Router — that stays out on purpose, see router.py's
+# July-2026 note about an old unresolved request bleeding into a new one).
+CONTEXT_RECENT_TURNS_ENABLED = os.getenv("CONTEXT_RECENT_TURNS_ENABLED", "true").lower() in ("true", "1", "yes")
+CONTEXT_RECENT_TURNS_BUDGET = int(os.getenv("CONTEXT_RECENT_TURNS_BUDGET", "500"))
 
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —

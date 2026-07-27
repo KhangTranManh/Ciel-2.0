@@ -338,6 +338,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     _confirm_event.set()
                     continue
 
+                # TIER 5 — the UI's Stop button / Esc key sends this. Wired the same
+                # way main.py binds Ctrl+C: cooperative, lands at the next step
+                # boundary (never mid-tool), and the turn's own `run_agent_in_background`
+                # still sends the normal `response`/`error` frame once it returns — no
+                # separate "cancelled" frame needed, `ciel_agent.core.process()` already
+                # returns a `[CANCELLED] ...` string like any other reply.
+                if msg_data.get("type") == "cancel":
+                    if ciel_agent is not None:
+                        ciel_agent.core.request_cancel("cancelled from UI")
+                    continue
+
                 user_input = msg_data.get("message", "")
             except json.JSONDecodeError:
                 user_input = data

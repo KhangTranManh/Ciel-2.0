@@ -19,6 +19,10 @@ class CielSocket {
     this.url = url;
   }
 
+  get isOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
   connect(): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
@@ -82,24 +86,34 @@ class CielSocket {
     }, 2000);
   }
 
-  private rawSend(payload: ClientMessage): void {
+  /** Returns false when the socket is not open (caller must not pretend it sent). */
+  private rawSend(payload: ClientMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(payload));
-    } else {
-      console.warn("[ws] send dropped — socket not open", payload);
+      return true;
     }
+    console.warn("[ws] send dropped — socket not open", payload);
+    return false;
   }
 
-  /** The single input contract. Keyboard OR (future) voice STT both call this. */
-  send(text: string): void {
+  /** The single input contract. Keyboard and voice STT both call this. */
+  send(text: string): boolean {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    this.rawSend({ message: trimmed });
+    if (!trimmed) return false;
+    return this.rawSend({ message: trimmed });
   }
 
   /** Answer a safety-gate confirmation request. */
-  respondConfirm(approved: boolean): void {
-    this.rawSend({ type: "confirm_response", approved });
+  respondConfirm(approved: boolean): boolean {
+    return this.rawSend({ type: "confirm_response", approved });
+  }
+
+  /**
+   * Tier-5 interrupt: ask the agent to stop at the next step boundary.
+   * Additive frame — safe to send even if an older backend ignores unknown types.
+   */
+  cancel(): boolean {
+    return this.rawSend({ type: "cancel" });
   }
 
   dispose(): void {

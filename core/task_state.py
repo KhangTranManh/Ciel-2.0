@@ -30,6 +30,8 @@ import time
 import uuid
 from dataclasses import dataclass, field, asdict
 
+from core.continuation import _FAILED_STEP_RE
+
 
 _SUMMARY_MAXLEN = 240      # keep the file small; the full result lives in thoughts.log
 _MAX_RECORDS = 20          # rolling history, newest first
@@ -130,8 +132,13 @@ class TaskStore:
             if not self._active:
                 return
             text = (result or "")
+            # Was: only "[TOOL_ERROR"/"[EXECUTION_ERROR" prefixes counted as failed — any
+            # other error_code (e.g. vision_act's "[VISION_LOOP_ERROR]") OR the friendly
+            # "Sorry, ..." rephrase that execute_tool returns for a genuine failure both
+            # read as "done". Reuse the same canonical failure pattern continuation.py
+            # already uses for resuming a broken plan, instead of a second, narrower guess.
             status = "cancelled" if text.startswith("[CANCELLED") else (
-                "failed" if text.lstrip().startswith(("[TOOL_ERROR", "[EXECUTION_ERROR")) else "done")
+                "failed" if _FAILED_STEP_RE.match(text) else "done")
             self._active.steps.append(asdict(TaskStep(
                 n=len(self._active.steps) + 1,
                 tool=tool or "?",

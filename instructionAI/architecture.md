@@ -1,6 +1,9 @@
 # Architecture — Ciel 2.0
 
-Ciel uses a modular **Brain → Middleware → Worker** architecture with clean separation of concerns.
+Ciel uses a **Brain → Router → Middleware → Worker** core, extended by seven
+agent-capability tiers. One rule runs through every tier: **the decision is
+deterministic Python; the model only plans or composes.** That is what lets each tier
+survive a change — or a downgrade — of model.
 
 ## File Tree
 
@@ -11,146 +14,164 @@ Ciel-2.0/
 ├── architect.md                  # Detailed project roadmap and changelog (dated)
 ├── note.md                       # Live status / rolling changelog (dated)
 ├── credentials.json              # Google OAuth credentials (not tracked in git)
-├── requirements.txt              # Python dependencies
-├── .env                          # API keys, provider config (not tracked in git)
+├── requirements.txt               # Python dependencies
+├── .env                           # API keys, provider config (not tracked in git)
 │
-├── core/                         # Main orchestration layer
-│   ├── agent_loop.py             # Thin wrapper → CielCore.process()
-│   ├── llm_connector.py          # CielCore: central pipeline orchestrator
-│   ├── router.py                 # Brain-based intent classification (4 actions)
-│   ├── middleware.py             # (wiring) Middleware tier hookup — see agent_system/models/middleware.py
-│   ├── recovery_manager.py       # Multi-attempt self-healing (code fix + param fix + skip-list)
-│   ├── rag_manager.py            # ChromaDB vector memory (long-term RAG)
-│   ├── scheduler.py              # Proactive background task manager (Ghost Mode)
-│   ├── tool_manager.py           # Auto-discovery tool registry & execution
-│   ├── cost.py                   # LLM pricing table + estimate_cost() (overridable via ciel_data/model_pricing.json)
-│   ├── voice_input.py            # CLI speech-to-text (sounddevice + google/whisper/gemini backends)
-│   └── speech_output.py          # CLI/UI text-to-speech (to_speech() normalizer + edge/pyttsx3/space backends)
+├── core/                          # Main orchestration layer — every request goes through this
+│   ├── agent_loop.py              # Thin wrapper → CielCore.process()
+│   ├── llm_connector.py           # CielCore: central pipeline orchestrator
+│   ├── router.py                  # Brain-based intent classification (4 actions)
+│   ├── middleware.py              # Middleware tier hookup (agent_system/models/middleware.py does the work)
+│   ├── recovery_manager.py        # Multi-attempt self-healing (code fix + param fix + skip-list)
+│   ├── rag_manager.py             # ChromaDB vector memory (long-term RAG)
+│   ├── tool_manager.py            # Auto-discovery tool registry & execution
+│   ├── cost.py                    # LLM pricing table + estimate_cost() (overridable via ciel_data/model_pricing.json)
+│   ├── voice_input.py             # CLI speech-to-text (sounddevice + whisper/google/gemini backends)
+│   ├── speech_output.py           # CLI/UI text-to-speech (to_speech() normalizer + edge/pyttsx3/space backends)
+│   │
+│   │  # --- the seven agent-capability tiers, in tier order ---
+│   ├── continuation.py            # T1  observe → re-plan → act; every bound enforced in code
+│   ├── task_state.py              # T2  durable job records; interrupted work survives a crash
+│   ├── permissions.py             # T3  AUTO/ASK/DENY(+DEFER), plan-level approval, deferred store
+│   ├── context.py                 # T4  the single prompt assembler + token budget
+│   ├── notifier.py                # T6  routes a proactive message, and decides whether it goes at all
+│   ├── triggers.py                # T6  the nine condition triggers + polling engine
+│   ├── user_model.py              # T7  the Master's profile — authority, decay, unprompted learning
+│   ├── parallel.py                # (T1-adjacent) independent read-only steps run concurrently
+│   └── scheduler.py                # background thread: legacy clock tasks + the Tier-6 trigger engine
 │
-├── agent_system/                 # Brain-Worker-Middleware LLM subsystem
-│   ├── config.py                 # Provider/model/retry configuration (per tier)
-│   ├── main.py                   # Standalone LangGraph runner
+├── agent_system/                  # Brain-Worker-Middleware LLM subsystem
+│   ├── config.py                  # Provider/model/retry config, per tier, plus every tier's .env knobs
+│   ├── main.py                    # Standalone LangGraph runner
 │   ├── models/
-│   │   ├── brain.py              # Brain LLM (Router + Planner)
-│   │   ├── worker.py             # Worker LLM (Code/Text generator)
-│   │   └── middleware.py         # Middleware LLM (semantic verifier/finalizer, email-scoped)
-│   ├── graph/
-│   │   ├── state.py              # AgentState TypedDict
-│   │   ├── nodes.py              # brain_node, worker_node, file_write_node
-│   │   ├── edges.py              # Conditional routing edges
-│   │   └── builder.py            # LangGraph compilation
-│   ├── tools/
-│   │   └── buffer_writer.py      # In-memory code buffer → flush to disk
+│   │   ├── brain.py                # Brain LLM (Router + Planner)
+│   │   ├── worker.py                # Worker LLM (Code/Text generator)
+│   │   └── middleware.py            # Middleware LLM (semantic verifier/finalizer, email-scoped)
+│   ├── graph/                      # state.py, nodes.py, edges.py, builder.py — LangGraph code-gen pipeline
 │   └── utils/
-│       ├── logger.py             # Colored console logger
-│       └── usage.py              # extract_usage()/format_usage() — provider token counts for cost tracking
+│       ├── logger.py                # Colored console logger
+│       └── usage.py                 # extract_usage()/format_usage() — provider token counts for cost tracking
 │
-├── skills/                       # Tool packs (auto-discovered by ToolManager)
-│   ├── _result.py                # Shared result schema
+├── skills/                        # Tool packs (auto-discovered by ToolManager)
+│   ├── _result.py                  # Shared result schema (make_result, confirm= pairing)
 │   ├── internal/
-│   │   ├── memory_ops.py         # Fact vault (standalone JSON, no deps)
-│   │   ├── system_ops.py         # Workspace file CRUD + Python runner + PDF/DOCX reader
-│   │   ├── os_ops.py             # Shell, screenshot, app launcher
-│   │   ├── productivity_ops.py   # Todos, time, weather, calculate, grep_in_workspace
-│   │   └── vision_ops.py         # Gemini Vision + PyAutoGUI grid overlay
+│   │   ├── memory_ops.py            # Fact vault (standalone JSON, no deps) — pull-only, never injected
+│   │   ├── system_ops.py            # Workspace file CRUD + Python runner + PDF/DOCX reader
+│   │   ├── os_ops.py                # Shell, screenshot, app launcher
+│   │   ├── productivity_ops.py      # Todos, time, weather, calculate, grep_in_workspace
+│   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay
 │   └── external/
-│       ├── gmail_ops.py          # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
-│       ├── trading_ops.py        # Crypto, Forex, Metals price + TA + build_market_report_html
-│       ├── telegram_ops.py       # Telegram Bot API notifications
-│       ├── github_ops.py         # Git status, diff, commit, push
-│       └── web_agent_ops.py      # stealth_search (Google News RSS → ddgs fallback) + smart_scrape
-
-├── persona/                      # Personality
-│   └── official_ciel_personality.txt  # The only persona file loaded at startup
+│       ├── gmail_ops.py             # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
+│       ├── trading_ops.py           # Crypto, Forex, Metals price + TA + build_market_report_html
+│       ├── telegram_ops.py          # Telegram Bot API notifications (also the Tier-6 fallback channel)
+│       ├── github_ops.py            # Git status, diff, commit, push
+│       └── web_agent_ops.py         # stealth_search (Google News RSS → ddgs fallback) + smart_scrape
 │
-├── ui/                            # React + Tauri v2 frontend (optional, browser-first)
+├── persona/
+│   └── official_ciel_personality.txt   # The only persona file loaded at startup
+│
+├── ui/                             # React + Tauri v2 frontend (optional) — see ui/README.md
 │   └── src/
-│       ├── orb.ts                #   Three.js audio-reactive particle orb (framework-agnostic)
-│       ├── components/Orb.tsx    #   React wrapper driving the orb from conversation state
-│       ├── core/                 #   transport+protocol (ws, bus, types, http) — modality-agnostic
-│       ├── io/                   #   MODALITY LAYER: input/ (text + voice mic), output/ (transcript, speaker+analyser)
-│       └── hooks/useCiel.ts      #   bus <-> React bridge
+│       ├── orb.ts                   # Three.js audio-reactive particle orb (framework-agnostic, currently unmounted — see voice_and_interface.md)
+│       ├── components/Orb.tsx       # React wrapper for the orb
+│       ├── core/                    # transport+protocol (ws, bus, types, http) — modality-agnostic
+│       └── io/                      # modality layer: input/ (text + voice mic), output/ (transcript, speaker+analyser)
 │
-├── backtest/                     # Test suites (script-based, not pytest — see conventions.md)
-│   ├── test_integration.py       # Full pipeline validation
-│   ├── test_brain_worker.py      # Multi-step workflow tests
-│   ├── test_rag_memory.py        # Amnesia stress test
-│   └── test_hard_special.py      # Hard/special cases + BUG DASHBOARD
+├── autonomous_pipeline/            # Self-running MLOps daemon (optional)
+│   ├── orchestrator.py              # Background scheduler
+│   ├── task_generator.py            # Simulated Master
+│   ├── data_pipeline.py             # Judge audit + dataset builder
+│   └── chaos_injector.py            # Adversarial edge-case injection
 │
-├── scripts/                      # Maintenance helpers
-│   ├── format_thoughts_log.py    # Generate Markdown/JSONL views of thoughts.log
-│   ├── prompt_harness.py         # Mine thoughts.log for recurring failure patterns
-│   └── cost_report.py            # Cumulative LLM cost/usage report (by tier/model/day)
+├── backtest/                       # Test suites, script-based (not pytest) — see conventions.md
+│   ├── test_context.py              # T4 — 33 assertions, no LLM
+│   ├── test_outbound.py             # duplicate-send guard + stale-status strip — 36 assertions, tool layer stubbed
+│   ├── test_proactive.py            # T6 — 148 assertions, no LLM, no network, simulated clock
+│   ├── test_user_model.py           # T7 — 108 assertions, no LLM
+│   ├── test_conversation_bugs.py    # scope veto, recent-turns, router-task-hijack — 44 assertions
+│   ├── test_integration.py          # Full pipeline validation (real LLM calls)
+│   ├── test_brain_worker.py         # Multi-step workflow tests (real LLM calls)
+│   ├── test_rag_memory.py           # Amnesia stress test (real LLM calls)
+│   └── test_hard_special.py         # Hard/special cases + bug dashboard (real LLM calls)
 │
-├── ciel_data/                    # Runtime data (persisted across restarts)
-│   ├── facts.json                # Fact vault (key-value)
-│   ├── memory_bank.json          # Short-term chat history (max 20 messages)
-│   ├── model_pricing.json        # Optional cost-tracking price overrides (no code change)
-│   ├── vector_memory/            # ChromaDB persistent storage (long-term)
-│   └── logs/
-│       └── thoughts.log          # Raw audit trail (never modify format)
-│
-├── ciel_workspace/               # Sandbox for user scripts (quarantined)
-└── agent_output/                 # Generated code output directory
+├── scripts/                        # format_thoughts_log.py, prompt_harness.py, cost_report.py
+├── email_template/                 # Structured templates for outbound email bodies
+├── instructionAI/                  # AI-assistant instruction files (start with SKILL.md)
+├── ciel_workspace/                 # Sandbox for user files, logs, screenshots (quarantined)
+└── agent_output/                   # Default output location for AI-generated code
 ```
+
+The 369 assertions in the five no-LLM suites (`test_context`, `test_outbound`,
+`test_proactive`, `test_user_model`, `test_conversation_bugs`) are the fast path — run
+them first on any change to `core/`. They cost nothing (no LLM, no network) and every
+time-dependent one takes `now` as a parameter instead of reading the clock, so a whole
+day of behaviour simulates in milliseconds.
 
 ## Internal Dependency Graph
 
 ```
-main.py → core.agent_loop.AgentLoop
-core.agent_loop → core.llm_connector.CielCore
+main.py → core.agent_loop.AgentLoop → core.llm_connector.CielCore
 
 CielCore initializes:
-  ├── agent_system.models.brain.Brain             (Router LLM)
-  ├── agent_system.models.worker.Worker           (Generator LLM)
-  ├── agent_system.models.middleware.Middleware    (Semantic verifier — optional, lazy)
-  ├── core.router.Router                          (Intent classification)
-  ├── core.recovery_manager.RecoveryManager        (Self-healing)
-  ├── core.rag_manager                            (Hybrid memory)
-  └── core.tool_manager.ToolManager                (Tool registry)
-       └── skills.internal.* + skills.external.*  (auto-discovered)
+  ├── agent_system.models.brain.Brain              (Router LLM)
+  ├── agent_system.models.worker.Worker            (Generator LLM)
+  ├── agent_system.models.middleware.Middleware     (Semantic verifier — optional, lazy)
+  ├── core.router.Router                           (Intent classification)
+  ├── core.recovery_manager.RecoveryManager         (Self-healing)
+  ├── core.rag_manager                             (Hybrid memory)
+  ├── core.tool_manager.ToolManager                 (Tool registry)
+  │    └── skills.internal.* + skills.external.*   (auto-discovered)
+  ├── core.task_state.TaskStore                    (Tier 2)
+  ├── core.permissions.PermissionPolicy             (Tier 3)
+  ├── core.user_model.UserModel                     (Tier 7)
+  └── core.permissions.DeferredStore                (Tier 6 safety ceiling)
 
 main.py also initializes:
-  └── core.scheduler.CielScheduler                (Background tasks, Ghost Mode)
-       └── Directly calls Gmail API + TwelveData API + Telegram API
+  └── core.scheduler.CielScheduler                  (clock tasks + Tier-6 TriggerEngine)
+       ├── (legacy) directly calls Gmail/TwelveData/Telegram APIs
+       └── (Tier 6, opt-in) core.notifier.Notifier + core.triggers.build_triggers()
 
 main.py (voice mode) also touches:
-  └── core.voice_input / core.speech_output        (STT/TTS — lazy imports, fail-open)
+  └── core.voice_input / core.speech_output         (STT/TTS — lazy imports, fail-open)
 
 skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json directly)
 ```
 
-## Runtime Flow (Primary Pipeline)
+## Runtime Flow
 
 ```
-User Input (text or voice transcript) → CielCore.process()
-  → RAG Recall: search ChromaDB (skipped if query < 15 chars or relevance < 0.65)
-  → RAG Compression: Tier-1 regex/structural → Tier-2 Worker (if still > ~1000 tokens)
-  → Inject recalled context into user prompt
+User input (text or voice transcript) → CielCore.process()
+  → clear this turn's cancel flag and outbound-send record (Tier 5 / duplicate-send guard)
+  → Tier 7b: assess_preference(text) — free; only durable wording spends one extraction call
+  → RAG recall: search ChromaDB (skipped if query < 15 chars or relevance < 0.65;
+    a result whose archived question normalises identically to THIS one is filtered —
+    otherwise a repeated question recalls its own prior failure as "context")
+  → ContextAssembler bounds recall, then assembles [request, language, cwd] with a budget
   → Router (Brain LLM) classifies intent → JSON with hidden_thought + action
+      action == "chat": the router's `task` is a HINT only — the Worker always gets the
+      Master's real words; `task` is appended labelled "for reference ONLY"
   → Based on action:
-      "chat"       → Worker generates natural response
-      "tool"       → Dangerous-code / high-risk gate → Safety Gate (Y/N) → ToolManager executes
-                     → outbound email body: sanitize → Middleware review (email-scoped, fail-open) → send
-                     → Worker formats non-email results
+      "chat"       → Worker generates a response, with recent-turns context injected
+      "tool"       → dangerous-code / high-risk gate → Safety Gate (Y/N, or DEFER if
+                     unattended) → ToolManager executes → outbound send is deduped by
+                     recipient → Worker formats non-email results
                      → Self-Correction: Brain evaluates → retries if unsatisfied (max 2)
       "code"       → Worker generates code → dangerous-code gate → buffer_writer → disk
-      "multi_tool" → Sequential tool execution → Worker synthesizes report (before final send)
-                     → dependent steps: {{prev}} / {{step_N}} in a later step's args are
-                       replaced with an earlier step's raw output (deterministic, no LLM)
-                     → TIER-1 AGENT LOOP (core/continuation.py) — see below
-                     → deferred write/send body filled with the synthesized report; any
-                       leftover synthesis placeholder is blocked (see safety_and_risk.md)
-                     → explicit "subject exactly '...'" is enforced onto the send step
-  → Self-Healing Loop (if error, and not on the unfixable skip-list):
-      Attempt 1: Fix obvious cause (syntax/import)
-      Attempt 2: Rewrite with alternative approach
-      Attempt 3: Full rewrite using stdlib only
-  → _trim_history(): overflow messages → archived into ChromaDB
-  → Response saved → returned to user → optionally spoken aloud (TTS)
+      "multi_tool" → sequential/parallel tool execution → workflow safeguards auto-append
+                     a missing send/write step → Worker synthesizes a report → TIER-1
+                     AGENT LOOP may re-plan with the real results in view → deferred
+                     send/write runs ONCE with the synthesized body → duplicate-send
+                     guard, subject enforcement, placeholder guard all apply
+  → Self-Healing (on error, unless the error is on the unfixable skip-list): fix obvious
+    cause → rewrite with an alternative approach → full rewrite, stdlib only
+  → chat_history updated; overflow archived into ChromaDB
+  → Tier-2 task record closed: done / failed / blocked (a staged confirmation) / cancelled
+  → response returned, optionally spoken aloud (TTS)
 ```
 
-## Tier-1 Agent Loop (`core/continuation.py`, added July 2026)
+---
+
+## Tier 1 — The Agent Loop (`core/continuation.py`)
 
 A plan is a **flat list of tool calls chosen before anything runs**, so a request like
 *"check git status, and if it's clean, commit"* is not merely hard to plan — it is
@@ -170,8 +191,16 @@ execute fresh steps  → append to records → loop (bounded)
 Worker synthesizes over ALL rounds, then the deferred send/write runs ONCE
 ```
 
-**Five signals may open a round.** All but the last are properties of the request or of
-what actually came back — never a model self-report:
+**A scope veto is checked before anything else.** Found live: "liệt kê từng file thôi,
+rồi DỪNG lại" ("just list the files, then STOP") still tripped the fan-out signal and
+looped anyway — every signal below is a reason to *continue*, none was a reason a human
+gave to *stop*. `request_has_scope_veto()` matches explicit bounding language ("chỉ …
+thôi", "đừng …", "only …", "do not …") and, if present, overrides every signal below —
+deliberately asymmetric with the rest of the policy: a missed continuation costs a
+thinner answer, overriding an explicit "don't" does work nobody asked for.
+
+**Five signals may open a round**, checked after the veto. All but the last are
+properties of the request or of what actually came back — never a model self-report:
 
 | | Signal | Example |
 |---|---|---|
@@ -181,23 +210,127 @@ what actually came back — never a model self-report:
 | S4 | Fan-out over a set of unknown size | "liệt kê file rồi đọc **từng** file" — 4 listed, 1 step ran |
 | S5 | Planner set the optional `"needs_followup": true` | strictly opt-in; omitting it breaks nothing |
 
-**Bounds are enforced in code, not by model good behaviour** (`LoopBudget`): extra rounds
-(`AGENT_LOOP_MAX_ROUNDS`, default 2), planner calls, wall-clock
-(`AGENT_LOOP_MAX_SECONDS`, default 120 — tested **before every step**, not merely between
-rounds), and `max_steps_per_round` (4). It is **fail-open**: any exception, unparseable
+**Bounds are enforced in code, not by model good behaviour** (`LoopBudget`): extra
+rounds (`AGENT_LOOP_MAX_ROUNDS`, default 2), planner calls, wall-clock
+(`AGENT_LOOP_MAX_SECONDS`, default 120 — tested **before every step**, not merely
+between rounds), and `max_steps_per_round` (4). Fail-open: any exception, unparseable
 re-plan, or empty follow-up quietly keeps the first round's answer.
 
-Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour.
+Off-switch: `AGENT_LOOP_ENABLED=false` restores the exact pre-loop behaviour. Cost on an
+ordinary request is exactly zero extra calls — `assess()` returns `False` before any LLM
+is touched; an 11-case regression spent the same 8 Brain calls loop-on vs loop-off.
 
-**Cost on ordinary requests is exactly zero extra calls** — `assess()` is free Python, and
-a non-conditional request returns `False` before any LLM is touched. Verified: an 11-case
-regression spent 8 Brain calls with the loop on, the same 8 it spent with it off.
+### Parallel tool execution (`core/parallel.py`)
 
-## Tier-4 Context Discipline (`core/context.py`, added July 2026)
+Steps in one plan that are **provably independent** run concurrently instead of one
+after another. `plan_batches()` walks the steps in order and only ever *groups* them —
+never reorders or drops any — so results collect back in original order and
+`{prev}`/`{step_N}` keep their sequential meaning.
 
-Context used to be assembled by appending to a string in `process()` — six `enriched_input
-+=` lines, each individually reasonable. Together they had no budget, no record of what a
-call actually carried, and an order that was just the order features were added in.
+A step joins a batch only if all three hold: its tool is declared parallel-safe, its
+args carry no `{step_N}`/`{prev}` reference, and it is not high-risk (several threads
+racing one stdin Y/N prompt is a deadlock, not a speed-up).
+
+**Opt-in, never a blacklist** — skills auto-register, so "parallelise everything except
+writes/sends" would silently parallelise a new mutating tool the day one is added:
+
+```python
+def get_my_tools():
+    return {"tools": [...], "prompt": "...", "parallel_safe": ["my_search"]}
+```
+
+`_log_thought` takes a lock: it appends to `thoughts.log` **and** accumulates the
+per-tier token/cost dicts, so concurrent callers would otherwise interleave mid-entry
+and lose counter increments.
+
+**Measured, tool time only** (LLM excluded — it dominates wall-clock): 7 file reads
+9.3×, 4 mixed fast tools 1.9×, 4 web scrapes 2.3×, 3 searches 1.05× (the search source
+rate-limits, so concurrency can't help). In absolute terms 0.15–2.8s against 15–55s
+requests — invisible on ordinary requests, real minutes saved only on slow fan-out.
+Off-switch: `AGENT_PARALLEL_ENABLED=false`.
+
+## Tier 2 — Durable Task State (`core/task_state.py`)
+
+Before this, the only cross-turn state was one slot holding one pending confirmation:
+a job interrupted by a crash, restart, or closed terminal simply vanished, and "what
+were you doing?" could only be answered by the model guessing — the Router never sees
+`chat_history`, and such short questions fall below RAG's `MIN_QUERY_LENGTH`.
+
+```
+TaskRecord: id · goal · status · steps[] · note · created/updated
+status:     active → done | blocked | failed | interrupted | cancelled
+file:       ciel_data/state/tasks.json   (rolling, newest 20)
+```
+
+- **Opened** only for `tool` / `multi_tool` / `code` — pure chat leaves nothing
+  half-finished, so it gets no record.
+- **Closed** at every exit: `done`, `failed` on exception, `cancelled` (Tier 5), or
+  **`blocked`** when a confirmation was staged — waiting on the Master is not
+  completion.
+- **Resumption.** A record still `active` at load time must belong to a dead process
+  (the constructor only runs at start-up), so it is reclassified `interrupted`.
+  `main.py` prints it on launch; `describe_unfinished()` exposes it.
+- **`đang làm gì` / `status`** is matched before routing and answered from the store —
+  **0 LLM calls, ~0.1s** (measured).
+
+**The Brain never reads these records.** Feeding them into routing would reopen the
+cross-request contamination this codebase deliberately closed. Thread-safe: verified
+with 6 threads × 25 steps — 150/150 kept, no duplicate ordinals. Deliberately **not** a
+scheduler, queue, or priority system — one active task at a time, matching how a
+pending-confirmation slot and a real conversation both already work.
+
+## Tier 3 — Permissions (`core/permissions.py`)
+
+Approval used to be binary and per-call: a tool was either always-ask or free, and the
+prompt arrived **mid-execution** — declining at step 3 of 4 left steps 1-2 already run.
+
+Every `(tool, args)` resolves to one of:
+
+| | Meaning |
+|---|---|
+| `AUTO` | Read-only. Never interrupts. Explicit list + `CIEL_AUTO_TOOLS`. |
+| `ASK` | Has an effect. Needs confirmation. Source of truth: `_HIGH_RISK_TOOLS`. |
+| `DENY` | Refused outright, not even offered. `CIEL_DENY_TOOLS`. |
+| `DEFER` | `ASK`, but unattended (Tier 6) — see below. |
+
+**Plan-level approval** (`_review_plan_permissions`, before the first step of a
+multi_tool plan): one prompt listing every step, answered once. "No" means **nothing
+ran**. A deny-listed step aborts without asking at all.
+
+**Two grant scopes, deliberately different:**
+- *session* — by tool name, opt-in via `A` at the CLI prompt, never written to disk.
+- *plan* — by **`(tool + exact args)` signature**, cleared when the plan ends. Keyed on
+  the whole call so approving `delete_file` for the reviewed plan cannot auto-approve a
+  *different* `delete_file` the Tier-1 loop invents two rounds later; a stale grant can
+  only ever re-approve the identical action.
+
+`DENY` is checked first and cannot be overridden by any grant or `DISABLE_SAFETY_GATE`.
+The `AUTO` set stays in agreement with `core/parallel.py`'s parallel-safe set (a test
+asserts no parallel-safe tool needs approval).
+
+### The unattended ceiling (Tier 6 safety mechanism, lives in this module)
+
+A trigger firing at 03:00 has nobody to ask, and "nobody answered" must never resolve
+to "yes". `PermissionPolicy.decide(..., attended=False)` returns `DEFER` for a risky
+tool: recorded in `DeferredStore`, raised at the next interaction. Session grants, plan
+approvals, and `DISABLE_SAFETY_GATE` are **all ignored** in that context — each is
+evidence a human agreed *while present*. The only escape hatch is per-tool
+(`CIEL_UNATTENDED_AUTO_TOOLS`), which cannot reach past the deny list.
+
+`CielCore.unattended` is **thread-local**, propagated explicitly into parallel workers.
+A plain attribute would let the scheduler thread flip it mid-flight on a foreground
+request, silently turning that user's confirmations into deferrals.
+
+`DeferredStore` (`ciel_data/state/deferred.json`) **deliberately never replays**. A
+mutating action decided against 03:00's world is not the same action at 09:00; the
+Master re-issues it as a fresh request. Known-open: `main_api.py` still auto-approves
+when no WebSocket is attached — that predates this ceiling and should route through it.
+
+## Tier 4 — Context Discipline (`core/context.py`)
+
+Context used to be assembled by appending to a string — six `enriched_input +=` lines,
+each reasonable alone, together with no budget, no record of what a call carried, and an
+order that was just the order features were added in.
 
 `ContextAssembler` collects named blocks and renders them once:
 
@@ -208,158 +341,93 @@ ctx.add("language", "[USER LANGUAGE: …]", P_IMPORTANT)      # 60
 text, report = ctx.render(budget_tokens=CONTEXT_INPUT_BUDGET)
 ```
 
-**Priority decides what is dropped; insertion order decides layout.** Keeping those
-separate is deliberate — emitting highest-priority-first is also defensible, but changing
-ordering *and* adding a budget at once makes an A/B uninterpretable. Blocks are dropped
+**Priority decides what is dropped; insertion order decides layout.** Kept separate
+deliberately — emitting highest-priority-first is also defensible, but changing
+ordering *and* adding a budget at once would make any A/B uninterpretable. Blocks drop
 **whole, never truncated**: half a `[WORKING DIRECTORY: …]` note still reads as a fact
-while being wrong, which is the exact failure that note exists to prevent.
+while being wrong.
 
-RAG recall is bounded **at its source** (`CONTEXT_RECALL_BUDGET`), before it is fused
-with the request. It is the only block whose size depends on retrieved data rather than
-on code, so it is the only one that can grow without anyone editing a line; bounding it
-after the merge would be too late to drop it separately.
+RAG recall is bounded **at its source** (`CONTEXT_RECALL_BUDGET`), before it fuses with
+the request — it is the only block whose size depends on retrieved data rather than
+code, so bounding it after the merge would be too late to drop separately. Every drop
+is logged (`[CONTEXT] assembled`).
 
-Every drop is logged (`[CONTEXT] assembled`), because a silently truncated prompt is the
-worst kind to debug.
+**Recent-conversation context** (`CielCore._recent_turns_block()`) is also assembled
+this way, injected into `execute_chat` and the tool-result format path — **never** the
+Router (see Tier 1's July-2026 decision below; a test asserts this).
 
 ### Router persona — measured, not assumed
 
-The router emits JSON and nothing else, yet carried the full 1,205-token persona: 28% of
-every Brain call spent on voice, for a component that never speaks. A/B over 11 routing
-cases:
+The router emits JSON and nothing else, yet carried the full 1,205-token persona: 28%
+of every Brain call spent on voice, for a component that never speaks. A/B over 11
+routing cases:
 
 | mode | persona tok | Brain input tok | decisions |
 |---|---|---|---|
 | `full` | 1,205 | 46,728 | baseline |
 | `slim` | 46 | **34,221 (−27%)** | 10/11 identical |
 
-The one disagreement (an email plan missing its send step) was re-run 3× per arm: `full`
-produced it 2/3, `slim` 2/3 — **sampling noise, not a persona effect**. `ROUTER_PERSONA_MODE`
-defaults to `full` anyway: 11 cases at one repetition is not enough evidence to change a
-default silently. Set `slim` to take the saving.
+The one disagreement (an email plan missing its send step) was re-run 3× per arm:
+`full` produced it 2/3, `slim` 2/3 — **sampling noise, not a persona effect**.
+`ROUTER_PERSONA_MODE` still ships `full`: 11 cases at one repetition is not enough
+evidence to flip a default silently. Set `slim` to take the saving.
 
-That re-run surfaced a **separate, pre-existing bug**: for an explicit "gửi mail cho X"
-request the router omits `send_gmail_message` about 1 time in 3, on both arms. Data is
-gathered and nothing is sent. Not caused by this tier; recorded in `note.md`.
+### The conversation-memory bugs (found live, fixed together)
 
-## Tier-5 Interruptibility (`CielCore.request_cancel`, added July 2026)
+Reading a real session (not a failing test) surfaced three related bugs:
+
+1. **No memory of the turn just answered.** `chat_history` was stored, persisted, and
+   archived into RAG — and never read back into a prompt. "giá vàng bao nhiêu" → an
+   answer → "tại sao lại thế" got a reply with zero reference to the price just given.
+   Fixed by `_recent_turns_block()` above.
+2. **RAG recalling the question's own prior failure.** A repeated/rephrased follow-up
+   is, by construction, the single most similar thing in the store — so it recalled its
+   own earlier unhelpful reply as "context", teaching the model to repeat it. Filtered
+   in `rag_manager.search_similar()` via `_normalize_for_selfmatch()`: drops a result
+   whose archived question normalises identically to the current one (a paraphrase is
+   NOT filtered — that is genuine, useful recall).
+3. **The router pre-writing the final reply into `task`.** A strong Brain routinely
+   overstepped `{"action": "chat", "task": "what the Worker should do"}` and wrote the
+   literal answer into `task` — once caught writing `"task": "Reply: \"Novices guess,
+   Master...\""` in English while the Master's real message was a Vietnamese tease.
+   Since the Router never sees `chat_history`, this could ALSO silently override
+   context the Worker actually had (a football score resolved one turn back was
+   ignored because `task` pre-decided "ask which match"). Fixed in `process()`'s chat
+   branch: `execute_chat` always receives the Master's real `user_input`; `task`
+   survives only as a labelled, non-binding hint. `action == "code"`'s `task` is a
+   different contract (a spec, not a pre-written answer) and is untouched.
+
+Verified live, model-for-model, on both reproductions — see `note.md` for the exact
+before/after replies. Tests: `backtest/test_conversation_bugs.py` (44 assertions).
+
+## Tier 5 — Interruptibility (`CielCore.request_cancel`)
 
 `main.py` blocks in `input()`, so a long request could only be escaped by killing the
-process — which also destroyed the Tier-2 record of what had been done. One observed run
-sat at 566s.
+process — destroying the Tier-2 record of what had been done along with it. One
+observed run sat at 566s.
 
-- **Ctrl+C during a request cancels the request**; Ctrl+C at the prompt still exits.
-- The job is closed as **`cancelled`**, so `status` distinguishes it from a crash.
-- Cancellation is **cooperative and checked at step boundaries only** — `_run_steps`
-  before each batch, `_continue_until_done` before each planner call. Never mid-tool:
-  aborting inside a half-written file or a half-sent email is not a cancellation, it is
-  a corruption.
-- The flag is cleared at the **start** of `process()`, not when it fires, so a Ctrl+C
-  landing between turns cannot silently kill the next request.
-- `request_cancel()` is thread-safe (`threading.Event`), so the UI can cancel over the
-  WebSocket the same way.
+- **Ctrl+C during a request cancels the request**; at the prompt it still exits.
+- The job closes as **`cancelled`**, so `status` tells it apart from a crash.
+- Cancellation is **cooperative, checked at step boundaries only** — `_run_steps`
+  before each batch, `_continue_until_done` before each planner call. Never mid-tool.
+- The flag clears at the **start** of a turn, not when it fires, so a Ctrl+C landing
+  between turns cannot silently kill the next request.
+- Thread-safe (`threading.Event`) — the UI now cancels the same way over the WebSocket
+  (`{"type": "cancel"}`, wired in `main_api.py`).
 
-## Tier-7a User Model (`core/user_model.py`, added July 2026)
+## Tier 6 — Proactivity (`core/notifier.py` + `core/triggers.py`)
 
-A fact vault already existed (`skills/internal/memory_ops.py` + `ciel_data/facts.json`)
-and was still `{}` after months. That is the design, not neglect: the vault is
-**pull-only**, so recall needs the model to guess an exact snake_case key *and* choose to
-call `get_fact`, while writing needs the Master to say "remember this" out loud. This
-module is the **push** side — a bounded profile that enters the prompt by itself.
-
-**Two stores, split by what happens to them, not by what they hold:**
-
-| Store | Holds | Read path |
-|---|---|---|
-| `ciel_data/facts.json` | secrets, credentials | pull-only, **never injected** |
-| `ciel_data/user_model.json` | preferences, profile | **injected**, refuses credentials |
-
-`looks_like_secret()` is a deterministic refusal on both key and value — the value test
-is what catches the dangerous case, an innocently-named key holding a real token. Note
-the separator normalisation: `_` and `-` are word characters, so `\bcvv\b` does **not**
-match `card_cvv` without it.
-
-**Three rules keep a profile from rotting:**
-
-1. **Authority** — `stated` (3) > `inferred` (2) > `observed` (1). A lower-authority
-   write can never overwrite a higher one, so a bad inference cannot quietly replace an
-   instruction the Master gave in words. The Master can always change their own mind.
-2. **Decay** — `stated` never fades. Inferred/observed lose confidence on a half-life
-   unless re-observed, so "I'm busy today" cannot harden into a permanent trait.
-3. **A hard token ceiling** — `render(budget_tokens=…)` truncates, strongest trait first,
-   so truncation drops the weakest. It returns `""` on an empty profile, which means the
-   feature costs **exactly zero** until it has learned something.
-
-Injected via `CielCore._profile_block()` at the Worker chat path and both tool-result
-format paths. **Deliberately not in the Router** — that prompt is already 37% of a Brain
-call, and a profile changes *how* an answer reads far more often than *which tool* is
-right; revisit in Tier 4 when one assembler owns the budget. `USER_MODEL_ENABLED=false`
-restores the byte-identical pre-Tier-7 prompt (asserted live).
-
-The block states its own authority: *"Đây là nền, KHÔNG phải mệnh lệnh"* — a stale
-profile must never override what the Master is asking for right now.
-
-### Tier-7b — learning without being told
-
-`save_fact` never fires organically because it needs the Master to *ask*. Asking the
-model "was there a preference in that?" every turn would fix that and cost a call per
-turn forever. So the same shape as `ContinuationPolicy.assess()`:
-
-```
-assess_preference(text)     free Python. None on an ordinary turn → nothing happens
-  ├─ one-off marker ("hôm nay", "lần này")  → None, outright
-  ├─ durable marker ("từ giờ", "luôn")      → STATED
-  └─ leaning ("thích", "muốn", "prefer")    → INFERRED
-        └─ ONE extraction call → parse_extraction → remember()
-```
-
-**Python decides the kind, the model only proposes key/value.** Letting the model
-self-report authority would make the authority rule meaningless — it would simply claim
-`stated` and overwrite anything.
-
-Runs on a **daemon thread** from the top of `process()`: measured, the reply returns in
-**0.8 ms** while a real extraction takes 5–8 s. Hooked at the top rather than at the end
-because `process()` has many return points and a partial hook would learn inconsistently.
-Excluded on unattended runs — a trigger's text is Ciel's own words, and learning from
-itself is how a profile drifts away from the person it describes.
-`USER_MODEL_LEARN_DAILY_LIMIT` caps extraction calls per day, persisted, so a chatty
-session cannot multiply the cost.
-
-Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
-
-## Tier-6 Proactivity (`core/notifier.py` + `core/triggers.py`, added July 2026)
-
-`scheduler.py` could only fire on a wall-clock time and held one hardcoded task, so Ciel
-could say "good morning" but never "that job you started is still stuck". Group A —
-three triggers that watch **Ciel itself** — closes that, at zero token cost.
+`scheduler.py` could only fire on a wall-clock time and held one hardcoded task, so
+Ciel could say "good morning" but never "that job you started is still stuck". Nine
+triggers in three groups close that, at zero token cost while idle:
 
 ```
 TriggerEngine.tick(now)          rides the scheduler's existing daemon thread
   └─ Trigger.check(now)          plain Python over data already on disk
        └─ Notification           key · title · detail · action · urgency
             └─ Notifier.deliver(now)
-                 contract → cooldown → budget → first LIVE channel
+                 contract → cooldown → repeat-mute → budget → first LIVE channel
 ```
-
-**The message contract is enforced in code.** A `Notification` with no `action` is
-demoted to the digest and can never interrupt (`effective_urgency()`). A trigger author
-who forgets it gets a quieter assistant, not a louder one.
-
-**Routing is by liveness, not configuration.** A live process is not a live human:
-`Presence` counts the CLI/app as a channel only while the last interaction is inside
-`PROACTIVE_IDLE_SECONDS`; past that, delivery falls through to Telegram. `main.py` blocks
-in `input()`, so a `NOTIFY` is queued and flushed between prompts (never into a half-typed
-line) while an `ASK` prints immediately — an unseen question is worse than a broken line.
-An `ASK` left unanswered escalates to the fallback channel; any keystroke calls
-`ack_seen()`, because escalation only ever chases an *absent* Master.
-
-**Edge, not level.** The hard part is not detecting a condition, it is not repeating
-yourself. Each `key` is built from the identity of the underlying thing (a task id, a
-tool name, a date bucket) — never from message text — and the Notifier enforces a per-key
-cooldown, so a condition that merely *stays* true is announced once.
-
-**Budget.** `PROACTIVE_DAILY_BUDGET` caps interruptions per day, counted in Python. Over
-budget, findings still survive — they drop to the digest instead of being lost.
 
 | Group | Trigger | Watches | Source |
 |---|---|---|---|
@@ -371,177 +439,141 @@ budget, findings still survive — they drop to the digest instead of being lost
 | B | `morning_digest` | the 08:00 brief, now a declared trigger | Gmail + markets + Worker |
 | C | `price_alert` | a price **crossing** a threshold you set | `fetch_market_price` |
 | C | `important_email` | unread mail from senders you listed | Gmail |
-| C | `stale_todo` | todos open past N days (**age**, not due date — the store has none) | `todos.json` |
+| C | `stale_todo` | todos open past N days (**age** — the store has no due date) | `todos.json` |
 
-Group C exists only behind thresholds the Master set explicitly; a trigger whose
-threshold is unset is dropped at build time. `daily_at()` expresses a clock task as an
-ordinary trigger, firing *at or after* its time so a machine asleep at 08:00 still gets
-its brief on waking. When the engine owns `morning_digest`, the scheduler skips
-registering the 08:00 clock task — two mechanisms delivering one brief is a double-send
-the Notifier cannot dedupe.
+Group C exists only behind thresholds set explicitly; a trigger with a missing
+threshold or dependency is dropped at build time, not crashed on
+(`is not None`, never a truthiness test — `DeferredStore` defines `__len__`, so an
+*empty* store is falsy and would otherwise silently drop the one trigger meant to
+report on it). Opt-in **by name** via `PROACTIVE_TRIGGERS` (empty = nothing runs), for
+the same reason skills are opt-in. Everything is off by default.
 
-**Unattended permission ceiling.** A trigger firing at 03:00 has nobody to ask, and
-"nobody answered" must never resolve to "yes". `PermissionPolicy.decide(...,
-attended=False)` returns the fourth decision, `DEFER`: the action is recorded in
-`DeferredStore` and raised at the next interaction. Session grants, plan approvals and
-`DISABLE_SAFETY_GATE` are **all ignored** in that context — each is evidence someone
-agreed while *present*. The only escape hatch is per-tool (`CIEL_UNATTENDED_AUTO_TOOLS`).
-`CielCore.unattended` is **thread-local** and propagated explicitly into parallel
-workers; a plain attribute would let the scheduler thread downgrade a foreground
-request's confirmations mid-flight.
+**Four rules stop it becoming noise:**
 
-`DeferredStore` deliberately does **not** replay. A mutating action decided against
-03:00's world is not the same action at 09:00, and approving it from a one-line summary
-is approving a fragment — the exact failure Tier 3 removed.
+1. **The message contract is enforced in code.** A `Notification` with no `action` is
+   demoted to the digest and can never interrupt (`effective_urgency()`).
+2. **Edge, not level.** Each `key` is built from the identity of the underlying thing —
+   a task id, a tool name, a date bucket — never from message text, and the Notifier
+   enforces a per-key cooldown, so a condition that merely *stays* true is announced
+   once.
+3. **Routing by liveness.** A running process is not a present human: `Presence` counts
+   the CLI/app as a channel only while the last interaction is inside
+   `PROACTIVE_IDLE_SECONDS`; past that, delivery falls to Telegram. `main.py` blocks in
+   `input()`, so `NOTIFY` queues and flushes between prompts (never into a half-typed
+   line) while `ASK` prints immediately. An unanswered `ASK` escalates to the fallback
+   channel; any keystroke calls `ack_seen()`.
+4. **Budget + feedback.** `PROACTIVE_DAILY_BUDGET` caps interruptions per day in
+   Python; over budget, findings drop to the digest instead of vanishing. After
+   `PROACTIVE_REPEAT_LIMIT` unheeded repeats of the *same* finding, it goes quiet —
+   muted per key, not per trigger, so a long silence re-arms it since a condition that
+   went away and came back is news again.
 
-**Feedback.** After `PROACTIVE_REPEAT_LIMIT` interrupts about the *same* finding that is
-still being raised, it goes quiet (drops to the digest). Muting is per **key**, not per
-trigger, so one stuck task falls silent while a different one still gets through; a long
-silence re-arms it, because a condition that went away and came back is news again.
+`daily_at()` expresses a clock task as an ordinary trigger, firing *at or after* its
+time so a machine asleep at 08:00 still gets its brief on waking. When the engine owns
+`morning_digest`, the scheduler skips registering the 08:00 clock task — two mechanisms
+delivering one brief is a double-send the Notifier cannot dedupe.
 
-Opt-in **by name** via `PROACTIVE_TRIGGERS` (empty = nothing runs), for the same reason
-skills are opt-in: the list will grow, and a default-on trigger added later would start
-talking without anyone choosing it. Everything is off by default.
+**Gotcha found the hard way.** `_log_thought` writes the log in text mode, so on
+Windows `thoughts.log` is 100% CRLF, while the tail is read in binary to bound its
+size — miss that and every log-reading check silently reports "nothing found",
+indistinguishable from a healthy system. Any new check must go through `_iter_entries`.
 
-**Gotcha, found the hard way.** `_log_thought` writes the log in text mode, so on Windows
-`thoughts.log` is **100% CRLF**, while the tail is read in binary to bound its size.
-Without `_read_tail`'s newline normalisation the entry separator never matches and every
-log-reading check silently reports "nothing found" — a monitoring trigger that never
-fires is indistinguishable from a healthy system. Any new check that parses the log must
-go through `_iter_entries`.
+Tests: `backtest/test_proactive.py` (148 assertions, no LLM, no network — every
+decision takes `now` as a parameter, so a full day simulates in milliseconds).
 
-Tests: `backtest/test_proactive.py` (148 assertions, no LLM, no network). Every decision
-function takes `now` as a parameter and never reads the clock, so a full day — cooldowns
-expiring, budget filling, escalation, midnight rollover — is simulated in milliseconds.
-**Keep that property**: a check that calls `time.time()` internally is untestable.
+## Tier 7 — A Model of You (`core/user_model.py`)
 
-## Tier-3 Permissions (`core/permissions.py`, added July 2026)
+A fact vault already existed (`skills/internal/memory_ops.py` + `ciel_data/facts.json`)
+and was still `{}` after months. That is the design, not neglect: the vault is
+**pull-only** — recall needs the model to guess an exact key *and* choose to call
+`get_fact`, writing needs the Master to say "remember this" out loud. This module is the
+**push** side — a bounded profile that enters the prompt by itself.
 
-Approval used to be binary and per-call: a tool was either in `_HIGH_RISK_TOOLS` (asked
-every single time) or free. Worse, the prompt arrived **mid-execution** — declining at
-step 3 of 4 left steps 1-2 already carried out, so the Master was approving fragments.
+**Two stores, split by what happens to them, not by what they hold:**
 
-Every `(tool, args)` now resolves to one of three decisions:
+| Store | Holds | Read path |
+|---|---|---|
+| `ciel_data/facts.json` | secrets, credentials | pull-only, **never injected** |
+| `ciel_data/user_model.json` | preferences, profile | **injected**, refuses credentials |
 
-| | Meaning |
-|---|---|
-| `AUTO` | Read-only. Never interrupts. Explicit list + `CIEL_AUTO_TOOLS`. |
-| `ASK` | Has an effect. Needs confirmation. Source of truth stays `_HIGH_RISK_TOOLS`. |
-| `DENY` | Refused outright, not even offered as a prompt. `CIEL_DENY_TOOLS`. |
+`looks_like_secret()` refuses on both key and value — the value test catches an
+innocently-named key holding a real token. Separator normalisation matters: `_`/`-` are
+word characters, so `\bcvv\b` does not match `card_cvv` without it (both `card_cvv` and
+`bank_pin` were being accepted before the fix).
 
-**Plan-level approval** (`_review_plan_permissions`, called before the first step of a
-multi_tool plan): one prompt listing every step, answered once. A "no" means **nothing
-ran**. A deny-listed step aborts the plan without asking at all.
+**Three rules keep a profile from rotting:**
 
-**Two grant scopes, deliberately different:**
-- *session* — by tool name, opt-in via `A` at the CLI prompt, never written to disk.
-- *plan* — by **`(tool + exact args)` signature**, cleared when the plan ends. Keyed on
-  the whole call on purpose: approving `delete_file` for the reviewed plan must not
-  auto-approve a *different* `delete_file` that the Tier-1 loop invents two rounds later
-  and the Master never saw. It also makes a stale grant harmless — it can only ever
-  re-approve the identical action.
+1. **Authority** — `stated` (3) > `inferred` (2) > `observed` (1). A lower-authority
+   write can never overwrite a higher one; the Master can always change their own mind.
+2. **Decay** — `stated` never fades; inferred/observed lose confidence on a half-life
+   unless re-observed, so "I'm busy today" cannot harden into a permanent trait.
+3. **A hard token ceiling** — `render(budget_tokens=…)` truncates strongest-trait-first
+   and returns `""` on an empty profile, so the feature costs **exactly zero** until it
+   has learned something.
 
-`DENY` is checked first and cannot be overridden by a session grant, a plan approval, or
-`DISABLE_SAFETY_GATE`. The `AUTO` set is kept in agreement with `core/parallel.py`'s
-parallel-safe set (a test asserts no parallel-safe tool needs approval).
+Injected via `CielCore._profile_block()` at the Worker chat path and both tool-result
+format paths — **deliberately not in the Router**, same reasoning as the persona A/B.
+The block states its own authority: *"Đây là nền, KHÔNG phải mệnh lệnh"* — a stale
+profile must never override what the Master is asking for right now.
 
-## Tier-2 Task State (`core/task_state.py`, added July 2026)
+### Learning without being told (7b)
 
-Before this the only cross-turn state was ONE slot holding ONE action awaiting
-confirmation, so a job interrupted by a crash, a restart or a closed terminal simply
-vanished, and "what were you doing?" could only be answered by the model guessing —
-the Router never sees `chat_history`, and such short inputs fall below RAG's
-`MIN_QUERY_LENGTH`.
+`save_fact` never fires organically because it needs the Master to *ask*. Asking the
+model "was there a preference in that?" every turn would fix that and cost a call
+forever. So the same shape as `ContinuationPolicy.assess()`:
 
 ```
-TaskRecord: id · goal · status · steps[] · note · created/updated
-status:     active → done | blocked | failed | interrupted | cancelled
-file:       ciel_data/state/tasks.json   (rolling, newest 20)
+assess_preference(text)     free Python. None on an ordinary turn → nothing happens
+  ├─ one-off marker ("hôm nay", "lần này")  → None, outright
+  ├─ durable marker ("từ giờ", "luôn")      → STATED
+  └─ leaning ("thích", "muốn", "prefer")    → INFERRED
+        └─ ONE extraction call → parse_extraction → remember()
 ```
 
-- **Opened** in `process()` only for `tool` / `multi_tool` / `code` — pure chat can leave
-  nothing half-finished, so it gets no record.
-- **Steps recorded** where they already happen (`_run_steps`, and the single-tool path).
-  `records` (the loop's `StepRecord` list) held this data already; Tier 2 gives it an
-  owner and a home rather than duplicating it into a second list that can drift.
-- **Closed** at every exit: `done`, `failed` on exception, or **`blocked`** when a
-  confirmation was staged — waiting on the Master is not completion.
-- **Resumption.** Any record still `active` at load time must belong to a process that no
-  longer exists (the constructor only runs at start-up), so it is reclassified
-  `interrupted`. `main.py` prints it on launch; `describe_unfinished()` exposes it.
-- **`đang làm gì` / `status` / `what were you doing`** is matched by `_STATUS_QUERY_RE`
-  before routing and answered from the store — **0 LLM calls, ~0.1s** (measured).
+**Python decides the kind, the model only proposes key/value** — letting the model
+self-report authority would make the authority rule meaningless. Runs on a **daemon
+thread** from the top of `process()`: the reply returns in 0.8ms while a real
+extraction takes 5–8s. Excluded on unattended runs — a trigger's text is Ciel's own
+words, and learning from itself drifts the profile away from the person it describes.
+`USER_MODEL_LEARN_DAILY_LIMIT` caps extraction calls per day, persisted.
 
-**The Brain never reads these records.** Feeding them into routing would re-open the
-cross-request contamination this codebase deliberately closed, and cost tokens every
-turn. They exist for the Master and for resumption; every decision is plain Python.
+Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
 
-Thread-safe: `_run_steps` appends from parallel worker threads, so every mutation holds a
-lock (verified with 6 threads × 25 steps — 150/150 kept, no duplicate ordinals).
-
-Deliberately **not** a scheduler, queue or priority system: one active task at a time,
-matching the pending-confirmation slot and how conversation actually works.
-
-## Parallel Tool Execution (`core/parallel.py`, added July 2026)
-
-Steps in one plan that are **provably independent** run concurrently instead of one
-after another. `plan_batches()` walks the steps in order and only ever *groups* them —
-it never reorders or drops any — so results are collected back in the original order and
-`{prev}` / `{step_N}` keep meaning exactly what they meant sequentially.
-
-A step may share a batch only if **all three** hold:
-1. its tool is declared parallel-safe, 2. its args carry no `{step_N}`/`{prev}`
-reference, 3. it is not high-risk (those block on a Y/N prompt — several threads racing
-for one stdin is a deadlock, not a speed-up).
-
-**Opt-in, never a blacklist.** Skills auto-register, so "parallelise everything except
-writes/sends" would silently parallelise a new mutating tool the day someone adds one.
-Built-ins live in `_DEFAULT_PARALLEL_SAFE`; a skill adds its own:
-
-```python
-def get_my_tools():
-    return {"tools": [...], "prompt": "...", "parallel_safe": ["my_search"]}
-```
-
-`_log_thought` takes a lock: it appends to the shared `thoughts.log` **and** accumulates
-the per-tier token/cost dicts, so concurrent callers would otherwise interleave mid-entry
-(breaking the format `scripts/cost_report.py` parses) and lose counter increments.
-
-**Measured, tool time only** (LLM excluded — it dominates wall-clock and hides this):
-7 file reads 9.3×, 4 mixed fast tools 1.9×, 4 web scrapes 2.3×, 3 searches 1.05× (the
-search source rate-limits, so concurrency cannot help there). In absolute terms that is
-0.15–2.8s against requests that take 15–55s, i.e. **invisible on ordinary requests** and
-worth real minutes only on slow-network fan-out. Off-switch: `AGENT_PARALLEL_ENABLED=false`.
+---
 
 ## Multi-Provider Support
 
-Each tier (Brain / Worker / Middleware) selects its provider and model independently via
-`.env` — no code changes to switch. Current recommended setup:
+Each tier (Brain / Worker / Middleware) selects its provider and model independently
+via `.env` — no code changes to switch.
 
 | Tier | Provider | Model | Config Key |
 |------|----------|-------|------------|
-| **Brain (Router)** | Vilao | `ccf/claude-opus-4-8` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
+| **Brain (Router)** | Vilao | `nt/cx/gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
 | **Worker (Generator)** | Vilao | `op/deepseek/deepseek-v4-pro` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
 | **Middleware (Verifier, optional)** | Vilao | `op/deepseek/deepseek-v4-pro` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
 
-> Provider model names drift — DeepSeek retired `deepseek-chat` (now `deepseek-v4-pro` /
-> `deepseek-v4-flash`); Vilao model aliases (e.g. `awkr/…` → `ccf/…`) change too. If a tier returns
-> empty output or a 4xx, check the alias is still live before suspecting the code.
+> Provider model names drift — DeepSeek retired `deepseek-chat` for `deepseek-v4-pro` /
+> `deepseek-v4-flash`; Vilao aliases rename over time. If a tier returns empty output or
+> a 4xx, check the alias is still live before suspecting the code.
 
-Also supported per tier: Gemini, Ollama (fully offline), and Vilao. **All three tiers can run on
-Vilao** — the Worker gained a `WORKER_PROVIDER=vilao` branch (`agent_system/models/worker.py`,
-mirroring the Brain's; previously provider=vilao silently fell through to the Ollama-localhost
-branch and failed with a connection-refused). A verified pure-Vilao setup: Brain
-`ccf/claude-opus-4-8`, Worker + Middleware `op/deepseek/deepseek-v4-pro`. **Tested fallback:** if
-Vilao is unavailable, set `BRAIN_PROVIDER=deepseek` + a valid DeepSeek model — zero code changes.
+Also supported per tier: Gemini, Ollama (fully offline). All three tiers can run on
+Vilao. **Tested fallback:** if Vilao is unavailable, `BRAIN_PROVIDER=deepseek` + a valid
+DeepSeek model works with zero code changes.
 
-> **Gotcha (unchanged):** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`
-> (`agent_system/config.py`); its PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).
+**Measure a new alias before adopting it.** On the same endpoint/key, one Brain alias
+(`ccf/claude-opus-4-8`) added **~6,500 unsuppressable tokens per call**, while
+`nt/cx/gpt-5.6-sol` added ~10 — switching cost one `.env` line and cut Brain tokens 52%,
+latency 51%, at identical 11/11 correctness. ~79% of the old cost was text nobody sent.
+To check: issue one trivial request and compare the provider's reported `input_tokens`
+against what you actually sent.
+
+> **Gotcha:** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`; its
+> PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).
 
 ## Web Search Source Chain (`skills/external/web_agent_ops.py`)
 
-`stealth_search` is layered, because the original single DuckDuckGo `text()` call returned
-no publication dates, surfaced section landing pages instead of articles, and honored its
+`stealth_search` is layered, because a single DuckDuckGo `text()` call returned no
+publication dates, surfaced section landing pages instead of articles, and honored its
 own `timelimit` unreliably (a "past day" window still returned 8–16-day-old hits):
 
 ```
@@ -555,28 +587,24 @@ news-intent query
 then: recency filter on the REAL pubDate → landing-page filter → trim to max_results
 ```
 
-Key points for anyone changing this:
-- **Top stories vs keyword search matters.** Searching "top news headlines today" matches
-  articles *titled* that (roundups: "School Assembly News Headlines"); the top-stories feed
-  returns the actual lead stories. `_is_generic_news_query()` decides between them.
-- **Language drives the locale.** A Vietnamese query must hit Vietnamese outlets — see the
-  `[USER LANGUAGE: X]` note the Router receives (`CielCore._detect_language`).
-- Every result prints `Published` + `Source`; undated web results are explicitly labeled
+- **Top stories vs keyword search matters.** "Top news headlines today" would otherwise
+  match articles *titled* that (roundups); the top-stories feed returns the actual lead
+  stories — `_is_generic_news_query()` decides between them.
+- **Language drives the locale.** A Vietnamese query must hit Vietnamese outlets — see
+  the `[USER LANGUAGE: X]` note (`CielCore._detect_language`).
+- Every result prints `Published` + `Source`; undated results are labeled
   `UNKNOWN … do NOT state a date` so the model cannot invent one.
 - Google News RSS is an UNOFFICIAL endpoint (like edge-tts) — keep the ddgs fallback.
 
 ## Two Entry Points
 
-- **`main.py`** — CLI loop. Blocking `input("Y/N")` for safety confirmations. `--voice` (speak
-  requests) and `--speak` (hear replies) flags; `:v` for a one-off voice capture.
-- **`main_api.py`** — FastAPI + WebSocket. Streams `thoughts.log` lines and vitals (incl. live
-  token/cost) to the React/Tauri UI. Safety confirmations sent as JSON over WebSocket with 60s
-  timeout. `POST /tts` powers the UI's read-aloud toggle using the same voice engine as the CLI.
+- **`main.py`** — CLI loop. Blocking `input("Y/N")` for safety confirmations. `--voice`
+  (speak requests) and `--speak` (hear replies); `:v` for a one-off voice capture.
+  Ctrl+C mid-request cancels the request (Tier 5); at the prompt it exits.
+- **`main_api.py`** — FastAPI + WebSocket. Streams `thoughts.log` lines and vitals
+  (incl. live token/cost) to the React/Tauri UI. Safety confirmations sent as JSON over
+  WebSocket with a 60s timeout; `{"type": "cancel"}` wires Tier 5. `POST /tts` powers
+  the UI's read-aloud toggle with the same voice engine as the CLI.
 
-## Interface Layer (optional)
-
-The React + Tauri v2 UI (`ui/`) is browser-first and desktop-wrappable with no code changes
-between the two. Layout: skills panel (left) · an audio-reactive Three.js particle orb (center,
-the centerpiece — reflects idle/listening/thinking/speaking and pulses to the real TTS voice) ·
-conversation (right). The skill list is 100% backend-driven (`GET /skills`) so adding a tool pack
-needs zero frontend edits. See `voice_and_interface.md` for the voice/orb design.
+See `voice_and_interface.md` for the UI's current layout, the full WebSocket protocol,
+and what a UI rebuild still needs to wire.

@@ -214,6 +214,193 @@ that a true "Đã gửi … Message Id" line is never touched.
 Minor, unfixed, cosmetic: one run produced an English subject ("Current Gold Price
 (XAU/USD)") on a Vietnamese body.
 
+### 2026-07-27 — A real email went to the wrong person: "gửi qua email đó" resolved wrong
+
+Found by the Master re-reading `thoughts.log`: a real Message Id went to
+`kxctran@gmail.com` when the address actually under discussion — declined once,
+re-raised, then confirmed with "không không, cứ gửi qua email đó đi" — was
+`prokxcpro@gmail.com`. Distinct from the router-task-hijack bug below: the existing
+`_is_referential_send()`/`_last_ai_message_text()` guard protects the email BODY when
+the Master says "send this/that content" — there was never an equivalent guard for the
+RECIPIENT when the Master says "send it to that email". A comment in the code even
+named this exact gap ("email"/"mail" are deliberately excluded from the body-referential
+patterns because 'gửi qua email đó' means the recipient, not the content") without ever
+closing it.
+
+Fixed with `_resolve_referential_recipient()`: when the current turn's wording is
+recipient-referential ("email đó", "địa chỉ đó", "that email") and names no address of
+its own, `to` is grounded in the most recent explicit email address actually mentioned
+in `chat_history` — mirroring the existing content-override's use of real history over
+the Router's guess. An explicit address in the current turn always wins over history.
+
+**Fixing `to` alone was not enough — a second bug surfaced while verifying.** The
+override originally ran only right before the send, but the report BODY had already
+been synthesized earlier in `execute_multi_tool`, from the Router's own confused
+`response_hint` (which sees the full RAG-recalled context and had blended two separate
+email threads). Result: a real email to the CORRECTED recipient
+(`prokxcpro@gmail.com`) carried the sentence *"Đã gửi báo cáo giá vàng ... đến
+kxctran@gmail.com"* — a body about a different address entirely, sent to a real
+person. Moved the override to the TOP of `execute_multi_tool` (before any synthesis
+runs) and, when it fires, ground the synthesis prompt in the corrected fact: *"CONFIRMED
+RECIPIENT: ... NOT {original}"* — the same "hand the model the fact, don't trust it to
+infer" pattern used everywhere else in this codebase.
+
+Verified against Vilao being temporarily down (billing hold) by capturing the actual
+synthesis prompt instead of a live model call: the corrected recipient and the
+exclusion note both land in the prompt exactly as intended. `execute_tool` runs with
+the corrected `to` (confirmed via the `Re-executing send_gmail_message` log line and
+the actual call args). Suite: `backtest/test_conversation_bugs.py` grew to **55
+assertions**.
+
+### 2026-07-27 — The router was writing the final reply, not routing to one
+
+Found by the Master re-reading their OWN real session after the fixes above: the
+"Hoàng Hên" follow-up still got a "which match?" reply despite my recent-turns fix, and
+separately, a Vietnamese insult got answered in English. Both traced to the exact same
+root cause, and it is a different, deeper bug than anything fixed earlier today.
+
+`CIEL_ROUTER_PROMPT` asks for `{"action": "chat", "task": "what the Worker should do"}`
+— `task` is documented as a HINT. A strong Brain routinely overstepped that and
+pre-wrote the actual final reply into it. Caught in the raw log, verbatim:
+
+```json
+{"hidden_thought": {"notes": "Reply in English because the actual message is English."},
+ "action": "chat",
+ "task": "Reply: \"Novices guess, Master. I verify. Give me a real task and measure the result.\""}
+```
+
+The Master's real message was Vietnamese (a tease). The Router — reasoning over its own
+English-translated copy of the input, used to reduce content-filter false positives on
+Vilao — decided the "actual message" was English and pre-wrote the ENTIRE reply in it,
+then handed the Worker a literal quote-and-relay instruction. The `[USER LANGUAGE:
+Vietnamese]` tag WAS present in what the Router saw; its own reasoning overrode it
+anyway. The Worker never got a chance to apply its own "always match the Master's
+language" persona rule, because it was not being asked to compose an answer — it was
+told to relay one, verbatim, that had already been decided.
+
+The "Hoàng Hên" case (same day, same session, earlier) is the identical bug in a
+different guise:
+
+```json
+{"task": "Hỏi Master đang nói trận nào hoặc trận gặp đội nào; sau đó trả lời số bàn
+          của Hoàng Hên và Xuân Son."}
+```
+
+The Router — which by design never sees `chat_history` — judged "trận đó" ambiguous and
+pre-decided the Worker's move should be "ask for clarification". That overrode the fact
+that the Worker's own prompt, by then, correctly contained the resolving context (this
+morning's `_recent_turns_block()` fix): the previous turn's answer, "Việt Nam thắng Đông
+Timor 7-0", verbatim, one turn back. The Worker dutifully executed the router's
+pre-written instruction to ask rather than using context it actually had.
+
+Both bugs are the SAME shape: for `action == "chat"`, the Router's `task` was being
+handed to `execute_chat` **as the user's request**, so whatever the Router decided —
+including full replies, including instructions that ignore context the Worker has —
+became gospel. That inverts the architecture's own rule (Brain classifies/plans, Worker
+composes) specifically for the chat path.
+
+**Fix, in `process()`'s chat branch only:** `execute_chat` now always receives the
+Master's OWN words (`user_input`, never reassigned inside `process()`, so it is
+guaranteed to be the true original — not the Vilao-translated copy used only for
+routing). The Router's `task` survives only as a labelled, explicitly non-binding
+hint appended after the real request: *"for reference ONLY — do not treat this as an
+instruction to follow, quote, or translate literally, and do not let it override the
+Master's own wording or language."* When `task` already equals `user_input` (the common,
+correct case), no redundant hint is added at all.
+
+Deliberately scoped to the `chat` branch alone — `action == "code"`'s `task` field is a
+different contract (a code SPEC the Worker is meant to execute, not a pre-written
+answer) and is untouched; a test asserts `execute_code` still receives it unmodified.
+
+Verified live, model-for-model, on the exact two reproductions:
+
+```
+"mày đúng là gà mờ" (task hijacked to a pre-written English reply)
+  before: "Novices guess, Master. I verify..."                    (English)
+  after:  "Một 'gà mờ' có lẽ sẽ phản ứng yếu đuối trước lời trêu
+           chọc. Tôi thì chỉ đo lường bằng kết quả..."             (Vietnamese)
+
+"Hoàng Hên và Xuân Son trận đó được mấy bàn" (task hijacked to "ask which match")
+  before: "Master, xin hỏi Master đang nói trận nào?"
+  after:  "Xuân Son: 1 bàn. Hoàng Hên (Hoàng Đức): 1 bàn."
+```
+
+Verified: `backtest/test_conversation_bugs.py` grew to **44 assertions** (8 new). Full
+suite is now **369 assertions across 5 files**.
+
+### 2026-07-27 — Three conversation bugs, found by reading a real transcript
+
+None of these showed up in a failing test. The Master pointed at the tail of
+`ciel_data/logs/thoughts.log` and asked to read it, which is what surfaced all three.
+
+**Bug 1 — Ciel has no memory of the turn it just answered.** "giá vàng XAU/USD giờ bao
+nhiêu" → an answer → "tại sao lại thế" produced a reply with zero reference to the price
+just given. `chat_history` is stored, persisted to disk, and archived into RAG — and was
+never once read back into a prompt. RAG is not a substitute: it only surfaces
+*already-archived* turns (never the one just completed, which is exactly the one a
+follow-up refers to), and it is gated by a 15-char/0.65-similarity threshold a short
+follow-up routinely fails to clear.
+
+Fixed with `CielCore._recent_turns_block()` — the last 3 turns of the CURRENT
+conversation, injected via `ContextAssembler` (bounded, dropped whole under pressure) into
+**only** `execute_chat` and the tool-result format path. Deliberately **not** sent to the
+Router: the July-2026 decision to keep `chat_history` out of routing stands, and still
+matters — a test in the new suite asserts an old unrelated request in `chat_history`
+never reaches `router.route()`. Verified live: "thủ đô của Nhật Bản là thành phố nào" →
+"Tokyo" → "tại sao lại là thành phố đó" (no mention of Tokyo) → a correct answer about why
+Tokyo became the capital in 1868.
+
+A second issue surfaced while fixing this: the log showed RAG recalling the CURRENT
+question's own prior occurrence — "phân tích thêm về tin đó" recalled a past instance of
+literally the same question, including its own unhelpful "please specify" reply, as
+"context". A near-identical question is the single most similar thing in the store BY
+CONSTRUCTION, so this was not a rare edge case — any repeated or rephrased follow-up would
+self-recall its own failure and repeat the non-answer. Filtered in
+`rag_manager.search_similar()` via `_normalize_for_selfmatch()`: strips case/punctuation
+and drops a result whose archived question normalises identically to the current one.
+Deliberately narrow — a paraphrase is NOT filtered, only a literal repeat, because a
+paraphrase is exactly the case genuine recall should still help with. Also reordered the
+merged block so `[CURRENT USER REQUEST]` comes before `[RECALLED PAST CONTEXT]` (was
+reversed): if recall ever surfaces noise, it must not push the Master's actual words out
+of the part of the prompt a model attends to most reliably.
+
+**Bug 2 — an explicit "chỉ … thôi" / "đừng …" was ignored.** Every signal in
+`ContinuationPolicy.assess()` is a reason to CONTINUE the agent loop; none of them was a
+reason a human gave to STOP. "liệt kê từng file thôi, rồi DỪNG lại" still tripped the
+fan-out signal (S4) and looped anyway. Reproduced live on 5/5 constructed cases (Vietnamese
+and English).
+
+Fixed with a **scope veto** (`_SCOPE_VETO_RE` / `request_has_scope_veto()`), checked
+before every other signal — before the budget check, before the no-steps guard, before
+fan-out. Deliberately asymmetric with the rest of the policy: a missed continuation costs
+a slightly thinner answer, but overriding an explicit "don't" does work nobody asked for,
+which given the loop can reach `send_gmail_message`/`delete_file` is the worse failure in
+both directions. Verified the same 5 bug cases now stop, a control set of the identical
+fan-out shape MINUS a stop word still continues (proving the veto targets the instruction,
+not the shape), and 6 ordinary requests containing similar-looking words (email/git/report
+requests using "chỉ", "đọc", "không") are not falsely flagged.
+
+**Bug 3 — a 4,051-character pasted conversation was answered "Đã rõ."** The model was not
+wrong — it was correctly obeying `execute_chat`'s "Respond EXTREMELY concisely... shortest
+answer possible" applied uniformly regardless of input size. For a genuine question that
+is right; for a routed-to-chat wall of pasted text with no clear instruction in it, the
+shortest valid answer to "confirm you understood" is exactly two words.
+
+Fixed by branching the instruction on `estimate_tokens(task)`: above ~220 tokens with no
+clear ask, the rule becomes "state what you understood (naming the actual content) then
+ask what to do with it — do not compress into a one-line acknowledgement, do not silently
+guess a task." Verified live with a realistic multi-topic economic-news paste: 603-char
+reply naming gold prices, VN stocks, Fed rates, oil, and Q2 earnings, versus the old
+"Đã rõ."
+
+All three interact: bug 1 is *why* the Master had to paste a whole conversation back in
+(bug 3's trigger) — Ciel had already forgotten it. Fixing 1 reduces how often 3 gets
+exercised at all; fixing 3 means when it still happens, the paste is not wasted.
+
+Verified: `backtest/test_conversation_bugs.py` — **36 assertions**, no LLM calls (Worker
+stubbed for prompt-assembly checks; `continuation.py` checks are pure Python). Full suite
+count is now **361 assertions across 5 files**, plus the live-model confirmations above.
+
 ### 2026-07-26 — Tiers 4 and 5: all seven tiers now built
 
 **Tier 4 — one place that decides what goes into a prompt.** `core/context.py` replaces

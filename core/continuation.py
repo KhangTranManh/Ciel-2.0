@@ -91,6 +91,25 @@ _DISTRIBUTIVE_RE = re.compile(
     r"\btừng\b|\bmỗi\b|\bmọi\b|\beach\b|\bevery\b|\bfor\s+each\b",
     re.IGNORECASE)
 
+# SCOPE VETO — the user explicitly bounded the work ("chỉ … thôi", "đừng làm gì thêm",
+# "only …", "do not …"). Found live: "liệt kê từng file thôi, rồi DỪNG lại" still tripped
+# the fan-out signal (S4) below and looped anyway, because every signal in this module is
+# a reason to CONTINUE and none of them is a reason a human gave to STOP. This is checked
+# BEFORE every other signal and wins unconditionally — deliberately asymmetric with the
+# rest of the policy: a missed continuation costs a slightly thinner answer, but ignoring
+# an explicit "don't" does work nobody asked for, which is the worse failure in both
+# directions (cost, and doing something an outbound send or a file write cannot undo).
+_SCOPE_VETO_RE = re.compile(
+    r"\bchỉ\b.{0,40}?\bthôi\b"                              # "chỉ X thôi"
+    r"|\bthôi\b(?:[,.]|\s*$|\s+(?:là\s+)?(?:được|đủ)\b)"    # "X thôi." / "... thôi là được"
+    r"|\bđừng\b|\bkhông\s+cần\b"                            # "đừng ...", "không cần ..."
+    r"|\bkhông\s+(?:làm|cần)\s+gì\s+thêm\b"
+    r"|\bdừng\s+lại\b"
+    r"|\bonly\b.{0,30}?\b(?:list|show|check|read|get)\b"
+    r"|\bdo\s+not\b|\bdon'?t\b.{0,20}?\b(?:do|send|write|delete|modify)\b"
+    r"|\bnothing\s+(?:else|more)\b",
+    re.IGNORECASE)
+
 # A line that reads as one entry of a listing. The bracketed-tag form is not optional
 # polish: Ciel's own list_workspace returns "[DIR ] screenshots\n[FILE] todos.json", and
 # git_status returns "[M] path", so a matcher that only understood bullets and bare
@@ -190,6 +209,13 @@ class ContinuationPolicy:
         return bool(_DISTRIBUTIVE_RE.search(user_input or ""))
 
     @staticmethod
+    def request_has_scope_veto(user_input: str) -> bool:
+        """True when the user explicitly bounded the work ("chỉ … thôi", "đừng …",
+        "only …", "do not …"). See _SCOPE_VETO_RE for why this exists and why it
+        outranks every continuation signal below."""
+        return bool(_SCOPE_VETO_RE.search(user_input or ""))
+
+    @staticmethod
     def assess(user_input: str, executed: list, budget: LoopBudget,
                model_requested: bool = False) -> Assessment:
         """Should we spend one planner call to look again?
@@ -198,6 +224,12 @@ class ContinuationPolicy:
         It can only ever ADD a reason to continue; it is never required, and it can
         never override a budget ceiling or the no-steps guard.
         """
+        # VETO — checked before budget and before every signal. An explicit "chỉ … thôi"
+        # / "đừng …" / "only …" means the Master bounded the task on purpose; no signal
+        # below (including fan-out) may override that by inventing a second round.
+        if ContinuationPolicy.request_has_scope_veto(user_input):
+            return Assessment(False, "stop: user explicitly limited scope")
+
         spent, why = budget.exhausted()
         if spent:
             return Assessment(False, f"stop: {why}")

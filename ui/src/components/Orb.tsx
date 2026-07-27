@@ -7,9 +7,12 @@ import { createOrb, type OrbHandle, type OrbState } from "../orb";
 export function Orb({
   state,
   analyser,
+  className,
 }: {
   state: OrbState;
   analyser: AnalyserNode | null;
+  /** Extra CSS class (e.g. orb-compact for chat-header presence indicator). */
+  className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const orbRef = useRef<OrbHandle | null>(null);
@@ -33,5 +36,5 @@ export function Orb({
     orbRef.current?.setAnalyser(analyser);
   }, [analyser]);
 
-  return <canvas ref={canvasRef} className="orb-canvas" />;
+  return <canvas ref={canvasRef} className={`orb-canvas${className ? ` ${className}` : ""}`} />;
 }

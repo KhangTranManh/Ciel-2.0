@@ -10,9 +10,8 @@
 //     which runs the SAME to_speech() normalizer + edge-tts neural voice as the CLI,
 //     then plays the returned MP3. Best quality, identical to CLI, no markdown/emoji
 //     read aloud (the backend strips it). Requires the backend to be reachable.
-//   • browserSpeak (fallback) — window.speechSynthesis. Offline, but uses the OS
-//     voices (weaker Vietnamese) and would read markdown/tags unless normalized, so
-//     it's a fallback only.
+//   • browserSpeak (fallback) — window.speechSynthesis. Offline, weaker Vietnamese;
+//     used automatically when /tts fails so the 🔊 toggle is never silent-fail.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { bus } from "../../core/bus";
@@ -20,6 +19,8 @@ import { HTTP_BASE } from "../../core/http";
 
 let unsubscribe: (() => void) | null = null;
 let currentAudio: HTMLAudioElement | null = null;
+let currentSource: MediaElementAudioSourceNode | null = null;
+let speakGen = 0; // ignore stale async completions after stop/newer reply
 
 // ── Audio analysis (feeds the orb's audio reactivity) ───────────────────────
 // The TTS <audio> is routed through Web Audio: element → AnalyserNode → speakers.
@@ -72,6 +73,7 @@ export function enableSpeaker(speak: (text: string) => void): void {
       speak(text);
     } catch (err) {
       console.error("[voice-out] speak failed", err);
+      bus.emit("notice", "Voice output failed.");
     }
   });
 }
@@ -84,6 +86,15 @@ export function disableSpeaker(): void {
 
 // Stop any in-flight playback (browser or backend) so replies never overlap.
 export function stopSpeaking(): void {
+  speakGen += 1;
+  if (currentSource) {
+    try {
+      currentSource.disconnect();
+    } catch {
+      /* already disconnected */
+    }
+    currentSource = null;
+  }
   if (currentAudio) {
     currentAudio.pause();
     currentAudio.src = "";
@@ -96,18 +107,28 @@ export function stopSpeaking(): void {
 }
 
 // Approach B (default): backend edge-tts + to_speech(), play the returned MP3 and
-// route it through the analyser so the orb reacts to the voice.
+// route it through the analyser so the orb reacts to the voice. On failure, fall
+// back to browserSpeak and surface a soft notice (edge-tts is known-flaky).
 export async function backendSpeak(text: string): Promise<void> {
   if (!text || !text.trim()) return;
   stopSpeaking(); // interrupt the previous reply if it's still speaking
+  const gen = speakGen;
   try {
     const res = await fetch(`${HTTP_BASE}/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok || res.status === 204) return; // 204 = nothing speakable after normalize
+    if (gen !== speakGen) return; // interrupted
+    if (res.status === 204) return; // nothing speakable after normalize
+    if (!res.ok) {
+      console.warn("[voice-out] /tts", res.status, "— falling back to browser TTS");
+      bus.emit("notice", `TTS backend failed (${res.status}) — using browser voice.`);
+      browserSpeak(text);
+      return;
+    }
     const blob = await res.blob();
+    if (gen !== speakGen) return;
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
@@ -118,8 +139,22 @@ export async function backendSpeak(text: string): Promise<void> {
     if (a) {
       try {
         await a.ctx.resume();
+        if (gen !== speakGen) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        // One MediaElementSource per element; disconnect any previous source first.
+        if (currentSource) {
+          try {
+            currentSource.disconnect();
+          } catch {
+            /* ignore */
+          }
+          currentSource = null;
+        }
         const src = a.ctx.createMediaElementSource(audio);
         src.connect(a.analyser);
+        currentSource = src;
       } catch {
         /* not routable — audio still plays directly to the speakers below */
       }
@@ -127,21 +162,46 @@ export async function backendSpeak(text: string): Promise<void> {
 
     audio.onended = () => {
       URL.revokeObjectURL(url);
+      if (currentSource) {
+        try {
+          currentSource.disconnect();
+        } catch {
+          /* ignore */
+        }
+        currentSource = null;
+      }
       if (currentAudio === audio) currentAudio = null;
-      emitSpeaking(false);
+      if (gen === speakGen) emitSpeaking(false);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+      if (gen === speakGen) {
+        emitSpeaking(false);
+        bus.emit("notice", "Audio playback failed — using browser voice.");
+        browserSpeak(text);
+      }
     };
     emitSpeaking(true);
     await audio.play();
   } catch (err) {
+    if (gen !== speakGen) return;
     emitSpeaking(false);
     console.error("[voice-out] backendSpeak failed", err);
+    bus.emit("notice", "TTS unreachable — using browser voice.");
+    browserSpeak(text);
   }
 }
 
-// Fallback browser implementation (OS voices, offline). Left available but not the
-// default — backendSpeak matches the CLI's quality and normalization.
+// Fallback browser implementation (OS voices, offline). Used when /tts fails.
+// Does not strip markdown (backend does); good enough as a last resort.
 export function browserSpeak(text: string): void {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = "vi-VN";
+  utter.onstart = () => emitSpeaking(true);
+  utter.onend = () => emitSpeaking(false);
+  utter.onerror = () => emitSpeaking(false);
   window.speechSynthesis.speak(utter);
 }

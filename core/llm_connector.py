@@ -30,7 +30,7 @@ from .continuation import (
 )
 from .parallel import plan_batches, collect_parallel_safe
 from .task_state import TaskStore
-from .user_model import UserModel, assess_preference, learn_from_turn
+from .user_model import UserModel, assess_preference, learn_from_turn, estimate_tokens
 from .context import (ContextAssembler, P_REQUEST, P_CRITICAL, P_IMPORTANT, P_HELPFUL)
 from .permissions import PermissionPolicy, Decision, DeferredStore
 from . import rag_manager
@@ -49,6 +49,7 @@ from agent_system.config import (
     USER_MODEL_ENABLED, USER_MODEL_TOKEN_BUDGET,
     USER_MODEL_LEARN_ENABLED, USER_MODEL_LEARN_DAILY_LIMIT,
     CONTEXT_INPUT_BUDGET, CONTEXT_RECALL_BUDGET, ROUTER_PERSONA_MODE,
+    CONTEXT_RECENT_TURNS_ENABLED, CONTEXT_RECENT_TURNS_BUDGET,
 )
 from core.cost import estimate_cost
 
@@ -638,6 +639,46 @@ class CielCore:
     def unattended(self, value: bool):
         self._ctx.unattended = bool(value)
 
+    # Bug found by reading a real transcript: "giá vàng XAU/USD giờ bao nhiêu" -> answer
+    # -> "tại sao lại thế" produced a reply with NO memory of the price just given. Root
+    # cause: chat_history is stored, persisted, and archived into RAG — and never once
+    # read back into a prompt. RAG is not a substitute: it only sees ALREADY-archived
+    # turns (never the one just completed, which is exactly the one a follow-up refers
+    # to), and it is gated by length/relevance thresholds that a short follow-up like
+    # "tại sao lại thế" or "phân tích thêm về tin đó" routinely fails to clear.
+    _RECENT_TURNS_MAX = 3
+
+    def _recent_turns_block(self) -> str:
+        """The last few turns of THIS conversation, or "" when there is nothing yet.
+
+        Deliberately NOT sent to the Router (see `_router_persona`'s reasoning applied
+        here too): the 2026-07 decision to keep chat_history out of routing exists
+        because it let an old unresolved request bleed into an unrelated new one. This
+        block only ever reaches the RESPONSE path (`execute_chat`, tool-result
+        formatting), where "what did we just say" is exactly what is missing — never
+        "which tool should run".
+        """
+        try:
+            if not CONTEXT_RECENT_TURNS_ENABLED:
+                return ""
+            # `process()` already appended the CURRENT user message before this runs, and
+            # it is shown separately as "User's request: …" — so it is excluded here to
+            # avoid sending it twice.
+            history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+            msgs = history[-(self._RECENT_TURNS_MAX * 2):]
+            if not msgs:
+                return ""
+            lines = []
+            for m in msgs:
+                role = "Master" if m.type == "human" else "Ciel"
+                text = (m.content or "").strip().replace("\n", " ")
+                if len(text) > 240:
+                    text = text[:240] + "…"
+                lines.append(f"{role}: {text}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _profile_block(self) -> str:
         """TIER 7 — the Master's profile as a prompt block, or "" when it adds nothing.
 
@@ -659,6 +700,15 @@ class CielCore:
         except Exception:
             return ""
 
+    # Bug found by reading a real transcript: a 4,051-char pasted conversation was
+    # answered with "Đã rõ." — the model was not wrong, it was OBEYING "shortest answer
+    # possible" applied uniformly to a document-sized input with no clear ask in it.
+    # Below this many tokens, "answer immediately" is the right instinct (a greeting, a
+    # one-line question). Above it, the right move for a chat-routed wall of text with no
+    # clear instruction is to say what was read and ask what to do with it — not to
+    # silently guess the task, and not to compress it into two words.
+    _CHAT_LONG_INPUT_TOKENS = 220
+
     def execute_chat(self, task: str) -> str:
         """Worker generates a natural language response."""
         capabilities_context = ""
@@ -670,11 +720,46 @@ class CielCore:
                 f"unless explicitly covered by these tools:\n{self._tool_list_str}"
             )
 
+        if estimate_tokens(task) > self._CHAT_LONG_INPUT_TOKENS:
+            # Long input, routed as chat (so the Brain found no clear tool intent in it) —
+            # a pasted conversation or document, not a question. "Shortest answer possible"
+            # is the wrong instinct here: it produces a two-word non-answer instead of
+            # engaging with what was actually sent.
+            style_rule = (
+                "The Master just sent a LONG block of text with no clear single instruction in "
+                "it — likely a pasted conversation, article, or document. Do NOT compress this "
+                "into a one-line acknowledgement, and do NOT silently guess a task and act on it. "
+                "Instead: briefly state what you understood from it (2-3 sentences, naming the "
+                "actual topic/content — not a generic placeholder), then ask what the Master wants "
+                "done with it. Address the user as 'Master'."
+            )
+        else:
+            style_rule = (
+                "Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
+                "No filler, no pleasantries. Address the Master by name where it falls naturally in "
+                "a sentence — it does not belong on the front of every reply, and a one-line answer "
+                "usually needs no address at all."
+            )
+
+        # TIER 4-STYLE ASSEMBLY — recent turns bounded and ordered like every other
+        # context block. Placed via ContextAssembler (not string concatenation) so it
+        # gets a budget and drops WHOLE under pressure rather than being truncated
+        # mid-turn, which would put a half a Master's sentence in front of the model.
+        recent_ctx = ContextAssembler()
+        recent_ctx.add("recent_turns", self._recent_turns_block(), P_HELPFUL)
+        recent_block, recent_report = recent_ctx.render(budget_tokens=CONTEXT_RECENT_TURNS_BUDGET)
+        if recent_report.dropped:
+            self._log_thought("CONTEXT", "recent_turns_dropped", recent_report.summary())
+        recent_section = (
+            f"[RECENT CONVERSATION — for context only; answer the CURRENT request below]:\n"
+            f"{recent_block}\n\n"
+        ) if recent_block else ""
+
         persona_task = (
             f"{self.ciel_persona}\n\n"
             f"{self._profile_block()}"
-            f"Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
-            f"No filler, no pleasantries. Always address the user as 'Master'.{capabilities_context}\n\n"
+            f"{style_rule}{capabilities_context}\n\n"
+            f"{recent_section}"
             f"User's request: {task}"
         )
         self._log_thought("WORKER", "chat_task", persona_task)
@@ -731,8 +816,15 @@ class CielCore:
         target = str((tool_args or {}).get(arg) or "").strip().lower()
         return f"{tool_name}:{target}" if target else None
 
-    def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "") -> str:
-        """Execute a Ciel tool and format the result."""
+    def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "",
+                     _raw_out: list = None) -> str:
+        """Execute a Ciel tool and format the result.
+
+        `_raw_out`, if given a list, gets the pre-Worker-formatting result_text
+        appended (structured tool output — the JSON search_gmail/stealth_search/etc.
+        actually returned) alongside the normal human-facing return value. Internal
+        plumbing for `_run_steps`'s {prev}/{step_N} chaining — see its call site.
+        """
         log.tool(f"Executing: {tool_name}({tool_args})")
 
         if tool_name not in self._tool_map:
@@ -879,6 +971,19 @@ class CielCore:
 
         result = self.tool_manager.execute_tool(tool_name, tool_args)
         result_text = self.tool_manager.format_tool_result(result)
+        # Ground truth is the dict's own `success` flag, not a text guess. Bug found
+        # live: tool_manager.format_tool_result() renders ANY failure as "[{code}] msg"
+        # where `code` is whatever the skill author chose (VISION_LOOP_ERROR,
+        # TOOL_NOT_FOUND, INVALID_ARGS, ...) — but this used to re-derive "is this an
+        # error?" by checking only for the literal "EXECUTION_ERROR" or a mixed-case
+        # "Error" substring. Any other code (all-caps, like every real example above)
+        # silently read as a SUCCESS: no healing attempt, no friendly rephrase, the
+        # raw "[VISION_LOOP_ERROR] Vision loop crashed: GEMINI_API_KEY not found in
+        # .env" went out as if it were the answer — and task_state recorded the step
+        # as "done". tool_manager.execute_tool() always returns this normalized dict
+        # (see its docstring: "standardized structured result"), so `success` is
+        # always present and reliable here.
+        is_error = isinstance(result, dict) and result.get("success") is False
 
         # SELF-HEALING HOOK (UP TO 3 ATTEMPTS)
         max_attempts = 3
@@ -887,8 +992,8 @@ class CielCore:
 
         if (
             tool_name != "run_python_script"
+            and is_error
             and _HEALING_SKIP_PATTERNS.search(result_text[:300])
-            and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30])
         ):
             self._log_thought("HEALING", "skipped_unfixable",
                               f"{tool_name}: error matches a known-unfixable pattern (missing dependency / "
@@ -896,8 +1001,8 @@ class CielCore:
 
         while (
             attempt <= max_attempts
+            and is_error
             and not (tool_name != "run_python_script" and _HEALING_SKIP_PATTERNS.search(result_text[:300]))
-            and ("EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script"))
         ):
             self._log_thought("HEALING", f"attempt_{attempt}", f"Starting heal attempt {attempt}/{max_attempts}")
             
@@ -913,46 +1018,50 @@ class CielCore:
                     pass
 
             success, action, data = self.recovery.heal_tool_error(tool_name, current_args, result_text, attempt, previous_code)
-            
+
             if not success:
                 result_text += f"\n\n[Self-Healing Failed] {data.get('error', 'Unknown error')}"
-                break
-                
+                break  # is_error stays True — nothing here fixed it
+
             if action == "code_fix":
                 try:
                     from skills.internal.system_ops import _is_safe_path
                     safe_path = _is_safe_path(data["filename"])
-                    
+
                     # Validate syntax before saving!
                     syntax_valid, syntax_error = self.recovery.check_syntax(data["code"])
                     if not syntax_valid:
                         self._log_thought("HEALING", "syntax_error", syntax_error)
                         result_text = f"[Syntax Error Validation Failed]\n{syntax_error}"
+                        is_error = True
                         attempt += 1
                         continue
-                    
+
                     with open(safe_path, "w", encoding="utf-8") as f:
                         f.write(data["code"])
                     self._log_thought("HEALING", "apply_fix", f"Code updated for {data['filename']}. Re-running script.")
-                    
+
                     # Retry tool
                     result = self.tool_manager.execute_tool(tool_name, current_args)
                     retry_text = self.tool_manager.format_tool_result(result)
+                    is_error = isinstance(result, dict) and result.get("success") is False
                     result_text = f"[Self-Healing Activated] Analyzed code error, fixed it, and re-ran.\n\nNew Output:\n{retry_text}"
-                    
+
                 except Exception as e:
                     result_text = f"[Self-Healing Error] {e}"
-                    
+                    is_error = True
+
             elif action == "retry_tool":
                 self._log_thought("HEALING", "retry_tool_args", str(data))
                 current_args = data  # Update arguments for the next attempt if it fails
                 result = self.tool_manager.execute_tool(tool_name, current_args)
                 retry_text = self.tool_manager.format_tool_result(result)
+                is_error = isinstance(result, dict) and result.get("success") is False
                 result_text = f"[Self-Healing Activated] Analyzed parameter error, corrected args, and re-ran.\n\nNew Output:\n{retry_text}"
-                
+
             attempt += 1
-            
-        if "EXECUTION_ERROR" in result_text or "Error" in result_text[:30] or ("Lỗi chạy script" in result_text and tool_name == "run_python_script"):
+
+        if is_error:
             log.error(f"Tool {tool_name} failed after {attempt-1} self-healing attempts.")
             self._log_thought("TOOL", "error", f"{tool_name}: {result_text}")
             # STRUCTURED ERROR: Rephrase raw error for the user
@@ -974,6 +1083,12 @@ class CielCore:
                 self._sent_this_turn.add(out_key)
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
+
+        # Chain refs ({prev}/{step_N}) need the STRUCTURED result (e.g. search_gmail's
+        # real "id" field) — capture it here, before any Worker humanizing below turns
+        # it into a prose sentence a later step's tool_args cannot use as an argument.
+        if _raw_out is not None:
+            _raw_out.append(result_text)
 
         # Remember a preview tool's follow-up so a later bare "yes" can execute it.
         # The tool declares this itself via result["confirm"] (see skills/_result.py
@@ -1025,17 +1140,28 @@ class CielCore:
             lead_line = "Format this tool output into the absolute shortest, clearest response possible.\n"
             rule_one = "1. Be extremely concise. Give just the requested data. No conversational filler.\n"
 
+        _rc = ContextAssembler()
+        _rc.add("recent_turns", self._recent_turns_block(), P_HELPFUL)
+        _recent_block, _recent_rep = _rc.render(budget_tokens=CONTEXT_RECENT_TURNS_BUDGET)
+        if _recent_rep.dropped:
+            self._log_thought("CONTEXT", "recent_turns_dropped", _recent_rep.summary())
+        _recent_section = (f"[RECENT CONVERSATION — context only]:\n{_recent_block}\n\n"
+                           if _recent_block else "")
+
         format_task = (
             f"{self.ciel_persona}\n\n"
             f"{self._profile_block()}"
             f"{lead_line}"
+            f"{_recent_section}"
             f"User's request: {user_input}\n"
             f"Tool: {tool_name}\n"
             f"Raw result:\n{clean_text}\n\n"
             f"Hint: {response_hint}\n"
             f"RULES:\n"
             f"{rule_one}"
-            f"2. Always address the user as 'Master' at the beginning of your response.\n"
+            f"2. Address the Master by name only where it falls naturally in a sentence. Do NOT "
+            f"open every response with 'Master,' — mechanical repetition of it is what made "
+            f"replies read like a form letter. A bare answer is fine when the answer is one line.\n"
             f"3. ANTI-HALLUCINATION: ONLY use facts present in the Raw result above. "
             f"If the raw result contains an error, 'file not found', 'N/A', or is empty, "
             f"report the error honestly to Master. Say 'the data is unavailable' or 'the tool returned an error'. "
@@ -1063,17 +1189,30 @@ class CielCore:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
+    # 150 chars/body protects the prompt budget when search_gmail returns a whole
+    # inbox digest (10 emails) — found live: it applied just as hard to a SINGLE
+    # result ("đọc kỹ thư OSC và tóm tắt"), chopping the only email off mid-sentence
+    # even though the raw tool result already had the full body and nothing else
+    # needed protecting. The Worker then reported the text as truncated, and Brain's
+    # self-correction burned two attempts chasing data that was already in hand —
+    # first re-running search_gmail (same cap, same cut), then escalating to
+    # vision_act to "open the email properly". Scale the cap to how many emails are
+    # actually in the result instead of one constant for every case.
+    _EMAIL_BODY_CAP_SINGLE = 6000
+    _EMAIL_BODY_CAP_DIGEST = 150
+
     def _compact_email_result(self, text: str) -> str:
-        """Parse email JSON, strip HTML bodies, truncate each to 150 chars."""
+        """Parse email JSON, strip HTML bodies, truncate each to fit the result size."""
         try:
             emails = json.loads(text)
             if not isinstance(emails, list):
                 return self._strip_html(text)[:2000]
-            
+
+            per_body_cap = self._EMAIL_BODY_CAP_SINGLE if len(emails) <= 1 else self._EMAIL_BODY_CAP_DIGEST
             compact = []
             for em in emails:
                 body_raw = em.get("body", "")
-                body_clean = self._strip_html(body_raw)[:150]
+                body_clean = self._strip_html(body_raw)[:per_body_cap]
                 compact.append({
                     "sender": em.get("sender", ""),
                     "subject": em.get("subject", ""),
@@ -1278,8 +1417,27 @@ class CielCore:
     # model-emitted string is fragile; match the intent instead.
     _STEP_REF_RE = re.compile(r"\{{1,2}\s*(prev|step[_ ]?(\d+)(?:\.output)?)\s*\}{1,2}", re.IGNORECASE)
     _STEP_REF_MAXLEN = 4000
+    # A ref filling an *_id-shaped arg almost never wants the whole raw blob — it wants
+    # ONE field out of it (the common search -> fetch-by-id chain: search_gmail's JSON
+    # list has an "id" per result; get_gmail_message's message_id wants exactly that).
+    _ID_KEY_RE = re.compile(r"(^|_)id$", re.IGNORECASE)
 
-    def _resolve_step_refs(self, value, step_outputs: list):
+    def _extract_id_field(self, raw: str):
+        """Pull a bare "id" out of a step's raw JSON output, for an *_id-shaped arg.
+        Returns None (caller falls back to the raw text) on anything that doesn't
+        parse as the expected shape — this only ever narrows a value, never invents
+        one that was not already in the data."""
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            parsed = parsed[0]
+        if isinstance(parsed, dict) and "id" in parsed:
+            return str(parsed["id"])
+        return None
+
+    def _resolve_step_refs(self, value, step_outputs: list, _key: str = None):
         """Substitute {{prev}} / {{step_N}} tokens in a multi_tool step's args with the
         RAW output of an earlier step — enabling DEPENDENT chains (step N feeds step
         N+1) that the plan's static, decided-up-front args could not express (the
@@ -1289,11 +1447,18 @@ class CielCore:
         rewrites str values, and only when a token is present. An out-of-range or
         not-yet-run reference is left as the literal token AND logged, so a bad
         reference is visible rather than silently blanked into wrong tool input.
+
+        Bug found live: search_gmail -> get_gmail_message({"message_id": "{prev}"})
+        substituted the STRUCTURED result_text (a JSON list with the real Gmail "id")
+        wholesale into message_id — the API rejects a whole JSON blob as an id just as
+        surely as it rejected the Worker's prose summary this replaced. For an
+        *_id-shaped key, try to pull just the "id" field first; only the unnarrowed
+        raw text falls back for every other arg shape.
         """
         if isinstance(value, dict):
-            return {k: self._resolve_step_refs(v, step_outputs) for k, v in value.items()}
+            return {k: self._resolve_step_refs(v, step_outputs, _key=k) for k, v in value.items()}
         if isinstance(value, list):
-            return [self._resolve_step_refs(v, step_outputs) for v in value]
+            return [self._resolve_step_refs(v, step_outputs, _key=_key) for v in value]
         # Fast path: bail out on any string with no brace at all. It must test "{" and
         # NOT "{{" — gating on the double brace re-introduced the exact bug _STEP_REF_RE
         # was widened to fix, since a model-emitted "{step_1}" never reached the regex.
@@ -1304,7 +1469,12 @@ class CielCore:
             token = m.group(0)
             idx = int(m.group(2)) - 1 if m.group(2) else len(step_outputs) - 1
             if 0 <= idx < len(step_outputs):
-                return (step_outputs[idx] or "")[:self._STEP_REF_MAXLEN]
+                raw = step_outputs[idx] or ""
+                if _key and self._ID_KEY_RE.search(_key):
+                    extracted = self._extract_id_field(raw)
+                    if extracted is not None:
+                        return extracted
+                return raw[:self._STEP_REF_MAXLEN]
             self._log_thought(
                 "TOOL", "step_ref_unresolved",
                 f"multi_tool step referenced {token} but only {len(step_outputs)} "
@@ -1452,9 +1622,20 @@ class CielCore:
                 name, args = pair
                 self.unattended = unattended_here
                 if name not in self._tool_map:
-                    return f"[TOOL_ERROR] {name} not found."
-                return self.execute_tool(name, args, response_hint=response_hint,
-                                         user_input=user_input)
+                    err = f"[TOOL_ERROR] {name} not found."
+                    return err, err
+                raw_box = []
+                formatted = self.execute_tool(name, args, response_hint=response_hint,
+                                              user_input=user_input, _raw_out=raw_box)
+                # Bug found live: a plan chaining search_gmail -> get_gmail_message via
+                # {prev} got the WORKER'S HUMAN-READABLE SUMMARY ("Email từ Khang Trần,
+                # tiêu đề ...") injected as message_id, instead of the real Gmail id —
+                # a 400 "Invalid id value", then 3 self-healing attempts hallucinating
+                # guesses ("XAUUSD", "XAU_USD") that were never going to work, because
+                # the real id was sitting right there in raw_box the whole time.
+                # step_outputs (below) gets the raw structured text; everything
+                # human-facing keeps using `formatted` exactly as before.
+                return formatted, (raw_box[0] if raw_box else formatted)
 
             if len(prepared) > 1:
                 names = ", ".join(n for n, _ in prepared)
@@ -1468,9 +1649,9 @@ class CielCore:
                 log.tool(f"{label}Executing step: {name}({args})")
                 outs = [_run(prepared[0])]
 
-            for (name, args), res in zip(prepared, outs):
+            for (name, args), (res, raw) in zip(prepared, outs):
                 self._log_thought("TOOL", f"result_{name}", res)
-                step_outputs.append(res)
+                step_outputs.append(raw)
                 results.append(f"--- Output from {name} ---\n{res}")
                 records.append(StepRecord(name, args, res))
                 self.tasks.record_step(name, res)
@@ -1611,6 +1792,38 @@ class CielCore:
             else:
                 other_tools.append(t)
 
+        # Resolve a referential recipient ("gửi qua email đó đi") HERE, at the top,
+        # not just before the send call below. Found live: correcting `to` only right
+        # before sending was too late — the report body had ALREADY been synthesized
+        # from the stale pre-correction context, so a real email to the CORRECTED
+        # recipient (prokxcpro@gmail.com) carried the sentence "Đã gửi báo cáo giá vàng
+        # ... đến kxctran@gmail.com" — a body that talks about a different address
+        # entirely, sent to a real person. Fixing `to` without fixing what the body
+        # says about `to` is not actually fixed.
+        recipient_override_note = ""
+        if send_tool:
+            original_to = str(send_tool.get("tool_args", {}).get("to", "")).strip()
+            corrected_args = self._resolve_referential_recipient(
+                send_tool.get("tool_name", "send_gmail_message"),
+                send_tool.get("tool_args", {}), user_input)
+            if corrected_args is not send_tool.get("tool_args"):
+                send_tool = dict(send_tool)
+                send_tool["tool_args"] = corrected_args
+                # The override fixes WHO the mail goes to, but the report-body
+                # synthesis below still runs on the same `response_hint` the Router
+                # wrote while confused about which recipient/topic "đó" meant — found
+                # live producing a body that told prokxcpro@gmail.com "Đã gửi báo cáo
+                # giá vàng ... đến kxctran@gmail.com". Fixing `to` alone is not a fix
+                # if the BODY still talks about a different address. Ground the
+                # synthesis prompt in the corrected fact instead of trusting it to
+                # have followed the same reasoning.
+                recipient_override_note = (
+                    f"\n9. CONFIRMED RECIPIENT: this email's real recipient is "
+                    f"{corrected_args.get('to')} — NOT {original_to} or any other "
+                    f"address that may appear elsewhere in this prompt. Do not "
+                    f"mention, address, or narrate the status of any email to a "
+                    f"different address in the body.")
+
         results = []
         step_outputs = []   # raw result of each executed step, for {{prev}}/{{step_N}} refs
         records = []        # (tool, args, result) per step — the agent loop's observations
@@ -1648,7 +1861,7 @@ User's request: {user_input}
 Hint: {response_hint}
 RULES:
 1. Be concise. Deliver a unified report without conversational filler.
-2. For chat or internal reports: address as 'Master'. For email body, do NOT include "Master" greeting or internal addressing — make it a clean professional email suitable for sending to the recipient.
+2. For chat or internal reports: address the Master by name only where it falls naturally in a sentence — never as a mandatory opener on every response. For email body, do NOT include ANY "Master" greeting or internal addressing — that is addressed to an outside recipient, and internal forms of address must never leak into it. Make it a clean professional email.
 3. ONLY use facts present in the tool outputs above. NEVER invent data. NEVER copy any
    numbers, prices, or values from the persona/system-prompt EXAMPLES — those are
    illustrative placeholders. Every number in your output must come from a tool result in THIS run.
@@ -1656,7 +1869,7 @@ RULES:
 5. NEVER disclose internal file paths (agent_output/, ciel_workspace/, etc.) in the final report or email body sent to external parties. Use only generic professional language such as 'the detailed evaluation has been prepared' or provide the content directly in the message. Do not reference storage locations.
 6. ONLY claim that an email was sent (e.g. "Đã gửi", "email sent", "Message sent") if there is a successful send_gmail_message tool result with a Message Id in the outputs above. If there is no such result, do NOT narrate delivery status AT ALL — do not write "chưa gửi", "not sent yet", "chưa có kết quả gửi" or any equivalent. A send step in this plan may still be pending and will run AFTER you write this; the system appends the real outcome itself once it knows. Just write the report.
 7. For any email send (market or other), synthesize a professional email body based on the user's exact request and the real data from tools. Make it clear, well-structured, polite and useful like a proper sent email (use Vietnamese if appropriate). Do not force any specific dashboard template or HTML structure unless the user explicitly requested visual/dashboard style. Use ONLY real data from this run's tool results. Never leave [brackets], meta tags, or invent numbers.
-8. If this is an email send, your ENTIRE output IS the email body and will be sent verbatim. Output ONLY the email body — start directly with the subject/greeting. Do NOT include: chain-of-thought or "[COGNITION]"/"[MARKET_DATA]"-style tag prefixes; any statement that the email was/wasn't sent or any "Message Id"; any label like "Email body:", "Nội dung email:", "Lưu ý:"; any nested/duplicated copy of the email; any note about tools, file writes, or storage paths.
+8. If this is an email send, your ENTIRE output IS the email body and will be sent verbatim. Output ONLY the email body — start directly with the subject/greeting. Do NOT include: chain-of-thought or "[COGNITION]"/"[MARKET_DATA]"-style tag prefixes; any statement that the email was/wasn't sent or any "Message Id"; any label like "Email body:", "Nội dung email:", "Lưu ý:"; any nested/duplicated copy of the email; any note about tools, file writes, or storage paths.{recipient_override_note}
 """
         self._log_thought("WORKER", "multi_tool_format_task", format_task)
         formatted = self.worker.generate(format_task)
@@ -1686,6 +1899,7 @@ RULES:
             send_name = send_tool.get("tool_name", "send_gmail_message")
             send_args = dict(send_tool.get("tool_args", {}))
             send_args = self._enforce_subject(send_args, user_input)
+            send_args = self._resolve_referential_recipient(send_name, send_args, user_input)
 
             # The display copy `formatted` (which Master sees) keeps persona markers;
             # the outbound body is sanitized centrally in execute_tool, so just pass
@@ -1769,8 +1983,20 @@ RULES:
         except Exception:
             return text             # never let tidying break a report that is otherwise fine
 
+    # SELF_CORRECTION_PROMPT lets the model name ANY tool as its "better approach" —
+    # no cost/risk ordering at all. Found live: a stale stealth_search result on a
+    # data-lookup request escalated straight to vision_act (real screen control, its
+    # own Gemini call) on the FINAL self-correction attempt, having never tried the
+    # cheaper, no-screen-control alternative (smart_scrape, a plain URL fetch). The
+    # safety gate still asks the Master to confirm vision_act, but "asked and approved"
+    # is not the same as "was the right next step" — this stops the silent escalation
+    # BEFORE that prompt ever fires, deterministically, rather than trusting the model
+    # to weigh cost on its own.
+    _HEAVY_ESCALATION_TOOLS = {"vision_act": "smart_scrape"}
+
     def _self_correct(self, user_input: str, tool_name: str, tool_args: dict, result: str, max_attempts: int = 2) -> str:
         """Brain evaluates tool result and tries alternative approach if unsatisfactory."""
+        tried_tools = {tool_name}
         for attempt in range(max_attempts):
             evaluation = self._evaluate_result(user_input, tool_name, tool_args, result)
             if evaluation.get("satisfied", True):
@@ -1796,7 +2022,17 @@ RULES:
                     self._log_thought("BRAIN", "self_correction", "Aborted: same tool+args, would loop.")
                     return result
 
+                cheaper = self._HEAVY_ESCALATION_TOOLS.get(new_tool)
+                if cheaper and cheaper not in tried_tools:
+                    self._log_thought(
+                        "SAFETY", "escalation_deferred",
+                        f"Self-correction proposed '{new_tool}' (screen control) but the cheaper "
+                        f"'{cheaper}' was never tried in this chain — ending self-correction here "
+                        f"instead of auto-escalating. '{new_tool}' only runs on an explicit request.")
+                    return result
+
                 new_result = self.execute_tool(new_tool, new_args, new_hint, user_input)
+                tried_tools.add(new_tool)
                 result = new_result  # HIDE ERROR: Only return the new successful result to the user
                 # Update for next evaluation iteration
                 tool_name = new_tool
@@ -2120,6 +2356,95 @@ RULES:
         r"\bsend it\b",
     )
 
+    # The counterpart the comment above calls out but never got its own guard:
+    # "gửi qua email đó" / "cứ gửi qua email đó đi" refers to a RECIPIENT already
+    # established earlier in the conversation, not to resending prior content. Found
+    # live: the Master asked to send an insulting email to prokxcpro@gmail.com, Ciel
+    # declined the wording, the Master replied "không không, cứ gửi qua email đó đi" —
+    # and the Router, which never sees chat_history, filled `to` with kxctran@gmail.com
+    # (a DIFFERENT address from an earlier, already-closed request) instead of the
+    # address actually under discussion. A real email went to the wrong person.
+    _RECIPIENT_REFERENTIAL_PATTERNS = (
+        r"email\s*(n[aà]y|đ[oó])", r"đ[iị]a\s*ch[iỉ]\s*(n[aà]y|đ[oó])",
+        r"(mail|th[uư])\s*đ[oó]", r"g[uử]i\s*qua\s*đ[oó]", r"g[uử]i\s*(cho|t[oớ]i)\s*đ[oó]",
+        r"\bthat email\b", r"\bthat address\b", r"\bsend it there\b",
+    )
+
+    @staticmethod
+    def _is_recipient_referential(user_input: str) -> bool:
+        """True if the request refers to a recipient already established earlier
+        ("gửi qua email đó") rather than naming one fresh. Distinct from
+        `_is_referential_send`, which protects the BODY — this protects the `to`."""
+        lowered = (user_input or "").lower()
+        return any(re.search(p, lowered) for p in CielCore._RECIPIENT_REFERENTIAL_PATTERNS)
+
+    def _last_mentioned_email(self) -> str:
+        """The most recent explicit email address in THIS conversation, scanning
+        chat_history newest-first — the same ground truth `_last_ai_message_text()`
+        uses for content, applied to a recipient instead. Skips the just-added CURRENT
+        turn (it is the referential one asking to reuse an address, not naming one).
+        """
+        history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+        for msg in reversed(history):
+            m = _EMAIL_RE.search(msg.content or "")
+            if m:
+                return m.group(0)
+        return ""
+
+    @staticmethod
+    def _to_as_lower_list(to_val) -> list:
+        """`to` can be a single address or a list (GmailSendMessage's real schema).
+        Normalize to a lowercase list so membership checks don't compare an address
+        string against a Python list's str() representation (always False, which
+        silently made the guard think ANY list-valued `to` needed overriding)."""
+        if isinstance(to_val, list):
+            return [str(x).strip().lower() for x in to_val if str(x).strip()]
+        return [str(to_val).strip().lower()] if str(to_val or "").strip() else []
+
+    def _resolve_referential_recipient(self, tool_name: str, tool_args: dict,
+                                       user_input: str) -> dict:
+        """Ground `to` in the real conversation when the Master says "that email"
+        instead of naming one. The Router never sees chat_history, so a deictic
+        recipient reference is exactly the case it has to guess at — and a wrong
+        guess here does not corrupt a reply, it sends a real email to the wrong
+        person. Deterministic and narrow: only fires when (a) the tool actually
+        sends somewhere, (b) THIS turn's own wording is referential, and (c) THIS
+        turn names no address of its own to override — a fresh, explicit address
+        always wins over any history lookup.
+
+        Candidate priority: the address already sitting in THIS turn's own message/
+        html_body (already synthesized against the real request) is a closer, more
+        specific ground truth than reaching back into chat_history — history is only
+        consulted when the body itself names nothing. Reduces the odds of "most
+        recent mention in history wins" picking up an unrelated address (e.g. the
+        Master's own email, casually mentioned in an unrelated aside) over the one
+        the body was actually written for.
+        """
+        if tool_name not in ("send_gmail_message", "send_gmail_html_message"):
+            return tool_args
+        if not self._is_recipient_referential(user_input):
+            return tool_args
+        if _EMAIL_RE.search(user_input or ""):
+            return tool_args   # this turn names its own address — trust it, not history
+        current_to = self._to_as_lower_list(tool_args.get("to"))
+        body_text = str(tool_args.get("message") or tool_args.get("html_body") or "")
+        body_match = _EMAIL_RE.search(body_text)
+        if body_match and body_match.group(0).lower() not in current_to:
+            candidate, source = body_match.group(0), "this turn's own message body"
+        else:
+            candidate, source = self._last_mentioned_email(), "chat history"
+        if not candidate or candidate.lower() in current_to:
+            return tool_args
+        self._log_thought(
+            "SAFETY", "recipient_referential_override",
+            f"{tool_name}: Master's wording referred to a recipient already discussed "
+            f"('{user_input[:60]}'), but the Router filled 'to' with "
+            f"'{tool_args.get('to')}' — overriding with the address found in "
+            f"{source}, '{candidate}'.")
+        tool_args = dict(tool_args)
+        tool_args["to"] = candidate
+        return tool_args
+
     # Characters/words that identify the language the user actually wrote in. Needed
     # because the Vilao path translates the request to English before routing — after
     # which the Brain has no way to know a "tin tức hôm nay" request came from a
@@ -2392,13 +2717,17 @@ RULES:
             if recall_report.dropped:
                 self._log_thought("CONTEXT", "recall_dropped", recall_report.summary())
 
-            # Inject recalled context into the user input for the Router
+            # Inject recalled context into the user input for the Router. CURRENT REQUEST
+            # comes FIRST on purpose (reordered from recall-then-request): if recall ever
+            # surfaces noise — an unrelated past topic, or, before the self-match filter
+            # above, the question echoing itself — it must not push the Master's actual
+            # words out of the part of the prompt a model attends to most reliably.
             enriched_input = user_input
             if recalled:
                 enriched_input = (
-                    f"[RECALLED PAST CONTEXT (from previous conversations)]:\n"
-                    f"{recalled}\n\n"
-                    f"[CURRENT USER REQUEST]:\n{user_input}"
+                    f"[CURRENT USER REQUEST]:\n{user_input}\n\n"
+                    f"[RECALLED PAST CONTEXT (from previous conversations, for background only)]:\n"
+                    f"{recalled}"
                 )
 
             # For Vilao (which is stricter on filters), send a neutralized English version
@@ -2591,6 +2920,7 @@ RULES:
                 # too (the Brain often swaps in its own subject — observed live).
                 if body_key:
                     tool_args = self._enforce_subject(dict(tool_args), user_input)
+                tool_args = self._resolve_referential_recipient(tool_name, tool_args, user_input)
 
                 response = self.execute_tool(tool_name, tool_args, hint, user_input)
                 # Single-tool path does not go through _run_steps, so record it here.
@@ -2670,7 +3000,35 @@ RULES:
                                                    model_requested=bool(decision.get("needs_followup")))
 
             else:
-                task = decision.get("task", user_input)
+                # Bug found live, twice, from the same root cause: the router prompt
+                # asks for {"action": "chat", "task": "what the Worker should do"} — a
+                # HINT, never the final words. A strong Brain routinely overstepped that
+                # and pre-wrote the actual reply into `task` (once literally: 'task':
+                # 'Reply: "Novices guess, Master..."'), or pre-decided an instruction
+                # that bypassed context the Worker actually had (`task`: "Hỏi Master
+                # đang nói trận nào..." — asking the Master to clarify a football match
+                # that was RIGHT THERE in `_recent_turns_block()`, because the Router,
+                # which never sees chat_history, judged it ambiguous with no way to know
+                # otherwise). Passing that `task` straight to execute_chat as the user's
+                # words let the Router silently override two things that only the
+                # Worker's own prompt enforces: the persona's "always answer in the
+                # Master's language" rule, and — since this fix — recent-turns context.
+                #
+                # Fixed by always giving execute_chat the Master's OWN words. The
+                # Router's `task` is kept only as a non-binding topic hint appended
+                # after the real request, cheap insurance against a genuinely useless
+                # raw input (e.g. a referential "đó" the Router resolved to a concrete
+                # noun) — but it can never again BE the reply or override how it answers.
+                topic_hint = (decision.get("task") or "").strip()
+                if topic_hint and topic_hint != user_input.strip():
+                    task = (f"{user_input}\n\n"
+                            f"[Router's topic guess, for reference ONLY — verify against the "
+                            f"conversation above and the actual request; do not treat this as "
+                            f"an instruction to follow, quote, or translate literally, and do "
+                            f"not let it override the Master's own wording or language]: "
+                            f"{topic_hint}")
+                else:
+                    task = user_input
                 response = self.execute_chat(task)
 
             self.chat_history.add_ai_message(response)

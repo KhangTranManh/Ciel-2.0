@@ -5,15 +5,9 @@
 <h1 align="center">Ciel 2.0</h1>
 
 <p align="center">
-  An autonomous AI assistant built on a three-tier <b>Brain → Worker → Middleware</b> pipeline —
-  it routes intent, executes real tools, self-audits its own output before it reaches you or your inbox,
-  and can now listen and talk back.
-</p>
-
-<p align="center">
-  <img src="docs/orb.jpg" alt="Ciel 2.0 — audio-reactive particle orb interface" width="860">
-  <br>
-  <em>The voice-first interface: an audio-reactive particle orb that reacts to Ciel's real state (idle / listening / thinking / speaking).</em>
+  An autonomous AI assistant built on a <b>Brain → Router → Middleware → Worker</b> pipeline,
+  extended by seven agent-capability tiers that close the gap between
+  <em>executing commands</em> and <em>pursuing goals</em>.
 </p>
 
 <p align="center">
@@ -40,6 +34,7 @@
 - [Voice I/O](#voice-io)
 - [Observability & Cost](#observability--cost)
 - [Backend API](#backend-api)
+- [Rebuilding the UI](#rebuilding-the-ui)
 - [File Structure](#file-structure)
 - [Customization](#customization)
 - [Tips for Better Results](#tips-for-better-results)
@@ -50,28 +45,59 @@
 
 ## What this is
 
-Ciel is a personal AI agent that does more than answer questions — it routes your request to the right internal logic, executes **real tools** (filesystem, shell, email, trading data, web search, git, screen control), and checks its own work before responding. It is not a single LLM call wrapped in a chat UI; it's a pipeline with three distinct model roles and a safety layer that is intentionally decoupled from content filtering.
+Ciel is a personal AI agent that does more than answer questions — it routes your
+request to the right internal logic, executes **real tools** (filesystem, shell,
+email, trading data, web search, git, screen control), and checks its own work before
+responding. It is not a single LLM call wrapped in a chat UI; it's a pipeline with
+distinct model roles and a safety layer intentionally decoupled from content
+filtering.
 
 Three layers, in order of importance:
 
-- **The core** — the `Brain → Worker → Middleware` loop in `core/`. Every request goes through it, and it's the part to understand first.
-- **The tool packs** — `skills/`, the extension surface. Adding a capability means writing one tool file, not touching routing.
-- **The optional layers** — a desktop/browser **UI** (`ui/`), a self-training **MLOps pipeline** (`autonomous_pipeline/`), and **voice I/O**. None are required to run Ciel from the CLI.
+- **The core** — the `Brain → Router → Middleware → Worker` loop in `core/`. Every
+  request goes through it, and it's the part to understand first.
+- **The tool packs** — `skills/`, the extension surface. Adding a capability means
+  writing one tool file, not touching routing.
+- **The optional layers** — a desktop/browser **UI** (`ui/`), a self-training **MLOps
+  pipeline** (`autonomous_pipeline/`), and **voice I/O**. None are required to run Ciel
+  from the CLI.
+
+On top of that core sit **seven agent-capability tiers**:
+
+| # | Tier | Closes the gap where… |
+|---|---|---|
+| 1 | Agent loop | a flat plan can't express "if X then Y" |
+| 2 | Task state | interrupted work used to vanish without a trace |
+| 3 | Permissions | approval was binary and arrived mid-execution |
+| 4 | Context discipline | prompt assembly had no budget and no audit trail |
+| 5 | Interruptibility | a long request could only be stopped by killing the process |
+| 6 | Proactivity | Ciel could only ever answer, never speak first |
+| 7 | A model of you | memory retrieved passages but never accumulated understanding |
+
+One rule runs through all seven: **the decision is deterministic Python; the model
+only plans or composes.** That is what makes them survive a change — or a downgrade —
+of model. Each tier is a separate `core/` module and each can be switched off in
+`.env`, degrading to the pre-tier behaviour rather than breaking. See
+[`instructionAI/architecture.md`](instructionAI/architecture.md) for the full detail on
+each one, including three bugs found by reading real transcripts (not test failures)
+and fixed this cycle.
 
 ```mermaid
 flowchart TD
-    U[User Input<br/>text or voice] --> RAG[RAG Recall + Compression]
+    U[User Input<br/>text or voice] --> RAG[RAG Recall + Compression<br/>self-match filtered]
     RAG --> ROUTER["Router / Brain<br/>classifies intent"]
-    ROUTER -->|chat| CHAT[Worker: chat response]
+    ROUTER -->|chat| CHAT["Worker: chat response<br/>+ recent-turns context"]
     ROUTER -->|tool| SAFE1{High-risk tool<br/>or dangerous code?}
     ROUTER -->|code| SAFE1
     ROUTER -->|multi_tool| SAFEGUARD["Workflow Safeguards<br/>auto-append missing send/write step"]
     SAFEGUARD --> SAFE1
-    SAFE1 -->|yes| GATE["Safety Gate<br/>Y/N confirmation"]
+    SAFE1 -->|yes| GATE["Safety Gate<br/>Y/N, or DEFER if unattended"]
     SAFE1 -->|no| EXEC[Execute Tool / Worker Format]
     GATE -->|approved| EXEC
     GATE -->|denied| CANCEL[Cancelled]
-    EXEC --> HEAL{Error?}
+    EXEC --> DEDUPE{Outbound send?}
+    DEDUPE -->|duplicate recipient this turn| SKIP[Skipped]
+    DEDUPE -->|no| HEAL{Error?}
     HEAL -->|yes, fixable| RETRY[Self-Healing retry]
     HEAL -->|no| MID{Email / report body?}
     RETRY --> MID
@@ -83,7 +109,10 @@ flowchart TD
     RESP -.optional TTS.-> SPK[Speak reply aloud]
 ```
 
-Every box above is a real module, not an aspiration — `core/router.py` (Router), `agent_system/models/worker.py` (Worker), `core/middleware.py` (Middleware), `core/recovery_manager.py` (Self-Healing). See [architect.md](architect.md) for the file-by-file breakdown.
+Every box above is a real module — `core/router.py`, `agent_system/models/worker.py`,
+`core/middleware.py`, `core/recovery_manager.py`. See
+[instructionAI/architecture.md](instructionAI/architecture.md) for the file-by-file
+breakdown.
 
 ---
 
@@ -91,16 +120,19 @@ Every box above is a real module, not an aspiration — `core/router.py` (Router
 
 | Requirement | Needed for | Notes |
 |---|---|---|
-| **Python 3.12+** | Core backend | `pandas-ta` (in `requirements.txt`) requires Python >=3.12 and has no PyPI distribution for older versions — confirmed live via a CI run that failed on 3.10 with "no matching distribution." Use a fresh virtualenv on a new clone. |
+| **Python 3.12+** | Core backend | `pandas-ta` requires Python >=3.12 with no PyPI distribution for older versions. Use a fresh virtualenv on a new clone. |
 | **pip** | Dependency install | `pip install -r requirements.txt` |
-| **At least one LLM provider API key** | Brain / Worker / Middleware | Gemini, DeepSeek, and/or Vilao. Ollama works fully offline if you'd rather not use a cloud key. |
-| **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip entirely for CLI-only use. |
+| **At least one LLM provider API key** | Brain / Worker / Middleware | Gemini, DeepSeek, and/or Vilao. Ollama works fully offline. |
+| **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip for CLI-only use. |
 | **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
-| **Google OAuth credentials** | Gmail tools | `credentials.json` + token — only if you use `search_gmail`/`send_gmail_message`/etc. Missing it disables *only* the Gmail tools; the rest of Ciel runs normally. |
-| **Microphone + internet** | Voice I/O only | Default STT/TTS backends (`google`, `edge-tts`) are free and need no key, but do need a network connection. Installed via `requirements.txt`. |
+| **Google OAuth credentials** | Gmail tools | `credentials.json` + token. Missing it disables *only* Gmail tools. |
+| **Microphone + internet** | Voice I/O only | Default STT/TTS backends are free and need no key, but do need a network connection. |
 | **TwelveData / Telegram tokens** | Trading tools, proactive digest | Optional; those tool packs degrade gracefully without them. |
 
-> **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a working PyTorch install. On some environments PyTorch's `c10.dll` fails to initialize (missing VC++ Redistributable, or a CPU without AVX). Ciel detects this and disables RAG gracefully rather than crashing — you lose long-term memory, not the whole system.
+> **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a
+> working PyTorch install. If `c10.dll` fails to initialize (missing VC++
+> Redistributable, or a CPU without AVX), Ciel disables RAG gracefully rather than
+> crashing — you lose long-term memory, not the whole system.
 
 ---
 
@@ -128,12 +160,14 @@ pip install -r requirements.txt
 
 ### 2. Configure `.env`
 
-Create a `.env` file in the repo root (no example is checked in — build it from the keys below):
+Create a `.env` file in the repo root (no example is checked in — build it from the
+keys below). Every tier below defaults to **off** or to the pre-tier behaviour, so a
+minimal `.env` (just providers) still runs the full core pipeline.
 
 ```dotenv
 # --- Providers (mix and match per tier) ---
 BRAIN_PROVIDER=vilao          # vilao | deepseek | gemini | ollama
-BRAIN_MODEL=alic/qwen3.7-max
+BRAIN_MODEL=nt/cx/gpt-5.6-sol
 WORKER_PROVIDER=deepseek
 CODER_MODEL=deepseek-chat     # NOT "WORKER_MODEL" — see gotcha below
 GEMINI_API_KEY=...
@@ -151,7 +185,7 @@ TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 
-# --- Agent loop (observe → re-plan → act). Costs nothing when it does not fire. ---
+# --- T1: Agent loop (observe → re-plan → act). Costs nothing when it does not fire. ---
 AGENT_LOOP_ENABLED=true
 AGENT_LOOP_MAX_ROUNDS=2       # extra rounds beyond the first
 AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
@@ -160,23 +194,26 @@ AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
 AGENT_PARALLEL_ENABLED=true
 AGENT_PARALLEL_MAX_WORKERS=4
 
-# --- Context discipline. 99% of a Brain call is fixed overhead; these bound it. ---
+# --- T4: Context discipline. 99% of a Brain call is fixed overhead; these bound it. ---
 CONTEXT_INPUT_BUDGET=1200        # ceiling on assembled per-request context; 0 = no budget
 CONTEXT_RECALL_BUDGET=600        # ceiling on RAG recall — the only data-sized block
+CONTEXT_RECENT_TURNS_ENABLED=true    # inject the last few turns into the RESPONSE path only
+CONTEXT_RECENT_TURNS_BUDGET=500
 # full | slim | none. The router emits JSON only, yet `full` sends it the 1,205-token
 # persona. Measured: `slim` = -27% Brain input tokens, 10/11 identical decisions (the
 # 11th was sampling noise on both arms). Default stays `full` — see note.md.
 ROUTER_PERSONA_MODE=full
 
-# --- User model: the PUSH side of memory (facts.json stays pull-only + never injected) ---
+# --- T7: User model, the PUSH side of memory (facts.json stays pull-only + never injected) ---
 USER_MODEL_ENABLED=true          # renders to "" while empty, so it costs 0 until it learns
 USER_MODEL_TOKEN_BUDGET=250      # HARD cap on the injected profile block
 USER_MODEL_LEARN_ENABLED=true    # notice a preference unprompted; gated by free Python
 USER_MODEL_LEARN_DAILY_LIMIT=20  # ceiling on extraction calls per day
 
-# --- Proactivity: let Ciel speak first. OFF by default, opt-in per trigger by name. ---
+# --- T6: Proactivity — let Ciel speak first. OFF by default, opt-in per trigger by name. ---
 PROACTIVE_ENABLED=false
-PROACTIVE_TRIGGERS=              # unfinished_task,daily_cost,repeated_failure
+PROACTIVE_TRIGGERS=              # unfinished_task,daily_cost,repeated_failure,deferred_approval,
+                                  # digest,morning_digest,price_alert,important_email,stale_todo
 PROACTIVE_DAILY_BUDGET=8         # max interruptions/day; the rest drop to the digest
 PROACTIVE_IDLE_SECONDS=600       # past this, the CLI stops counting as a watched channel
 PROACTIVE_ASK_ESCALATE_SECONDS=1800   # unanswered question re-routes to Telegram
@@ -204,12 +241,13 @@ CIEL_AUTO_TOOLS=              # extra tools to treat as read-only / never prompt
 EMAIL_BYPASS_BRAIN=false
 
 # --- Optional voice I/O (all have working defaults) ---
-STT_BACKEND=google            # google | whisper | gemini
+STT_BACKEND=whisper           # whisper | google | gemini
 TTS_BACKEND=edge              # edge | pyttsx3 | space
 TTS_VOICE=vi-VN-HoaiMyNeural  # or vi-VN-NamMinhNeural
 ```
 
-> **Gotcha:** `agent_system/config.py` reads the Worker model from `CODER_MODEL`, not `WORKER_MODEL`. A `.env` entry literally named `WORKER_MODEL` is silently ignored.
+> **Gotcha:** `agent_system/config.py` reads the Worker model from `CODER_MODEL`, not
+> `WORKER_MODEL`. A `.env` entry literally named `WORKER_MODEL` is silently ignored.
 
 ### 3. Run the CLI
 
@@ -217,15 +255,19 @@ TTS_VOICE=vi-VN-HoaiMyNeural  # or vi-VN-NamMinhNeural
 python main.py
 ```
 
-Type a request at the `Master:` prompt. High-risk actions (file delete, shell exec, sending email, etc.) ask for a `Y/N` confirmation unless `DISABLE_SAFETY_GATE=true`.
+Type a request at the `Master:` prompt. High-risk actions (file delete, shell exec,
+sending email, etc.) ask for a `Y/N` confirmation unless `DISABLE_SAFETY_GATE=true`.
+Ctrl+C during a request cancels **that request** (Tier 5); Ctrl+C at the prompt exits.
 
 **Talk to it (optional):**
 ```bash
 python main.py --voice --speak     # speak requests, hear replies
 ```
-- `--voice`: press Enter on an empty line to speak, or type to override; `:v` does a one-off voice capture in any mode.
+- `--voice`: press Enter on an empty line to speak, or type to override; `:v` does a
+  one-off voice capture in any mode.
 - `--speak`: Ciel reads each reply aloud (the printed transcript is unchanged).
-- Test each modality standalone first: `python -m core.voice_input` (mic → text) and `python -m core.speech_output "Xin chào Master"` (text → speech).
+- Test each modality standalone first: `python -m core.voice_input` (mic → text) and
+  `python -m core.speech_output "Xin chào Master"` (text → speech).
 
 ### 4. (Optional) Run the API server + UI
 
@@ -241,132 +283,315 @@ Start-Process python main_api.py
 cd ui; npm install; npm run dev
 ```
 
-In the UI, click the 🔇 → 🔊 button beside the input box to have Ciel read replies aloud (uses the same neural voice as the CLI). For the wrapped desktop app instead of the browser tab: `cd ui && npm run tauri dev` — see [ui/README.md](ui/README.md).
+Click the 🔇 → 🔊 button beside the input box to have Ciel read replies aloud (same
+neural voice as the CLI). For the wrapped desktop app instead of the browser tab:
+`cd ui && npm run tauri dev` — see [ui/README.md](ui/README.md).
 
 ---
 
 ## Feature Overview
 
 ### Routing & Execution
-- **Three-Tier Architecture** — Brain (intent routing/planning) → Worker (content/code generation) → Middleware (scoped finalizer for email/report bodies, fail-open by design).
-- **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or `multi_tool`, each with its own execution path.
-- **Agent loop — observe, re-plan, act** (`core/continuation.py`) — a plan is a flat list of calls chosen before anything runs, so *"check git status, and if it's clean, commit"* used to be **structurally unrepresentable**. The loop closes that: after a plan executes, five deterministic signals decide whether to look again with the real results in view (conditional wording · an unresolved `{step_N}` reaching a tool · a step that failed while later steps ran · fan-out over a set of unknown size · an optional planner hint). Whether to loop is decided in **pure Python**, so an ordinary request pays **zero extra tokens** and no model — however confused — can make it unbounded. Every ceiling (rounds, planner calls, wall-clock, steps per round) is enforced in code, and any failure quietly keeps the first round's answer.
-- **Parallel tool execution** (`core/parallel.py`) — provably independent steps in one plan run concurrently. Opt-in per tool (`parallel_safe` in a skill's factory), because auto-registration means a blacklist would silently parallelise a newly added mutating tool. Measured on tool time alone: 9.3× on file fan-out, 2.3× on web scrapes.
-- **Durable task state** (`core/task_state.py`) — a job interrupted by a crash, restart or closed terminal leaves a record instead of vanishing; the CLI reports it on the next launch. `đang làm gì` / `status` is answered straight from that record — **0 LLM calls, ~0.1s**.
-- **Deterministic Workflow Safeguards** — if a plan is missing its terminal send step (email intent + address) or write step (explicit path + write verb), it's auto-appended in code, not left to the Brain to remember. The same layer enforces an explicitly-requested email subject (`subject exactly '...'`) and blocks any unsynthesized `[SYNTHESIZE…]`-style placeholder from reaching a file or an inbox — matched by pattern, so it holds even when the Brain paraphrases the marker.
-- **Dependent multi-tool steps** — a later step can consume an earlier one's real output via `{{prev}}` / `{{step_N}}` tokens in its args, substituted deterministically at run time (no LLM). Independent-tool plans are unchanged.
-- **Self-Healing with a Skip-List** — multi-attempt autonomous recovery for tool/code errors, but skips error classes no retry can ever fix (missing library, network timeout, geo-restriction) instead of burning a guaranteed-to-fail Worker call.
-- **Memory-aware recall fallback** — when a memory question is routed to a workspace-inspection tool that comes back empty, Ciel falls back to the recalled long-term context (labeled "unverified from workspace") instead of returning a bare directory listing.
-- **Dated, sourced web search** — `stealth_search` reads Google News RSS first (free, no API key), falling back to DuckDuckGo, so every hit carries a real publication date and outlet; undated results are labeled so the model can't invent one. A generic "what's the news" pulls the top-stories feed rather than keyword-matching articles *titled* "top news headlines", recency is enforced on the real timestamps, and section landing pages are dropped. The query is built in **your** language — a Vietnamese question returns Vietnamese outlets, an English one stays international.
+- **Brain → Router → Middleware → Worker** — intent routing/planning, a scoped
+  fail-open finalizer for email/report bodies, and content/code generation, each an
+  independently configurable LLM tier.
+- **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or
+  `multi_tool`. For `chat`, the router's own draft `task` is treated as a hint only —
+  the Worker always sees the Master's real words, so a strong Brain pre-writing the
+  final reply (once caught doing exactly that, in the wrong language) can never
+  silently override how or in what language the answer comes out.
+- **Agent loop — observe, re-plan, act** (Tier 1, `core/continuation.py`) — closes the
+  gap where a flat plan can't express "check git status, and if it's clean, commit".
+  Five deterministic signals decide whether another round is warranted; a sixth,
+  higher-priority check — an explicit "chỉ … thôi" / "only …" — vetoes all of them, so
+  the loop never does work a human explicitly bounded against. Zero extra tokens on an
+  ordinary request; every ceiling (rounds, calls, wall-clock) enforced in code.
+- **Parallel tool execution** (`core/parallel.py`) — provably independent steps in one
+  plan run concurrently. Opt-in per tool, since auto-registration means a blacklist
+  would silently parallelise a newly added mutating tool. 9.3× measured on file
+  fan-out.
+- **Durable task state** (Tier 2, `core/task_state.py`) — an interrupted job leaves a
+  resumable record instead of vanishing. `đang làm gì` / `status` answers from it —
+  **0 LLM calls, ~0.1s**.
+- **Bounded, auditable context** (Tier 4, `core/context.py`) — one assembler with a
+  token budget and a log line, replacing scattered string concatenation. Blocks drop
+  **whole, never truncated**. RAG recall is bounded at its source and filtered against
+  recalling its own prior failure on a repeated question.
+- **Recent-turn memory for replies** — the last few turns are injected into the
+  response path (never routing), fixing a real gap where a follow-up like "tại sao lại
+  thế" got answered with no memory of the turn just completed.
+- **Interruptible requests** (Tier 5) — Ctrl+C or the UI's Stop button cancels the
+  in-flight request at the next **step boundary**, never mid-tool. The job closes as
+  `cancelled`, distinguishable from a crash.
+- **Deterministic Workflow Safeguards** — a plan missing its terminal send/write step
+  gets one appended in code, not left to the Brain to remember. Enforces an explicit
+  subject and blocks any unsynthesized placeholder from reaching a file or inbox.
+- **One delivery per recipient per turn** — two independent mechanisms used to
+  complete a plan's missing send step and could both fire, delivering the same report
+  twice with different subjects. Now deduped by recipient at the single choke point
+  every send passes through.
+- **Dependent multi-tool steps** — `{{prev}}`/`{{step_N}}` substituted deterministically
+  at run time (no LLM).
+- **Self-Healing with a Skip-List** — skips error classes no retry can ever fix instead
+  of burning a guaranteed-to-fail Worker call.
+- **Memory-aware recall fallback** — an inspection tool that comes back empty falls
+  back to recalled long-term context, labeled "unverified from workspace".
+- **Dated, sourced web search** — `stealth_search` reads Google News RSS first, falling
+  back to DuckDuckGo; every hit carries a real publication date and outlet, and the
+  query is built in **your** language.
+
+### Proactivity & Personalisation
+- **Ciel speaks first** (Tier 6, `core/notifier.py` + `core/triggers.py`) — nine
+  condition triggers in three groups: watching itself (an abandoned job, a cost spike,
+  a repeatedly failing tool, actions awaiting approval), the clock, and the outside
+  world behind thresholds you set. Every check is plain Python over data already on
+  disk — **an idle Ciel costs zero tokens**. Off by default, opt-in per trigger by name.
+- **Anti-noise, enforced in code, not requested in a prompt** — a notification with no
+  concrete action cannot interrupt; identity comes from the *thing* so a standing
+  condition is announced once; delivery routes by **liveness**, since a running process
+  is not a present human; a daily budget caps interruptions; a finding you keep
+  ignoring goes quiet after N repeats.
+- **Silence is never consent** — a trigger firing at 03:00 has nobody to ask, so risky
+  tools resolve to **`DEFER`**: recorded and raised at your next interaction, never
+  auto-approved. Session grants, plan approvals, even `DISABLE_SAFETY_GATE` are
+  ignored in that context. Deferred actions are **never replayed** automatically.
+- **A model of you** (Tier 7, `core/user_model.py`) — a bounded profile injected only
+  where a preference actually changes the output. What you **said** outranks what
+  Ciel **inferred**; non-stated traits **decay**; a **hard token ceiling** means it
+  costs literally zero until it has learned something.
+- **It learns without being told to remember** — a free deterministic gate skips
+  one-off wording outright; only explicit durable wording buys a single extraction
+  call, on a background thread, so an ordinary turn costs nothing and the reply is
+  never delayed.
+- **Credentials can never enter the injected store** — `facts.json` stays pull-only;
+  `user_model.json` is injected and deterministically refuses anything that looks like
+  a credential. The profile is human-readable and editable on purpose; `forget()`
+  really deletes.
 
 ### Safety
-- **Decoupled Safety Model** — content-filter permissiveness (`SAFETY_OPEN`) and the destructive-action confirmation gate (`DISABLE_SAFETY_GATE`) are independent flags on purpose; a denied confirmation can never be silently overridden by the content-filter setting.
-- **Three-way permissions** (`core/permissions.py`) — every `(tool, args)` resolves to `AUTO` (read-only, never interrupts), `ASK`, or `DENY` (`CIEL_DENY_TOOLS` — refused outright, unreachable by any grant or by an open safety gate).
-- **Approve the plan, not the fragments** — a multi-step plan raises **one** prompt listing every step that needs approval, **before the first step runs**. Declining means *nothing ran*; the old per-call gate asked about step 3 only once steps 1–2 had already happened. Approvals are scoped to the exact `(tool + args)` reviewed, so a step the agent loop invents later — same tool, different arguments — is still asked about.
-- **Session grants** — answer `A` at a prompt to stop being asked about that one tool for the rest of the run. Held in memory only, never written to disk, and refused for deny-listed tools.
-- **High-Risk Tool Gate** — eight tools that touch the outside world (`delete_file`, `execute_shell_command`, the three Gmail send tools, `trash_email`, `git_confirm_push`, `vision_act`) require an explicit `Y/N` before running.
-- **Confirmations survive a restart** — a preview tool declares its own follow-up via `make_result(confirm=…)`; a later bare "yes" executes it with **zero LLM calls**, and the pending action is persisted, so it is not lost if the process dies. Only one can be outstanding: a new risky request while one is pending is refused deterministically rather than silently dropping it.
-- **Dangerous-Code Gate** — any Worker-written script or file (not just the known high-risk tools) is scanned for destructive patterns — drive format, `shutil.rmtree`, fork bombs — and gated behind the same confirmation.
-- **Sandboxed Filesystem** — file tools are quarantined to `ciel_workspace/` / `agent_output/`; paths that escape raise an error.
+- **Decoupled Safety Model** — content-filter permissiveness and the destructive-action
+  confirmation gate are independent flags on purpose.
+- **Three/four-way permissions** (`core/permissions.py`) — every `(tool, args)`
+  resolves to `AUTO`, `ASK`, `DENY`, or (unattended) `DEFER`.
+- **Approve the plan, not the fragments** — a multi-step plan raises **one** prompt
+  covering every step needing approval, before the first step runs. Approvals are
+  scoped to the exact `(tool + args)` reviewed.
+- **Session grants** — answer `A` at a CLI prompt to stop being asked about that one
+  tool for the rest of the run. In-memory only, refused for deny-listed tools.
+- **High-Risk Tool Gate** — eight tools that touch the outside world require an
+  explicit `Y/N`, plus a content-based gate for destructive patterns in
+  generated code/writes.
+- **Confirmations survive a restart** — a preview tool declares its own follow-up; a
+  later bare "yes" executes it with zero LLM calls, persisted so a process death
+  doesn't lose it.
+- **Sandboxed Filesystem** — file tools are quarantined to `ciel_workspace/` /
+  `agent_output/`.
 
 ### Memory & Data
-- **Hybrid RAG Memory** — short-term chat history plus long-term ChromaDB semantic memory, with two-tier compression (regex/structural, then Worker) to keep recalled context cheap.
-- **Email Send Pipeline** — market/asset reports, research/news digests, and document summaries each gather real tool data *first*, then compose; anti-fabrication rules block invented prices and hollow "attached" shells, and every outbound body passes one deterministic sanitizer.
+- **Hybrid RAG Memory** — short-term chat history plus long-term ChromaDB semantic
+  memory, filtered against recalling a question's own prior failure as "context".
+- **Two memory stores, split by security boundary** — `facts.json` (pull-only, may
+  hold secrets, never injected) vs. `user_model.json` (injected, refuses secrets).
+- **Email Send Pipeline** — market/asset reports, research digests, and document
+  summaries gather real tool data first, then compose; anti-fabrication rules block
+  invented prices and hollow "attached" shells.
 
 ### Voice I/O
-- **Speech-to-Text (CLI)** — talk to Ciel; `core/voice_input.py` captures the mic and transcribes it, then feeds the text into the exact same pipeline the keyboard uses.
-- **Text-to-Speech (CLI + UI)** — Ciel talks back with free neural voices (Vietnamese by default). A deterministic normalizer strips markdown/emojis/tags before speaking, so the persona and text formatting are never dumbed down for voice.
-- **Swappable backends** — STT and TTS backends are selected via `.env`; defaults are free and need no API key. See [Voice I/O](#voice-io).
+- **Speech-to-Text (CLI)** — `core/voice_input.py` captures the mic and transcribes,
+  feeding the exact same pipeline the keyboard uses.
+- **Text-to-Speech (CLI + UI)** — free neural voices (Vietnamese by default); a
+  deterministic normalizer strips markdown/emojis/tags without touching the persona.
+- **Swappable backends** — selected via `.env`; defaults are free, no API key needed.
 
 ### Observability & Cost
-- **Full Audit Trail** — every RAG recall, route decision, tool result, healing attempt, and Middleware review is logged to `ciel_data/logs/thoughts.log`.
-- **Token-Precise Cost Tracking** — every real LLM call logs its exact provider token counts; live vitals show per-tier tokens and estimated USD, and `scripts/cost_report.py` aggregates spend over time. See [Observability & Cost](#observability--cost).
+- **Full Audit Trail** — every RAG recall, route decision, tool result, healing
+  attempt, and Middleware review logged to `ciel_data/logs/thoughts.log`.
+- **Token-Precise Cost Tracking** — exact provider token counts per call; live vitals
+  show per-tier tokens and estimated USD; `scripts/cost_report.py` aggregates over time.
 
 ### Interface
-- **Audio-Reactive Orb** — a full Three.js particle orb (2000 particles, connecting lines, travelling "electrons") is the centerpiece. It reflects Ciel's real state (idle / listening / thinking / speaking) and pulses to the actual TTS voice via an `AnalyserNode`. Layout: skills (left) · orb (center) · conversation (right).
-- **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with zero code changes between the two. The skill list and live activity feed are 100% backend-driven.
-- **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction when no API/tool exists for a task.
-- **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider (Vilao, DeepSeek, Gemini, Ollama), swappable via `.env` with no code changes.
+- **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with
+  zero code changes between the two. Skills panel (left, 100% backend-driven) and a
+  chat workbench (right) with a stop button, safety-gate dialog, and live vitals.
+- **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction
+  when no API/tool exists for a task.
+- **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider,
+  swappable via `.env` with no code changes.
 
 ### Autonomy
-- **Autonomous MLOps Pipeline** (`autonomous_pipeline/`) — a background daemon that simulates a Master, runs real Ciel tasks, audits them with an independent Judge model, and grows a Worker fine-tuning dataset — including a Chaos Injector that manufactures hard edge cases (timeouts, missing files, API errors) the normal loop never generates on its own.
-- **Proactive Scheduler** — zero-token standby background tasks (e.g. an 08:00 market/Gmail digest, a 23:00 memory cleanse) that call tools directly and never pollute conversational memory.
+- **Autonomous MLOps Pipeline** (`autonomous_pipeline/`) — a background daemon that
+  simulates a Master, runs real Ciel tasks, audits them with an independent Judge
+  model, and grows a Worker fine-tuning dataset, including a Chaos Injector for hard
+  edge cases the normal loop never generates.
+- **Proactive Scheduler** — zero-token standby background tasks that call tools
+  directly and never pollute conversational memory.
 
 ---
 
 ## How It Works
 
-1. **User input arrives** at `CielCore.process()` (`core/llm_connector.py`) — from the CLI loop, the WebSocket API, a voice transcript, or the autonomous pipeline's task generator.
-2. **RAG recall** searches ChromaDB for semantically relevant past context and injects a compressed summary into the prompt — skipped for short/low-relevance queries to avoid noise.
-3. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or `multi_tool` and returns a structured plan.
-4. **Workflow safeguards** run before execution: if the plan implies a send or write action but the corresponding step is missing, it's appended deterministically.
-5. **The Safety Gate** intercepts high-risk tool calls and any code/file write matching a dangerous pattern, blocking until the user approves (unless the gate is disabled for unattended flows).
-6. **Execution** happens via `ToolManager` — real API calls, file writes, shell commands. Errors trigger **Self-Healing**, which retries with an escalating strategy but skips error classes it knows it can't fix.
-7. **The Worker** formats the raw tool result into the final response, always instructed to report only what the tool actually returned — never to invent data.
-8. **Middleware** (if enabled) reviews outbound email/report bodies specifically, catching topic mismatches and internal contradictions a regex sanitizer can't — and edits the body in place rather than blocking, failing open on any error.
-9. **The response returns** to the user (and is optionally spoken aloud), and the exchange is saved to memory, with overflow archived into the long-term vector store.
+1. **User input arrives** at `CielCore.process()` (`core/llm_connector.py`) — from the
+   CLI loop, the WebSocket API, a voice transcript, or the autonomous pipeline.
+2. **RAG recall** searches ChromaDB for relevant past context, filters out a result
+   that is just the current question recalling its own prior failure, and injects a
+   compressed summary — skipped for short/low-relevance queries.
+3. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or
+   `multi_tool` and returns a structured plan. For `chat`, its own `task` field is
+   never handed to the Worker as the request — only as a labelled hint.
+4. **Workflow safeguards** run before execution: a missing send/write step is appended
+   deterministically.
+5. **The Safety Gate** intercepts high-risk calls and dangerous-pattern writes,
+   blocking until approved — or, if nobody is present, deferring rather than assuming
+   consent.
+6. **Execution** happens via `ToolManager`. Errors trigger **Self-Healing**, which
+   retries with an escalating strategy but skips error classes it knows it can't fix.
+   An outbound send is deduped against this turn's earlier sends by recipient.
+7. **The Worker** formats the raw tool result into the final response — with recent
+   conversation turns in view — always instructed to report only what the tool
+   actually returned.
+8. **Middleware** (if enabled) reviews outbound email/report bodies, catching
+   mismatches a regex sanitizer can't, editing in place and failing open on any error.
+9. **The response returns**, optionally spoken aloud, saved to memory with overflow
+   archived into the vector store, and the Tier-2 task record closes.
 
 ### What makes this different
 
-Most agent frameworks treat "the LLM decided to do X" as sufficient. Ciel treats the LLM's decision as a *proposal* that gets checked at multiple points: a workflow safeguard verifies the plan is actually complete, a safety gate verifies risky actions are approved, a self-healing skip-list verifies retries aren't wasted on unfixable errors, and a Middleware tier verifies the final output doesn't contradict itself — all *before* anything is written to disk or sent to a real inbox. None of these checks are another LLM call pretending to be certain; most are deterministic code, and the one LLM-based check (Middleware) is scoped narrowly and fails open specifically so it can never become the single point of failure for a send.
+Most agent frameworks treat "the LLM decided to do X" as sufficient. Ciel treats the
+LLM's decision as a *proposal* checked at multiple points: a workflow safeguard
+verifies the plan is complete, a safety gate verifies risky actions are approved (or
+defers them when nobody is present to ask), a duplicate-send guard verifies a report
+isn't mailed twice, a self-healing skip-list verifies retries aren't wasted on
+unfixable errors, and a Middleware tier verifies the final output doesn't contradict
+itself — all *before* anything is written to disk or sent to a real inbox. None of
+these checks are another LLM call pretending to be certain; almost all are
+deterministic code, and the one LLM-based check (Middleware) is scoped narrowly and
+fails open specifically so it can never become the single point of failure for a send.
 
 ---
 
 ## Voice I/O
 
-Voice is a modality layer, not a rewrite — a spoken sentence becomes text and flows through the same `run_step()` the keyboard uses, and a reply is spoken *after* a deterministic normalizer cleans it. The prompts and persona are never changed to be "speech-friendly"; the text UI, HUD, and email keep their rich formatting.
+Voice is a modality layer, not a rewrite — a spoken sentence becomes text and flows
+through the same `run_step()` the keyboard uses, and a reply is spoken *after* a
+deterministic normalizer cleans it. The prompts and persona are never changed to be
+"speech-friendly"; text, HUD, and email keep their rich formatting.
 
 ### Speech-to-Text (`core/voice_input.py`)
 
-Mic capture uses `sounddevice` (bundles PortAudio — installs cleanly on Windows, no PyAudio/compiler). Energy-based endpointing auto-calibrates ambient noise and stops on silence.
+Mic capture uses `sounddevice`. Energy-based endpointing auto-calibrates ambient noise
+and stops on silence.
 
 | `STT_BACKEND` | Engine | Notes |
 |---|---|---|
-| `google` *(default)* | SpeechRecognition → free Google Web Speech | No API key, supports vi-VN, needs internet |
-| `whisper` | faster-whisper (offline) | Best Vietnamese accuracy; install `faster-whisper` |
+| `whisper` *(default)* | `faster-whisper`, local CPU | Offline, no key, good Vietnamese accuracy — chosen to avoid depending on a free cloud endpoint |
+| `google` | SpeechRecognition → free Google Web Speech | No API key, supports vi-VN, needs internet |
 | `gemini` | google-genai | Needs `GEMINI_API_KEY` |
 
 ### Text-to-Speech (`core/speech_output.py`)
 
-A `to_speech()` normalizer strips markdown, emojis, `[TAG]`-style headers, code blocks, and URLs (numbers preserved) before synthesis — the same pattern as the email sanitizer.
+`to_speech()` strips markdown, emojis, `[TAG]`-style headers, code blocks, and URLs
+(numbers preserved) before synthesis.
 
 | `TTS_BACKEND` | Engine | Notes |
 |---|---|---|
-| `edge` *(default)* | edge-tts (Microsoft neural voices) | Free, no key, vi-VN neural; playback via built-in Windows MCI |
+| `edge` *(default)* | edge-tts (Microsoft neural voices) | Free, no key, vi-VN neural; unofficial endpoint — backoff retry handles sporadic failures |
 | `pyttsx3` | Offline OS/SAPI voices | No internet; weaker Vietnamese |
-| `space` / `rvc` | mikuTTS Hugging Face Space (RVC character voice) | Experimental; ~25s/utterance, may sleep — not a default |
+| `space` / `rvc` | mikuTTS HF Space (RVC character voice) | Experimental; ~25s/utterance, may sleep — not a default |
 
-Prosody knobs: `TTS_VOICE`, `TTS_RATE`, `TTS_PITCH`, `TTS_VOLUME`. RVC knobs (only for `TTS_BACKEND=space`): `RVC_MODEL`, `RVC_TTS_VOICE`, `RVC_F0_UP`, `RVC_F0_METHOD`, `RVC_INDEX_RATE`, `RVC_PROTECT`, `RVC_SPACE`.
+Prosody knobs: `TTS_VOICE`, `TTS_RATE`, `TTS_PITCH`, `TTS_VOLUME`. RVC-only (only for
+`TTS_BACKEND=space`): `RVC_MODEL`, `RVC_TTS_VOICE`, `RVC_F0_UP`, `RVC_F0_METHOD`,
+`RVC_INDEX_RATE`, `RVC_PROTECT`, `RVC_SPACE`.
 
 ### In the UI
 
-Voice **output** is wired end-to-end: the 🔊 toggle subscribes to the reply event, POSTs the text to the backend `/tts` endpoint (which runs the **same** `to_speech()` + edge-tts as the CLI), and plays the returned MP3 — so the browser gets identical quality with no client-side voice code. Voice **input** in the UI is still a typed-only stub (`ui/src/io/input/VoiceInput.tsx`).
+Voice **output** is wired end-to-end: the 🔊 toggle subscribes to the reply event,
+POSTs the text to `POST /tts` (the same `to_speech()` + edge-tts as the CLI), and plays
+the returned MP3. Voice **input** in the UI uses the browser's native Web Speech API —
+a separate, intentional engine from the CLI's server-side STT.
 
-> **GPU note:** none of the default voice backends use your local GPU — edge-tts and the RVC Space run on Microsoft/HF servers (your machine only does HTTP + playback), and `pyttsx3` is CPU. A *locally downloaded* neural TTS/RVC model would be GPU-heavy and is only worth it with a real NVIDIA GPU + CUDA `torch`.
+> **GPU note:** none of the default voice backends use your local GPU — edge-tts and
+> the RVC Space run on remote servers, `pyttsx3`/`faster-whisper` are light CPU
+> workloads.
 
 ---
 
 ## Observability & Cost
 
-Ciel is designed to be inspectable — you can always answer "what did it do and what did it cost?"
+Ciel is designed to be inspectable — you can always answer "what did it do and what
+did it cost?"
 
-- **`thoughts.log`** (`ciel_data/logs/thoughts.log`) — the full raw audit trail: RAG recalls, route decisions, tool results, healing attempts, Middleware reviews, and one `[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line per real model call. `scripts/format_thoughts_log.py` renders it into a readable Markdown/JSONL view for a specific turn.
-- **Live cost in vitals** — the API's vitals feed reports real per-tier call counts, **exact** token totals (from the provider), and an **estimated** USD cost, live for the session. Prices live in `core/cost.py` and are overridable without code changes via `ciel_data/model_pricing.json` (unknown models fall back to $0 but are still counted).
-- **Cumulative report** — `python -m scripts.cost_report [--since-days N] [--json]` mines the log and aggregates token usage and estimated spend by tier, model, and day.
-- **Prompt harness** — `python -m scripts.prompt_harness --min-count 3` mines the log for recurring failure patterns and points at which prompt/file is actually worth patching — deterministic, never auto-edits.
+- **`thoughts.log`** (`ciel_data/logs/thoughts.log`) — the full raw audit trail: RAG
+  recalls, route decisions, tool results, healing attempts, Middleware reviews, and one
+  `[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line per real model call.
+  `scripts/format_thoughts_log.py` renders a readable view for a specific turn.
+- **Live cost in vitals** — the API's vitals feed reports real per-tier call counts,
+  exact token totals, and an estimated USD cost, live for the session. Prices live in
+  `core/cost.py`, overridable via `ciel_data/model_pricing.json` with no code change.
+- **Cumulative report** — `python -m scripts.cost_report [--since-days N] [--json]`
+  aggregates usage and estimated spend by tier, model, and day.
+- **Prompt harness** — `python -m scripts.prompt_harness --min-count 3` mines the log
+  for recurring failure patterns and points at what's actually worth patching —
+  deterministic, never auto-edits.
 
 ---
 
 ## Backend API
 
-`python main_api.py` serves a FastAPI app (default `http://localhost:8000`). The UI talks to it; you can too.
+`python main_api.py` serves a FastAPI app (default `http://localhost:8000`). The UI
+talks to it; you can too.
 
 | Endpoint | Purpose |
 |---|---|
-| `WS /ws` | Main channel — chat messages, streamed thoughts, live vitals, and `Y/N` safety confirmations. |
+| `WS /ws` | Main channel — chat messages, streamed thoughts, live vitals, `Y/N` safety confirmations, and cancellation. |
 | `GET /health` | Liveness/readiness probe (`ready` flips true once the agent boots). |
-| `GET /skills` | Dynamic manifest of loaded skill modules + tools — the UI renders its skill panels from this, so a new `skills/*.py` file appears with zero frontend edits. |
-| `POST /tts` | `{ "text": "..." }` → normalized edge-tts MP3 (`audio/mpeg`). Powers the UI's read-aloud toggle; `204` when there's nothing speakable. |
+| `GET /skills` | Dynamic manifest of loaded skill modules + tools — the UI renders its skill panels from this. |
+| `POST /tts` | `{ "text": "..." }` → normalized edge-tts MP3 (`audio/mpeg`). `204` when there's nothing speakable. |
+
+### WebSocket messages
+
+| Direction | `type` | Meaning |
+|---|---|---|
+| server → client | `thought` | one entry tailed live from `thoughts.log` (not rendered by the current UI) |
+| server → client | `vitals` | per-tier call counts, exact tokens, estimated USD |
+| server → client | `response` | the final reply for a turn |
+| server → client | `status` | transient state |
+| server → client | `error` | failure surfaced to the user |
+| server → client | `confirm_request` | safety gate needs a decision |
+| client → server | `confirm_response` | `{"approved": true\|false}` |
+| client → server | `cancel` | Tier-5 interrupt — wired both sides |
+| client → server | *(raw text)* | a user message |
+
+`confirm_request` carries **two different cases**: `tool_name` = a real tool means one
+risky action, while `tool_name == "plan"` is the Tier-3 plan-level approval — one
+question covering every step, asked *before anything runs*, where "no" means
+**nothing ran**.
+
+---
+
+## Rebuilding the UI
+
+The backend has capabilities that a frontend written against an older protocol would
+silently miss. Two are finished and simply not surfaced in the current UI yet:
+
+| Gap | Backend is ready | What the UI needs |
+|---|---|---|
+| **Proactive notifications** | `core/notifier.py` routes app → CLI → Telegram; `AppChannel` is first in priority | `main_api.py` never constructs an `AppChannel`, so a Tier-6 notification falls through to Telegram even with the UI open. |
+| **Deferred approvals** | `DeferredStore` records background actions blocked because nobody was present | surface `core.deferred.pending()` as a queue; offer **"re-issue this request"**, never "approve and run it now". |
+
+Cancellation (Tier 5) is already wired end-to-end — see below — so it is not in this
+list.
+
+New read-only surfaces worth building panels for: `core.tasks.recent()` (durable job
+history — `interrupted` jobs are resumable), `core.user_model.live_traits()` +
+`explain(key)` (**let the Master see, question, and delete what Ciel believes about
+them**), and `notifier.peek_digest()` (things it chose not to interrupt for).
+
+> **Known-open:** `main_api.py` auto-approves a confirmation when no socket is
+> attached. That predates the Tier-6 unattended ceiling and is the one remaining place
+> where silence still means consent — route it through `core.unattended = True` so
+> risky steps `DEFER` instead.
+
+Full detail, including the current UI layout and every wiring trap: **[`instructionAI/voice_and_interface.md`](instructionAI/voice_and_interface.md)**.
 
 ---
 
@@ -383,12 +608,22 @@ Ciel 2.0/
 ├── core/                       # Main orchestration — the part every request goes through
 │   ├── llm_connector.py        # CielCore: routes → executes → responds
 │   ├── router.py                # Brain-based intent classification
-│   ├── middleware.py            # Email/report finalizer (Tier 3)
+│   ├── middleware.py            # Email/report finalizer hookup
 │   ├── recovery_manager.py      # Self-healing with skip-list
 │   ├── rag_manager.py           # ChromaDB long-term memory
-│   ├── scheduler.py             # Proactive background tasks (e.g. daily digest)
 │   ├── tool_manager.py          # Tool registry & execution
 │   ├── cost.py                  # LLM pricing + cost estimation
+│   │
+│   │  # --- agent capability tiers (see instructionAI/architecture.md) ---
+│   ├── continuation.py          # T1  observe → re-plan → act; scope veto + fan-out etc.
+│   ├── task_state.py            # T2  durable job records; interrupted work survives
+│   ├── permissions.py           # T3  AUTO/ASK/DENY/DEFER, plan approval, deferred store
+│   ├── context.py               # T4  the single prompt assembler + token budget
+│   ├── notifier.py              # T6  where a proactive message goes, and whether it goes
+│   ├── triggers.py              # T6  the nine condition triggers + engine
+│   ├── user_model.py            # T7  the Master's profile: authority, decay, learning
+│   ├── parallel.py              # independent read-only steps run concurrently
+│   ├── scheduler.py             # background thread: clock tasks + the trigger engine
 │   ├── voice_input.py           # CLI speech-to-text (swappable STT backends)
 │   └── speech_output.py         # CLI/UI text-to-speech (normalizer + swappable TTS backends)
 │
@@ -398,24 +633,20 @@ Ciel 2.0/
 │   └── utils/usage.py           # Provider token extraction for cost tracking
 │
 ├── skills/                     # Tool packs — the extension surface
-│   ├── internal/                # filesystem, OS/shell, productivity, vision
+│   ├── internal/                # filesystem, OS/shell, productivity, vision, memory vault
 │   └── external/                # Gmail, trading, Telegram, GitHub, web search, documents
 │
 ├── ui/                         # React + Tauri v2 frontend (optional) — see ui/README.md
-│   └── src/
-│       ├── orb.ts               # Three.js audio-reactive particle orb (framework-agnostic)
-│       ├── components/Orb.tsx   # React wrapper driving the orb from conversation state
-│       └── io/                  # modality layer: input/ (text + voice mic), output/ (transcript, speaker+analyser)
-│
 ├── autonomous_pipeline/        # Self-running MLOps daemon (optional)
 │   ├── orchestrator.py          # Background scheduler
 │   ├── task_generator.py        # Simulated Master
 │   ├── data_pipeline.py         # Judge audit + dataset builder
 │   └── chaos_injector.py        # Adversarial edge-case injection
 │
+├── backtest/                   # test_context · test_outbound · test_proactive · test_user_model ·
+│                               #   test_conversation_bugs (369 assertions, no LLM — run these first)
 ├── scripts/                    # format_thoughts_log.py, prompt_harness.py, cost_report.py
 ├── email_template/             # Structured templates for outbound email bodies
-├── backtest/                   # Integration/stress tests
 ├── instructionAI/              # AI-assistant instruction files (start with SKILL.md)
 ├── ciel_workspace/              # Sandbox for user files, logs, screenshots
 └── agent_output/                # Default output location for AI-generated code
@@ -427,49 +658,88 @@ Ciel 2.0/
 
 | I want to... | Edit this |
 |---|---|
-| Change Ciel's persona / tone | `persona/official_ciel_personality.txt` (the single persona file) |
-| Find which prompt to edit for any behavior | [`PROMPT_INVENTORY.md`](PROMPT_INVENTORY.md) — maps every prompt, the runtime assembly chain, and the traps (e.g. the per-skill `*_SYSTEM_PROMPT` manuals are inert — edit `_TOOL_HINTS`/docstrings instead) |
-| Add a new tool/capability | New file under `skills/internal/` or `skills/external/` exposing a `get_*_tools()` factory — auto-discovered by `core/tool_manager.py`; the UI skill grid updates automatically (served from `GET /skills`) |
-| Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name (`BRAIN_MODEL`, `CODER_MODEL`) |
+| Change Ciel's persona / tone | `persona/official_ciel_personality.txt` |
+| Find which prompt to edit for any behavior | [`PROMPT_INVENTORY.md`](PROMPT_INVENTORY.md) |
+| Add a new tool/capability | New file under `skills/internal/` or `skills/external/` exposing a `get_*_tools()` factory |
+| Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name |
 | Add/remove a high-risk tool from the safety gate | `core/llm_connector.py` — `_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS` |
 | Tune what counts as "dangerous code" | `core/llm_connector.py` — `_find_dangerous_code_patterns()` |
-| Change an email template's structure | `note.md` (templates section) and `email_template/` |
 | Adjust RAG recall sensitivity | `core/rag_manager.py` — `MIN_QUERY_LENGTH`, `MIN_RELEVANCE_SCORE` |
 | Enable/scope the Middleware tier | `.env` — `MIDDLEWARE_ENABLED`, `MIDDLEWARE_SCOPE`, `MIDDLEWARE_MAX_PASSES` |
-| Change the CLI/UI voice, STT/TTS backend, or prosody | `.env` — `STT_BACKEND`, `TTS_BACKEND`, `TTS_VOICE`, `TTS_RATE`/`TTS_PITCH`, and `RVC_*` for the experimental character voice |
-| Tune what the TTS reads aloud (strip more/less) | `core/speech_output.py` — `to_speech()` normalizer |
-| Set real per-model prices for cost tracking | `ciel_data/model_pricing.json` (overrides `core/cost.py` defaults, no code change) |
+| Change voice STT/TTS backend or prosody | `.env` — `STT_BACKEND`, `TTS_BACKEND`, `TTS_VOICE`, `TTS_RATE`/`TTS_PITCH` |
+| Set real per-model prices for cost tracking | `ciel_data/model_pricing.json` (no code change) |
 | Add a UI-side voice *input* modality | `ui/src/io/input/VoiceInput.tsx` — see [ui/README.md](ui/README.md) |
+| Turn proactivity on / pick which triggers speak | `.env` — `PROACTIVE_ENABLED`, then `PROACTIVE_TRIGGERS` by name |
+| Add a new condition trigger | `core/triggers.py` — write `check(now) -> Notification \| None`, register in `build_triggers()` |
+| Let a risky tool run with nobody watching | `.env` — `CIEL_UNATTENDED_AUTO_TOOLS` (per-tool, opt-in) |
+| Take the measured 27% saving on planner tokens | `.env` — `ROUTER_PERSONA_MODE=slim` (ships as `full`; see `note.md`) |
+| Cap what the learned profile may cost per call | `.env` — `USER_MODEL_TOKEN_BUDGET`, or `USER_MODEL_ENABLED=false` |
+| Inspect / correct what Ciel believes about you | `ciel_data/user_model.json` — indented, unescaped, safe to hand-edit |
 | Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
 
 ---
 
 ## Tips for Better Results
 
-**Keep the safety gate on unless you mean it.** `DISABLE_SAFETY_GATE=true` is meant for the autonomous pipeline and other fully unattended flows — not everyday CLI use. The two safety flags are separate precisely so you can loosen content filtering without also losing the destructive-action confirmation.
+**Keep the safety gate on unless you mean it.** `DISABLE_SAFETY_GATE=true` is meant for
+fully unattended automation, not everyday CLI use — and it still does not bypass the
+Tier-6 unattended `DEFER` ceiling.
 
-**Give tasks explicit output specs.** Both the live Router and the autonomous pipeline's task generator produce noticeably better (less hallucinated) results when the request states *what* to output, not just *what to do* — "report only the closing price value" beats "get me the BTC price."
+**Give tasks explicit output specs.** The Router produces noticeably better (less
+hallucinated) results when the request states *what* to output, not just *what to
+do* — "report only the closing price value" beats "get me the BTC price."
 
-**Test voice modalities standalone first.** `python -m core.voice_input` and `python -m core.speech_output "..."` verify your mic and speaker independently before you rely on `--voice`/`--speak` in a full session. For fluid conversation keep `TTS_BACKEND=edge` (the `space`/RVC backend adds ~25s per reply).
+**Test voice modalities standalone first.** `python -m core.voice_input` and
+`python -m core.speech_output "..."` verify mic and speaker independently before
+`--voice`/`--speak` in a full session.
 
-**Watch `thoughts.log`, not just the console.** It's the full raw audit trail; `scripts/format_thoughts_log.py` renders a readable view for a specific turn, and `scripts/cost_report.py` tells you what a run actually cost.
+**Watch `thoughts.log`, not just the console.** `scripts/format_thoughts_log.py`
+renders a readable view for a specific turn; `scripts/cost_report.py` tells you what a
+run actually cost. Several real bugs this project fixed were found this way, not by a
+failing test.
 
-**Run `prompt_harness.py` before hand-editing a prompt.** `python -m scripts.prompt_harness --min-count 3` mines `thoughts.log` for recurring failure patterns and tells you which file/prompt is actually worth patching, instead of guessing from a handful of anecdotal bad responses.
+**Run `prompt_harness.py` before hand-editing a prompt.**
+`python -m scripts.prompt_harness --min-count 3` mines `thoughts.log` for recurring
+failure patterns instead of guessing from a handful of anecdotal bad responses.
 
-**Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on boot, that's PyTorch failing to initialize (usually a missing VC++ Redistributable or a CPU without AVX) — not a code bug. Ciel disables RAG gracefully and keeps running.
+**Run the no-LLM suites before anything else.** `backtest/test_context.py`,
+`test_outbound.py`, `test_proactive.py`, `test_user_model.py`, and
+`test_conversation_bugs.py` cover 369 assertions with zero LLM calls and zero network —
+they catch a regression in seconds, before you spend a real call finding it.
+
+**Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on
+boot, that's PyTorch failing to initialize — not a code bug. Ciel disables RAG
+gracefully and keeps running.
 
 ---
 
 ## Contributing
 
-This is currently an internal/experimental project without a formal contribution process. If you fork it: keep the safety-flag separation intact, prefer deterministic checks over trusting the Brain to "remember" a rule, and read `architect.md`'s Changelog section before touching `core/llm_connector.py` — most of its logic exists because of a specific, previously-observed failure.
+This is currently an internal/experimental project without a formal contribution
+process. If you fork it: keep the safety-flag separation intact, prefer deterministic
+checks over trusting the Brain to "remember" a rule, and read `architect.md`'s
+changelog section before touching `core/llm_connector.py` — most of its logic exists
+because of a specific, previously-observed failure.
 
 ## Acknowledgements
 
-Built on [LangChain](https://github.com/langchain-ai/langchain) / [LangGraph](https://github.com/langchain-ai/langgraph), [ChromaDB](https://github.com/chroma-core/chroma), [sentence-transformers](https://github.com/UKPLab/sentence-transformers), [FastAPI](https://github.com/tiangolo/fastapi), [Tauri](https://github.com/tauri-apps/tauri), [Three.js](https://github.com/mrdoob/three.js), [edge-tts](https://github.com/rany2/edge-tts), and [SpeechRecognition](https://github.com/Uberi/speech_recognition) — with Gemini, DeepSeek, and Vilao as the LLM providers exercised in production. The particle orb is inspired by [ethanplusai/jarvis](https://github.com/ethanplusai/jarvis).
+Built on [LangChain](https://github.com/langchain-ai/langchain) /
+[LangGraph](https://github.com/langchain-ai/langgraph),
+[ChromaDB](https://github.com/chroma-core/chroma),
+[sentence-transformers](https://github.com/UKPLab/sentence-transformers),
+[FastAPI](https://github.com/tiangolo/fastapi),
+[Tauri](https://github.com/tauri-apps/tauri),
+[edge-tts](https://github.com/rany2/edge-tts), and
+[SpeechRecognition](https://github.com/Uberi/speech_recognition) — with Gemini,
+DeepSeek, and Vilao as the LLM providers exercised in production.
 
 ## License / Notes
 
-No formal license is attached — this is an internal research/experimental project. Use at your own risk: the safety mechanisms are configurable, and the AI can perform real, powerful actions (sending email, running shell commands, writing/deleting files) when gates are open. Review `core/llm_connector.py`'s safety-gate logic before pointing this at any account or machine you care about.
+No formal license is attached — this is an internal research/experimental project.
+Use at your own risk: the safety mechanisms are configurable, and the AI can perform
+real, powerful actions (sending email, running shell commands, writing/deleting files)
+when gates are open. Review `core/llm_connector.py`'s safety-gate logic before
+pointing this at any account or machine you care about.
 
-For detailed architecture and instructions aimed specifically at AI assistants working on this codebase, see [instructionAI/](instructionAI/) (start with `SKILL.md`).
+For detailed architecture and instructions aimed specifically at AI assistants working
+on this codebase, see [instructionAI/](instructionAI/) (start with `SKILL.md`).
