@@ -3,8 +3,18 @@ name: Ciel Health Check
 # Tầng 1 — lightweight daily health check (see scripts/health_check.py). Deliberately
 # NOT the full backtest suite (backtest/test_hard_special.py etc.) — that suite sends
 # REAL emails and burns 40-60 LLM calls per run; running it on a daily cron would be
-# expensive and spammy. This workflow boots CielCore and makes exactly ONE real Brain
-# LLM call to prove the system is alive, then reports PASS/FAIL to Telegram.
+# expensive and spammy. This workflow builds the SAME image docker/docker-compose.api.yml
+# deploys, runs scripts/health_check.py inside it (boots CielCore, makes exactly ONE
+# real Brain LLM call), and reports PASS/FAIL to Telegram.
+#
+# Runs inside the real Docker image (not a bare `pip install` on the runner) so this
+# also doubles as a daily proof that docker/Dockerfile + requirements-docker.txt still
+# build correctly — the two checks used to be separate; now one run covers both.
+# This used to run bare on the runner with stale BRAIN_PROVIDER=vilao/GPT_API_KEY vars
+# left over from before the project switched to a single `custom` OpenAI-compatible
+# provider (2026-07-27) — that's why it kept reporting "alive" against a model/provider
+# no longer in use, and eventually failed with Vilao's 402 INSUFFICIENT_BALANCE. Fixed
+# here to match the real .env shape (API_KEY/BASE_URL, BRAIN_PROVIDER=custom).
 
 on:
   schedule:
@@ -14,35 +24,27 @@ on:
 jobs:
   health-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          # NOT 3.10: pandas-ta 0.4.71b0 (in requirements.txt) requires Python >=3.12
-          # and has no distribution compatible with 3.10 on PyPI at all ("from
-          # versions: none") — found live via a real CI run. 3.13 matches the local
-          # dev venv this project is actually developed/tested against.
-          python-version: '3.13'
-          cache: 'pip'
+      - name: Build Ciel image
+        run: docker build -f docker/Dockerfile -t ciel-health-check .
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      # Same directory scripts/health_check.py's own comments assume: gitignored,
+      # absent on a fresh checkout, so CielCore's bootup-cleanse check (which only
+      # fires on a STALE memory_bank.json) never triggers here — no volume needed for
+      # that. Mounted anyway so thoughts.log survives the container for the
+      # upload-on-failure step below (the container itself is removed after --rm).
+      - name: Prepare state dir
+        run: mkdir -p ciel_data/logs
 
       # Gmail is OPTIONAL for this check (search_gmail isn't tested here, only that
       # ToolManager can load the skill pack). Only written if the secrets are actually
       # set — writing an empty/garbage file would turn a clean "not configured" skip
       # into a real, confusing error inside gmail_ops.py.
-      #
-      # NOTE: the conditional lives INSIDE the shell step (bash `[ -n ... ]`), not in
-      # a step-level `if: secrets.X != ''`. Referencing `secrets` directly in an `if:`
-      # expression is a common source of GitHub Actions parse errors ("Unrecognized
-      # named-value: 'secrets'") — passing it through `env:` and testing it in bash
-      # sidesteps that entirely and is the standard, portable pattern.
       - name: Decode Gmail credentials (optional)
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
@@ -50,27 +52,23 @@ jobs:
         run: |
           if [ -n "$GOOGLE_CREDENTIALS_B64" ]; then
             echo "$GOOGLE_CREDENTIALS_B64" | base64 -d > credentials.json
-            mkdir -p ciel_data
             if [ -n "$GOOGLE_TOKEN_B64" ]; then
               echo "$GOOGLE_TOKEN_B64" | base64 -d > ciel_data/gmail_token.json
             fi
           else
             echo "Gmail credentials not configured on this repo — skipping (expected unless you added GOOGLE_CREDENTIALS_B64)."
+            touch credentials.json   # empty file, never mounted unless it exists (see run step)
           fi
 
-      - name: Run health check
+      - name: Run health check inside the container
         env:
-          # --- Providers (set whichever ones your .env actually uses) ---
-          BRAIN_PROVIDER: ${{ vars.BRAIN_PROVIDER || 'vilao' }}
-          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'alic/qwen3.7-max' }}
-          WORKER_PROVIDER: ${{ vars.WORKER_PROVIDER || 'deepseek' }}
-          CODER_MODEL: ${{ vars.CODER_MODEL || 'deepseek-chat' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          VILAO_URL: ${{ secrets.VILAO_URL }}
-          VILAO_KEY: ${{ secrets.VILAO_KEY }}
-          GPT_API_KEY: ${{ secrets.GPT_API_KEY }}
-          GPT_BASE_URL: ${{ secrets.GPT_BASE_URL }}
+          # --- Providers — must match .env's real shape: one custom OpenAI-compatible
+          # endpoint for every tier (see agent_system/config.py's API_KEY/BASE_URL note) ---
+          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
+          CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
+          MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BASE_URL: ${{ secrets.BASE_URL }}
           # --- Safety (content-filter permissiveness only — this workflow never
           # executes a tool, so the destructive-action gate is never touched) ---
           SAFETY_OPEN: 'true'
@@ -79,7 +77,29 @@ jobs:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m scripts.health_check
+        run: |
+          docker run --rm \
+            --name ciel-health-check \
+            -e BRAIN_PROVIDER=custom \
+            -e BRAIN_MODEL \
+            -e WORKER_PROVIDER=custom \
+            -e CODER_MODEL \
+            -e MIDDLEWARE_ENABLED=true \
+            -e MIDDLEWARE_PROVIDER=custom \
+            -e MIDDLEWARE_MODEL \
+            -e API_KEY \
+            -e BASE_URL \
+            -e SAFETY_OPEN \
+            -e VILAO_SAFETY_BYPASS \
+            -e DISABLE_SAFETY_GATE=false \
+            -e DISABLED_SKILL_MODULES=vision_ops \
+            -e TWELVEDATA_API_KEY \
+            -e TELEGRAM_BOT_TOKEN \
+            -e TELEGRAM_CHAT_ID \
+            -v "$PWD/ciel_data:/app/ciel_data" \
+            -v "$PWD/credentials.json:/app/credentials.json:ro" \
+            ciel-health-check \
+            python -m scripts.health_check
 
       - name: Upload thoughts.log on failure
         if: failure()
