@@ -16,6 +16,12 @@ WORKDIR /app
 
 # Dependencies first so this layer is cached across code-only changes.
 COPY docker/requirements-docker.txt ./requirements-docker.txt
+# CPU-only torch FIRST: sentence-transformers pulls torch as a dependency, and left
+# to its own defaults pip resolves the full CUDA build — 1.7GB+ of NVIDIA libraries
+# (cuBLAS, cuDNN, NCCL, ...) with no GPU in this container to use them. Installing
+# the CPU wheel first satisfies that dependency before it's ever considered,
+# keeping the image around 2-3GB instead of the ~10GB a GPU build produces.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
 COPY . .

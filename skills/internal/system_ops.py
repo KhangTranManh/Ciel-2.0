@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,6 +32,34 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 AGENT_OUTPUT_DIR = BASE_DIR / "agent_output"
 AGENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+_WINDOWS_DRIVE_RE = re.compile(r'^[A-Za-z]:/')
+
+
+def _remap_into_sandbox(path: str) -> Path | None:
+    """If `path` contains a ciel_workspace/ or agent_output/ segment anywhere, remap
+    everything after it onto THIS host's copy of that zone. Returns None if no such
+    segment is found (a genuinely external path — reject it, don't guess).
+
+    Exists because a Windows-style path (`D:/Ciel-2.0/ciel_workspace/...`) the Brain
+    produces per its WINDOWS SYSTEM ARCHITECT rules is only reliably absolute on a
+    Windows host. Run the exact same container on Linux (Docker) and
+    `Path(...).is_absolute()` returns False for it — pathlib has no concept of drive
+    letters there — so it fell into the relative-default branch and got glued onto
+    WORKSPACE_DIR verbatim (`ciel_workspace/D:/Ciel-2.0/ciel_workspace/...`), a path
+    that obviously never exists, even though the real file was sitting right there
+    the whole time. The Master's machine and the container are different
+    filesystems anyway — the path can only ever mean "the file at this position
+    inside the sandbox", never a literal cross-machine path.
+    """
+    for marker, base in (("agent_output/", AGENT_OUTPUT_DIR), ("ciel_workspace/", WORKSPACE_DIR)):
+        idx = path.find(marker)
+        if idx != -1:
+            resolved = (base / path[idx + len(marker):].lstrip("/")).resolve()
+            if resolved.is_relative_to(base):
+                return resolved
+    return None
+
+
 def _resolve_target_path(target_path: str) -> Path:
     """Resolve path allowing both ciel_workspace and agent_output based on prefix.
 
@@ -48,6 +77,17 @@ def _resolve_target_path(target_path: str) -> Path:
         for base in (AGENT_OUTPUT_DIR.resolve(), WORKSPACE_DIR.resolve()):
             if resolved.is_relative_to(base):
                 return resolved
+        remapped = _remap_into_sandbox(target_path)
+        if remapped:
+            return remapped
+        raise PermissionError(f"[CẢNH BÁO BẢO MẬT] Truy cập bị từ chối. Lệnh '{target_path}' nhắm ra ngoài vùng cho phép.")
+
+    if _WINDOWS_DRIVE_RE.match(target_path):
+        # Not natively absolute on THIS host (e.g. a "D:/..." path evaluated on
+        # Linux) — the one case the docstring above exists for.
+        remapped = _remap_into_sandbox(target_path)
+        if remapped:
+            return remapped
         raise PermissionError(f"[CẢNH BÁO BẢO MẬT] Truy cập bị từ chối. Lệnh '{target_path}' nhắm ra ngoài vùng cho phép.")
 
     if target_path.startswith("agent_output/"):
@@ -105,12 +145,14 @@ def get_system_tools() -> dict:
                 if not safe_path.is_file(): return f"Lỗi: '{filename}' là thư mục."
                 suffix = safe_path.suffix.lower()
 
+                num_pages = None
                 if suffix == ".pdf":
                     try:
                         from pypdf import PdfReader
                     except ImportError:
                         return "Lỗi: Thư viện 'pypdf' chưa được cài đặt. Chạy: pip install pypdf"
                     reader = PdfReader(str(safe_path))
+                    num_pages = len(reader.pages)
                     text = "\n".join(page.extract_text() or "" for page in reader.pages)
                 elif suffix == ".docx":
                     try:
@@ -125,8 +167,18 @@ def get_system_tools() -> dict:
                 text = text.strip()
                 if not text:
                     return f"'{filename}' không có nội dung văn bản trích xuất được (có thể là file scan/ảnh)."
+                # Found live: Brain's self-correction judged a COMPLETE 1-page extraction "cut
+                # off midway" (it just happened to end on a full sentence, with nothing in the
+                # data itself saying "this is everything"), then escalated to
+                # execute_shell_command as an unnecessary "fix" — which failed and overwrote a
+                # result that was already fine. Stating completeness as a FACT the evaluator
+                # reads (not a prompt instruction it might ignore) heads that off — but only
+                # when it's actually true: must come AFTER the 30k-char truncation check below,
+                # never before, or "toàn bộ" would be a lie the moment a document IS truncated.
                 if len(text) > 30000:
                     text = text[:30000] + "\n...[Đã cắt bớt do quá dài]"
+                elif num_pages is not None:
+                    text = f"[Tài liệu PDF {num_pages} trang — nội dung dưới đây là TOÀN BỘ {num_pages} trang, không bị cắt bớt]\n\n" + text
                 return text
             except Exception as e: return f"Lỗi đọc tài liệu '{filename}': {e}"
         tools.append(StructuredTool.from_function(func=read_document, name="read_document", description="Extract text content from a PDF (.pdf) or Word (.docx) document. YOU MUST USE THIS TOOL instead of read_file when the target file is a .pdf or .docx — read_file cannot decode these binary formats."))

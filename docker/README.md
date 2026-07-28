@@ -20,9 +20,14 @@ started, stopped, or deployed to a different host without touching the other:
   `pyperclip` (vision control — no display in a container) and
   `sounddevice` / `faster-whisper` / `SpeechRecognition` (mic capture — no
   input device in a container). `edge-tts` is kept: it's cloud TTS, no
-  hardware needed, and `main_api.py` does use it. `sentence-transformers`/
-  `torch` are also dropped — `core/rag_manager.py` uses chromadb's own ONNX
-  embedding function instead (same model, ~8GB lighter image, no GPU needed).
+  hardware needed, and `main_api.py` does use it. `sentence-transformers` is
+  KEPT (tried dropping it in favor of ChromaDB's ONNX embedding function, but
+  the real `ciel_data/vector_memory/` collection was created with
+  sentence-transformers and ChromaDB persists that choice in the collection
+  itself — a different embedding function at runtime doesn't migrate it, it
+  just fails at query time). The `Dockerfile` installs a CPU-only `torch`
+  wheel first specifically so this doesn't balloon into the ~10GB a default
+  GPU build pulls in — expect ~3.5GB.
 
 ## Before first run
 

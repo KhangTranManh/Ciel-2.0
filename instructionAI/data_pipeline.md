@@ -31,12 +31,17 @@ Short-Term (JSON)                    Long-Term (ChromaDB)
 ### Long-Term Memory (RAG)
 
 - **Storage**: `ciel_data/vector_memory/` (ChromaDB persistent directory).
-- **Embedding model**: `all-MiniLM-L6-v2` (local, fast, ~80MB), run via ChromaDB's own
-  ONNX `DefaultEmbeddingFunction` — not sentence-transformers/torch (dropped entirely;
-  same model, no GPU/CUDA dependency).
+- **Embedding model**: `all-MiniLM-L6-v2` (local, fast, ~80MB) via
+  `SentenceTransformerEmbeddingFunction`. A switch to ChromaDB's own ONNX
+  `DefaultEmbeddingFunction` was tried to drop the torch dependency, then reverted:
+  ChromaDB persists the embedding function choice IN the collection itself, so a
+  different one at runtime doesn't migrate an EXISTING collection — it just fails
+  ("sentence_transformers ... not installed") the moment the collection is actually
+  queried/written to. `docker/requirements-docker.txt` installs a CPU-only `torch`
+  wheel to keep this cheap in the container (~3.5GB, not the ~10GB a GPU build pulls).
 - **Collection**: `ciel_long_term_memory`.
-- **Graceful degradation**: missing/failing `chromadb` → RAG silently disables;
-  CielCore keeps working with JSON-only short-term memory.
+- **Graceful degradation**: missing/failing `chromadb`/`sentence-transformers` → RAG
+  silently disables; CielCore keeps working with JSON-only short-term memory.
 
 ### RAG Recall Pipeline
 

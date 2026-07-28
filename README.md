@@ -131,11 +131,10 @@ breakdown.
 | **TwelveData / Telegram tokens** | Trading tools, proactive digest, Telegram bot front-end | Optional for trading/digest (degrades gracefully). Required for `main_telegram.py`: `TELEGRAM_BOT_TOKEN` + a real numeric `TELEGRAM_CHAT_ID` (not any of your other API keys). |
 | **Docker** | Container deployment only | Only needed for `docker/` — see [Docker Deployment](#docker-deployment). Skip for a bare CLI/UI run. |
 
-> **Note on RAG:** long-term memory (`core/rag_manager.py`) uses ChromaDB's own ONNX
-> embedding function (`DefaultEmbeddingFunction`, same `all-MiniLM-L6-v2` model) — no
-> PyTorch/`sentence-transformers`/GPU required. If ChromaDB itself fails to initialize
-> for any reason, Ciel disables RAG gracefully rather than crashing — you lose
-> long-term memory, not the whole system.
+> **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a
+> working PyTorch install. If `c10.dll` fails to initialize (missing VC++
+> Redistributable, or a CPU without AVX), Ciel disables RAG gracefully rather than
+> crashing — you lose long-term memory, not the whole system.
 
 ---
 
@@ -633,9 +632,12 @@ docker compose -f docker/docker-compose.telegram.yml up -d --build   # separatel
 skips loading `vision_ops.py` entirely before `ToolManager` ever imports it), no
 `sounddevice`/`faster-whisper`/`SpeechRecognition` (no mic — `core/voice_input.py` stays
 CLI-only, lazily imported so its absence never blocks startup). `edge-tts` is kept (cloud
-TTS, no hardware). `sentence-transformers`/`torch` are dropped too, but that's not
-docker-specific — `core/rag_manager.py` no longer imports either package anywhere (see the
-RAG note in Prerequisites).
+TTS, no hardware). `sentence-transformers` IS kept — the real `ciel_data/vector_memory/`
+collection was created with it, and ChromaDB persists that choice in the collection
+itself, so a different embedding function at runtime doesn't migrate it, it just fails
+the moment the collection is queried. The Dockerfile installs a CPU-only `torch` wheel
+first (see its comment) so this stays ~3.5GB instead of the ~10GB a default GPU build
+would pull in.
 
 Both compose files mount the **same** `ciel_data/`/`agent_output/`/`ciel_workspace/`, so
 whichever front-end the Master used, the other sees the same facts, chat history, and
@@ -690,7 +692,7 @@ Ciel 2.0/
 │   ├── router.py                # Brain-based intent classification
 │   ├── middleware.py            # Email/report finalizer hookup
 │   ├── recovery_manager.py      # Self-healing with skip-list
-│   ├── rag_manager.py           # ChromaDB long-term memory (ONNX embedding, no torch)
+│   ├── rag_manager.py           # ChromaDB long-term memory (sentence-transformers embedding)
 │   ├── tool_manager.py          # Tool registry & execution (honors DISABLED_SKILL_MODULES)
 │   ├── telegram_interface.py    # Telegram bot front-end — long-poll loop + confirm gate
 │   ├── cost.py                  # LLM pricing + cost estimation
@@ -790,11 +792,9 @@ failure patterns instead of guessing from a handful of anecdotal bad responses.
 `test_conversation_bugs.py` cover 369 assertions with zero LLM calls and zero network —
 they catch a regression in seconds, before you spend a real call finding it.
 
-**RAG failing to initialize isn't a code bug.** `core/rag_manager.py` is wrapped so that
-any ChromaDB init failure (disk permissions, a corrupted `vector_memory/` dir, ...)
-disables long-term memory gracefully and keeps the rest of Ciel running — check the
-`[Ciel Warning] RAG disabled — ...` line in `thoughts.log` for the actual cause rather
-than assuming a deeper crash.
+**Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on
+boot, that's PyTorch failing to initialize — not a code bug. Ciel disables RAG
+gracefully and keeps running.
 
 ---
 
@@ -810,8 +810,8 @@ because of a specific, previously-observed failure.
 
 Built on [LangChain](https://github.com/langchain-ai/langchain) /
 [LangGraph](https://github.com/langchain-ai/langgraph),
-[ChromaDB](https://github.com/chroma-core/chroma) (long-term memory, via its own
-built-in ONNX embedding function — no PyTorch dependency),
+[ChromaDB](https://github.com/chroma-core/chroma),
+[sentence-transformers](https://github.com/UKPLab/sentence-transformers),
 [FastAPI](https://github.com/tiangolo/fastapi),
 [Tauri](https://github.com/tauri-apps/tauri),
 [edge-tts](https://github.com/rany2/edge-tts), and

@@ -12,12 +12,23 @@ import json
 import queue
 import threading
 import requests
+from pathlib import Path
 from colorama import Fore, Style
 
+from skills.internal.system_ops import WORKSPACE_DIR
+
 API_ROOT = "https://api.telegram.org/bot{token}/{method}"
+FILE_API_ROOT = "https://api.telegram.org/file/bot{token}/{file_path}"
 MAX_MESSAGE_CHARS = 3500          # stay under Telegram's 4096 hard limit with headroom
 LONG_POLL_TIMEOUT = 30            # seconds Telegram holds the getUpdates connection open
 CONFIRM_TIMEOUT = 60              # seconds to wait for a Yes/No tap before auto-declining
+
+# Inbound photos/documents land here — already inside the sandbox (a subdir of
+# ciel_workspace/), so every existing file/vision tool can reach them with no
+# special-casing: read_document, describe_image_file, read_file, etc. all resolve
+# through the same _is_safe_path() as anything else in ciel_workspace/.
+UPLOAD_DIR = WORKSPACE_DIR / "telegram_uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class TelegramInterface:
@@ -66,6 +77,26 @@ class TelegramInterface:
             self._call("answerCallbackQuery", callback_query_id=callback_query_id, text=text)
         except Exception:
             pass
+
+    def _download_file(self, file_id: str, suggested_name: str) -> Path | None:
+        """Resolve a Telegram file_id to real bytes and save it under UPLOAD_DIR.
+        Timestamp-prefixed so two uploads with the same original name never collide.
+        Returns the saved path, or None on any failure (network, bad file_id, ...)."""
+        try:
+            info = self._call("getFile", file_id=file_id)
+            file_path = info["result"]["file_path"]
+            url = FILE_API_ROOT.format(token=self.bot_token, file_path=file_path)
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in suggested_name)
+            dest = UPLOAD_DIR / f"{ts}_{safe_name}"
+            dest.write_bytes(resp.content)
+            return dest
+        except Exception as e:
+            print(Fore.RED + f"[Telegram] file download failed: {e}" + Style.RESET_ALL)
+            return None
 
     # ---------- confirm_callback wired into CielCore ----------
     # Same signature as main.py's _cli_confirm and main_api.py's _ws_confirm:
@@ -135,6 +166,37 @@ class TelegramInterface:
             # bot can run real tools (shell, email, file writes).
             print(Fore.YELLOW + f"[Telegram] Ignored message from unauthorized "
                   f"chat_id={sender_chat_id}" + Style.RESET_ALL)
+            return
+
+        # Telegram puts a photo/document's accompanying text in `caption`, not
+        # `text` — only a plain message uses `text`.
+        photos = msg.get("photo")
+        document = msg.get("document")
+        if photos or document:
+            if photos:
+                # `photo` is a list of the SAME image at increasing resolutions —
+                # the last entry is the largest.
+                file_id = photos[-1]["file_id"]
+                suggested_name = f"photo_{file_id[-10:]}.jpg"
+                kind_label = "Ảnh"
+            else:
+                file_id = document["file_id"]
+                suggested_name = document.get("file_name") or f"file_{file_id[-10:]}"
+                kind_label = "File"
+
+            saved = self._download_file(file_id, suggested_name)
+            if saved is None:
+                self._send_message(f"⚠️ Không tải được {kind_label.lower()} từ Telegram — Master thử gửi lại giúp Ciel.")
+                return
+
+            # Relative to ciel_workspace/, matching the shape every file/vision tool
+            # already expects (read_document, describe_image_file, read_file, ...).
+            rel_path = f"telegram_uploads/{saved.name}"
+            caption = (msg.get("caption") or "").strip()
+            note = f"[{kind_label} Master vừa gửi qua Telegram, đã lưu tại: ciel_workspace/{rel_path}]"
+            if caption:
+                note += f"\n{caption}"
+            self._inbox.put(note)
             return
 
         text = (msg.get("text") or "").strip()

@@ -67,8 +67,12 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
             return "[Gmail] Unsupported credential signature"
 
         service = build_resource_service(credentials=creds)
+        # category:primary excludes Promotions/Social/Updates/Forums — without it,
+        # "is:unread" alone pulls in marketing mail Gmail auto-marks unread (job
+        # boards, LinkedIn, etc.), which is what a "top unread emails" digest should
+        # never surface as if it were something the Master needs to act on.
         results = service.users().messages().list(
-            userId="me", q="is:unread", maxResults=max_results
+            userId="me", q="is:unread category:primary", maxResults=max_results
         ).execute()
 
         messages = results.get("messages", [])

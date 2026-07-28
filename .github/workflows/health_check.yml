@@ -15,6 +15,11 @@ name: Ciel Health Check
 # provider (2026-07-27) — that's why it kept reporting "alive" against a model/provider
 # no longer in use, and eventually failed with Vilao's 402 INSUFFICIENT_BALANCE. Fixed
 # here to match the real .env shape (API_KEY/BASE_URL, BRAIN_PROVIDER=custom).
+#
+# Second job step (scripts/daily_digest.py) reuses the SAME already-built image to ask
+# Ciel — through real Brain routing, not a hand-rolled call — for a Gmail + news
+# summary, then reports it to Telegram. Only runs if the health check passed (a dead
+# provider shouldn't also produce a broken/empty digest attempt).
 
 on:
   schedule:
@@ -108,3 +113,37 @@ jobs:
           name: ciel-health-check-log
           path: ciel_data/logs/thoughts.log
           if-no-files-found: ignore
+
+      # Runs only if the health check step above succeeded (default GitHub Actions
+      # behavior — no explicit `if:` needed). Reuses the exact same image; no rebuild.
+      - name: Daily digest (email + news) via Telegram
+        env:
+          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
+          CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
+          MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          docker run --rm \
+            --name ciel-daily-digest \
+            -e BRAIN_PROVIDER=custom \
+            -e BRAIN_MODEL \
+            -e WORKER_PROVIDER=custom \
+            -e CODER_MODEL \
+            -e MIDDLEWARE_ENABLED=true \
+            -e MIDDLEWARE_PROVIDER=custom \
+            -e MIDDLEWARE_MODEL \
+            -e API_KEY \
+            -e BASE_URL \
+            -e SAFETY_OPEN=true \
+            -e VILAO_SAFETY_BYPASS=true \
+            -e DISABLE_SAFETY_GATE=false \
+            -e DISABLED_SKILL_MODULES=vision_ops \
+            -e TELEGRAM_BOT_TOKEN \
+            -e TELEGRAM_CHAT_ID \
+            -v "$PWD/ciel_data:/app/ciel_data" \
+            -v "$PWD/credentials.json:/app/credentials.json:ro" \
+            ciel-health-check \
+            python -m scripts.daily_digest

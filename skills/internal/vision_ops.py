@@ -66,12 +66,14 @@ You possess Vision tools to SEE the Master's screen and ACT on it autonomously.
 TOOLS:
 1. `vision_act`: Execute a full vision loop — screenshot, analyze, click/type, verify. Up to 10 steps per call. Use this when the Master asks you to DO something on screen (open app, click button, fill form, etc.).
 2. `vision_describe`: Take a screenshot and describe what is currently visible on screen. Use this when the Master asks "what do you see?" or "what's on my screen?".
+3. `describe_image_file`: Look at an EXISTING image FILE (already in the workspace — e.g. one the Master uploaded via Telegram or saved earlier), NOT the live screen. Use this when the Master asks about a picture/photo they gave you, not their current desktop.
 
 RULES:
 1. ALWAYS use `vision_act` when the Master wants you to interact with the desktop (click, type, open, close, navigate).
 2. Use `vision_describe` when the Master just wants to know what's on screen without any action.
-3. You can chain vision_act with other tools (e.g., search first, then vision_act to open a URL).
-4. NEVER attempt to interact with system-critical dialogs (UAC prompts, BIOS, disk format) — refuse politely.
+3. Use `describe_image_file` when the Master hands you an image FILE to look at — never confuse it with `vision_describe` (the live desktop).
+4. You can chain vision_act with other tools (e.g., search first, then vision_act to open a URL).
+5. NEVER attempt to interact with system-critical dialogs (UAC prompts, BIOS, disk format) — refuse politely.
 """
 
 # ==========================================
@@ -126,6 +128,22 @@ Focus on:
 3. The state of the desktop (icons, taskbar, notifications)
 
 Be concise but thorough. Use bullet points."""
+
+# Default framing for an arbitrary image FILE (not a desktop screenshot) — a photo,
+# a scanned document, a diagram someone sent. {question} is the Master's own
+# question when they asked one; otherwise a generic "describe it" framing.
+IMAGE_FILE_PROMPT = """You are looking at an image file the Master gave you (not a screenshot of their desktop).
+
+{question}
+
+Describe what's actually in the image — concise but thorough. If it contains text
+(a document, a sign, a screenshot of something else), transcribe the relevant parts
+rather than just describing that text is present."""
+
+# Telegram-uploaded images can be several thousand pixels wide; that's wasted tokens
+# for a vision call and buys no extra accuracy past a point. Same PNG re-encode path
+# as screenshots (_image_to_base64), just capped first.
+IMAGE_FILE_MAX_DIMENSION = 1600
 
 
 # ==========================================
@@ -595,6 +613,49 @@ def _vision_act(task: str) -> dict:
         )
 
 
+def _describe_image_file(filename: str, question: str = "") -> dict:
+    """Look at an existing image FILE in the sandbox (not the live screen) — the
+    Telegram-upload path (core/telegram_interface.py) and any image already sitting
+    in ciel_workspace/agent_output both land here. Reuses the same vision LLM call
+    as vision_describe/vision_act (_call_vision_llm) — the model doesn't care whether
+    the image came from a live screenshot or a file, only the caller does."""
+    if not PILLOW_AVAILABLE:
+        return _make_result(False, code="MISSING_DEP", message="Pillow not installed.", tool_name="describe_image_file")
+    if not LLM_VISION_AVAILABLE:
+        return _make_result(False, code="MISSING_DEP", message="langchain-openai not installed.", tool_name="describe_image_file")
+
+    try:
+        from skills.internal.system_ops import _is_safe_path
+        safe_path = _is_safe_path(filename)
+    except PermissionError as e:
+        return _make_result(False, code="PERMISSION_DENIED", message=str(e), tool_name="describe_image_file")
+
+    if not safe_path.exists():
+        return _make_result(False, code="NOT_FOUND", message=f"Image not found: {filename}", tool_name="describe_image_file")
+
+    try:
+        img = Image.open(safe_path)
+        img.load()
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        if img.width > IMAGE_FILE_MAX_DIMENSION or img.height > IMAGE_FILE_MAX_DIMENSION:
+            img.thumbnail((IMAGE_FILE_MAX_DIMENSION, IMAGE_FILE_MAX_DIMENSION), Image.LANCZOS)
+
+        question_block = f"The Master specifically asked: {question}" if question.strip() else \
+            "The Master didn't ask anything specific — just describe the image."
+        prompt = IMAGE_FILE_PROMPT.format(question=question_block)
+        description = _call_vision_llm(img, prompt)
+
+        return _make_result(
+            True,
+            data={"message": f"🖼️ [VISION] Image Analysis ({filename}):\n{description}"},
+            tool_name="describe_image_file"
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return _make_result(False, code="IMAGE_DESCRIBE_ERROR", message=str(e), tool_name="describe_image_file")
+
+
 def _vision_describe() -> dict:
     """Take a screenshot and describe what's on screen."""
     if not PILLOW_AVAILABLE:
@@ -661,7 +722,26 @@ def get_vision_tools() -> dict:
                 "USE THIS when the Master asks 'what do you see?', 'what's on my screen?', 'describe my desktop', or similar."
             )
         ))
-        
+
+        # 3. Describe Image File — look at an existing image, not the live screen
+        def describe_image_file(filename: str, question: str = "") -> dict:
+            """Look at an existing image FILE (e.g. one the Master uploaded via Telegram, or
+            already saved in the workspace) and describe or answer a question about it.
+            NOT for the live desktop — use vision_describe for that."""
+            return _describe_image_file(filename, question)
+
+        tools.append(StructuredTool.from_function(
+            func=describe_image_file,
+            name="describe_image_file",
+            description=(
+                "Look at an existing image FILE in the workspace (a photo/screenshot/document "
+                "the Master uploaded, e.g. via Telegram) and describe it or answer a question about "
+                "it. `filename` is the workspace-relative path. `question` is optional — leave empty "
+                "for a general description. USE THIS for an image FILE the Master gave you; "
+                "use `vision_describe` instead for their LIVE desktop screen."
+            )
+        ))
+
         return {"tools": tools, "prompt": VISION_OPS_PROMPT}
     
     except Exception as e:

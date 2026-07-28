@@ -2184,6 +2184,22 @@ RULES:
 
                 new_result = self.execute_tool(new_tool, new_args, new_hint, user_input)
                 tried_tools.add(new_tool)
+
+                # Found live: a CV read via read_document succeeded (real, complete content)
+                # but self-correction judged it "cut off midway" and escalated to
+                # execute_shell_command — which itself failed twice (missing lib, then a
+                # script bug). The old code unconditionally did `result = new_result` here,
+                # discarding the original good result in favour of the new FAILED one, so the
+                # Master was told "couldn't read it" about a file Ciel had already read fine.
+                # Only replace the original when the escalation attempt actually did better —
+                # a failed "fix" must never outrank data that already worked.
+                if StepRecord("", {}, new_result).failed() and not StepRecord("", {}, result).failed():
+                    self._log_thought(
+                        "BRAIN", "self_correction",
+                        f"'{new_tool}' also failed — keeping the ORIGINAL result from "
+                        f"'{tool_name}' instead of reporting failure over data that was fine.")
+                    return result
+
                 result = new_result  # HIDE ERROR: Only return the new successful result to the user
                 # Update for next evaluation iteration
                 tool_name = new_tool

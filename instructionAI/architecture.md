@@ -21,7 +21,9 @@ Ciel-2.0/
 │   ├── Dockerfile                  # Shared image for both docker-compose files below
 │   ├── docker-compose.api.yml      # ciel-api service (main_api.py, Vercel-facing)
 │   ├── docker-compose.telegram.yml # ciel-telegram service (main_telegram.py)
-│   ├── requirements-docker.txt     # Slimmed deps — no pyautogui/pyperclip/torch/sentence-transformers
+│   ├── requirements-docker.txt     # Slimmed deps — no pyautogui/pyperclip/voice-input libs; CPU-only
+│   │                                torch (keeps sentence-transformers, the real vector_memory/'s
+│   │                                embedding fn — ChromaDB won't accept swapping it at runtime)
 │   └── README.md                   # Build/run instructions, shared-state caveat
 │
 ├── core/                          # Main orchestration layer — every request goes through this
@@ -30,9 +32,13 @@ Ciel-2.0/
 │   ├── router.py                  # Brain-based intent classification (4 actions)
 │   ├── middleware.py              # Middleware tier hookup (agent_system/models/middleware.py does the work)
 │   ├── recovery_manager.py        # Multi-attempt self-healing (code fix + param fix + skip-list)
-│   ├── rag_manager.py             # ChromaDB vector memory (long-term RAG) — chromadb's own ONNX
-│   │                                embedding function (DefaultEmbeddingFunction), NOT sentence-
-│   │                                transformers/torch; same all-MiniLM-L6-v2 model, no GPU/CUDA deps
+│   ├── rag_manager.py             # ChromaDB vector memory (long-term RAG) — embedding via
+│   │                                SentenceTransformerEmbeddingFunction (all-MiniLM-L6-v2). A
+│   │                                switch to ChromaDB's ONNX DefaultEmbeddingFunction was tried
+│   │                                and reverted: ChromaDB persists the embedding fn choice IN the
+│   │                                collection itself, so passing a different one at runtime
+│   │                                doesn't migrate an EXISTING collection — it just fails at
+│   │                                query/add time. torch stays a real dependency as a result.
 │   ├── tool_manager.py            # Auto-discovery tool registry & execution — skips any module
 │   │                                named in config.DISABLED_SKILL_MODULES before even importing it
 │   ├── telegram_interface.py      # TelegramInterface — third front-end consumer of CielCore
@@ -661,9 +667,11 @@ service) and `docker-compose.telegram.yml` (`ciel-telegram` → `main_telegram.p
   `pyautogui`/`pyperclip` (no display — pair with `.env`'s
   `DISABLED_SKILL_MODULES=vision_ops`) and `sounddevice`/`faster-whisper`/
   `SpeechRecognition` (no mic — `core/voice_input.py` stays CLI-only, lazily imported).
-  `edge-tts` is kept (cloud TTS, no hardware). `sentence-transformers`/`torch` are
-  dropped too — see the `rag_manager.py` note in the File Tree above; this isn't
-  docker-specific, `core/rag_manager.py` no longer imports either package at all.
+  `edge-tts` is kept (cloud TTS, no hardware). `sentence-transformers` is KEPT too —
+  see the `rag_manager.py` note in the File Tree above (ChromaDB persists the embedding
+  fn choice in the collection, so the real `vector_memory/` needs the same library it
+  was created with). The Dockerfile installs a CPU-only `torch` wheel first so this
+  stays ~3.5GB rather than the ~10GB a default GPU build would pull in.
 - **Both compose files mount the SAME `ciel_data/`/`agent_output/`/`ciel_workspace/`**
   on purpose, so whichever front-end the Master used, the other sees the same facts,
   chat history, and long-term memory. That is also why the two services should **not**
