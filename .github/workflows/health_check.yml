@@ -1,25 +1,6 @@
 name: Ciel Health Check
 
-# Tầng 1 — lightweight daily health check (see scripts/health_check.py). Deliberately
-# NOT the full backtest suite (backtest/test_hard_special.py etc.) — that suite sends
-# REAL emails and burns 40-60 LLM calls per run; running it on a daily cron would be
-# expensive and spammy. This workflow builds the SAME image docker/docker-compose.api.yml
-# deploys, runs scripts/health_check.py inside it (boots CielCore, makes exactly ONE
-# real Brain LLM call), and reports PASS/FAIL to Telegram.
-#
-# Runs inside the real Docker image (not a bare `pip install` on the runner) so this
-# also doubles as a daily proof that docker/Dockerfile + requirements-docker.txt still
-# build correctly — the two checks used to be separate; now one run covers both.
-# This used to run bare on the runner with stale BRAIN_PROVIDER=vilao/GPT_API_KEY vars
-# left over from before the project switched to a single `custom` OpenAI-compatible
-# provider (2026-07-27) — that's why it kept reporting "alive" against a model/provider
-# no longer in use, and eventually failed with Vilao's 402 INSUFFICIENT_BALANCE. Fixed
-# here to match the real .env shape (API_KEY/BASE_URL, BRAIN_PROVIDER=custom).
-#
-# Second job step (scripts/daily_digest.py) reuses the SAME already-built image to ask
-# Ciel — through real Brain routing, not a hand-rolled call — for a Gmail + news
-# summary, then reports it to Telegram. Only runs if the health check passed (a dead
-# provider shouldn't also produce a broken/empty digest attempt).
+
 
 on:
   schedule:

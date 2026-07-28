@@ -41,7 +41,7 @@ from skills.external.telegram_ops import send_telegram_message
 # still list the second group, just compressed to sender+count, not summarized.
 DIGEST_REQUEST = (
     "Tóm tắt ngắn gọn cho Master: (1) các email quan trọng/chưa đọc gần đây trong Gmail, "
-    "(2) tin tức nổi bật hôm nay (ưu tiên công nghệ/AI và thời sự chung). "
+    "(2) tin tức nổi bật hôm nay . "
     "Với phần (1), chia rõ 2 nhóm: "
     "'Cần chú ý' — email thực sự cần Master hành động hoặc biết (phản hồi cá nhân, "
     "kết quả ứng tuyển/phỏng vấn, giao dịch tài khoản/ngân hàng, xác minh tài khoản) — "
