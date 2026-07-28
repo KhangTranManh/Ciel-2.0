@@ -163,8 +163,11 @@ pip install -r requirements.txt
 ### 2. Configure `.env`
 
 Create a `.env` file in the repo root (no example is checked in — build it from the
-keys below). Every tier below defaults to **off** or to the pre-tier behaviour, so a
-minimal `.env` (just providers) still runs the full core pipeline.
+keys below). This is the **minimum to run** — every one of the seven agent-capability
+tiers (loop, task state, permissions, context budget, cancellation, proactivity, user
+model) defaults **off** or to safe pre-tier behaviour, so nothing below is required
+beyond providers and safety. Every tier's own knobs are in the
+[Customization](#customization) table, not duplicated here.
 
 ```dotenv
 # --- Providers ---
@@ -189,79 +192,22 @@ SAFETY_OPEN=true              # relaxes Brain CONTENT filtering only
 VILAO_SAFETY_BYPASS=true
 DISABLE_SAFETY_GATE=false     # keeps the destructive-tool Y/N gate ACTIVE (recommended default)
 
-# --- Optional tiers / integrations ---
+# --- Optional integrations (each degrades gracefully if left blank) ---
 MIDDLEWARE_ENABLED=true
 TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...           # numeric — message @userinfobot to find yours, not another key
-# Skip loading a whole skill module before ToolManager even imports it (comma-separated
-# stems). Used for server/Docker deployments with no display: vision_ops needs a real
-# screen/mouse it won't have there.
-DISABLED_SKILL_MODULES=
-
-# --- T1: Agent loop (observe → re-plan → act). Costs nothing when it does not fire. ---
-AGENT_LOOP_ENABLED=true
-AGENT_LOOP_MAX_ROUNDS=2       # extra rounds beyond the first
-AGENT_LOOP_MAX_SECONDS=120    # wall-clock ceiling, checked before EVERY step
-
-# --- Parallel tool execution ---
-AGENT_PARALLEL_ENABLED=true
-AGENT_PARALLEL_MAX_WORKERS=4
-
-# --- T4: Context discipline. 99% of a Brain call is fixed overhead; these bound it. ---
-CONTEXT_INPUT_BUDGET=1200        # ceiling on assembled per-request context; 0 = no budget
-CONTEXT_RECALL_BUDGET=600        # ceiling on RAG recall — the only data-sized block
-CONTEXT_RECENT_TURNS_ENABLED=true    # inject the last few turns into the RESPONSE path only
-CONTEXT_RECENT_TURNS_BUDGET=500
-# full | slim | none. The router emits JSON only, yet `full` sends it the 1,205-token
-# persona. Measured: `slim` = -27% Brain input tokens, 10/11 identical decisions (the
-# 11th was sampling noise on both arms). Default stays `full` — see note.md.
-ROUTER_PERSONA_MODE=full
-
-# --- T7: User model, the PUSH side of memory (facts.json stays pull-only + never injected) ---
-USER_MODEL_ENABLED=true          # renders to "" while empty, so it costs 0 until it learns
-USER_MODEL_TOKEN_BUDGET=250      # HARD cap on the injected profile block
-USER_MODEL_LEARN_ENABLED=true    # notice a preference unprompted; gated by free Python
-USER_MODEL_LEARN_DAILY_LIMIT=20  # ceiling on extraction calls per day
-
-# --- T6: Proactivity — let Ciel speak first. OFF by default, opt-in per trigger by name. ---
-PROACTIVE_ENABLED=false
-PROACTIVE_TRIGGERS=              # unfinished_task,daily_cost,repeated_failure,deferred_approval,
-                                  # digest,morning_digest,price_alert,important_email,stale_todo
-PROACTIVE_DAILY_BUDGET=8         # max interruptions/day; the rest drop to the digest
-PROACTIVE_IDLE_SECONDS=600       # past this, the CLI stops counting as a watched channel
-PROACTIVE_ASK_ESCALATE_SECONDS=1800   # unanswered question re-routes to Telegram
-PROACTIVE_UNFINISHED_MIN_AGE=1800     # don't nag about a job you may still be watching
-PROACTIVE_COST_USD_LIMIT=0       # 0 = off; a wrong ceiling fires every single day
-PROACTIVE_COST_TOKEN_LIMIT=0     # 0 = off
-PROACTIVE_FAILURE_THRESHOLD=3    # same tool failing N times in an hour
-PROACTIVE_REPEAT_LIMIT=4         # a finding you keep ignoring goes quiet after N interrupts
-PROACTIVE_PRICE_ALERTS=          # "XAU/USD>2400, BTC/USDT<60000" — fires on the CROSSING
-PROACTIVE_IMPORTANT_SENDERS=     # comma-separated addresses; unread mail from these only
-PROACTIVE_STALE_TODO_DAYS=7      # todos open longer than this (age — the store has no due date)
-PROACTIVE_DIGEST_HOUR=8          # when the daily digest / morning brief goes out
-PROACTIVE_DIGEST_MINUTE=0
-
-# Risky tools cleared to run with NOBODY watching. Per-tool and opt-in: unattended runs
-# otherwise DEFER every risky step rather than treating silence as approval.
-CIEL_UNATTENDED_AUTO_TOOLS=
-
-# --- Permissions (comma-separated tool names) ---
-CIEL_DENY_TOOLS=              # refused outright; no grant or open gate can reach past this
-CIEL_AUTO_TOOLS=              # extra tools to treat as read-only / never prompt
-
-# --- Escape hatch: plan email sends with regex instead of the Brain. Off by default;
-#     only needed for a provider whose content filter blocks email routing calls. ---
-EMAIL_BYPASS_BRAIN=false
-
-# --- Optional voice I/O (all have working defaults) ---
-STT_BACKEND=whisper           # whisper | google | gemini
-TTS_BACKEND=edge              # edge | pyttsx3 | space
-TTS_VOICE=vi-VN-HoaiMyNeural  # or vi-VN-NamMinhNeural
+DISABLED_SKILL_MODULES=       # e.g. vision_ops — skip a whole skill module at load (Docker)
 ```
 
 > **Gotcha:** `agent_system/config.py` reads the Worker model from `CODER_MODEL`, not
 > `WORKER_MODEL`. A `.env` entry literally named `WORKER_MODEL` is silently ignored.
+
+Everything else — the Tier-1 agent loop, parallel execution, Tier-4 context budgets,
+Tier-6 proactivity (9 triggers), Tier-7 user model, permissions lists, the email-bypass
+escape hatch, voice I/O backends — has its own `.env` knob(s), all off or safely
+defaulted until you opt in. Full list: the [Customization](#customization) table below,
+or grep `agent_system/config.py` for every `os.getenv(...)` call.
 
 ### 3. Run the CLI
 
@@ -798,6 +744,11 @@ Ciel 2.0/
 | Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
 | Skip loading a whole capability class (e.g. vision on a headless server) | `.env` — `DISABLED_SKILL_MODULES` (comma-separated module stems, e.g. `vision_ops`) |
 | Restrict the Telegram bot to a different chat | `.env` — `TELEGRAM_CHAT_ID` (numeric; message `@userinfobot` to find yours) |
+| Tune the Tier-1 agent loop's rounds/timeout | `.env` — `AGENT_LOOP_ENABLED`, `AGENT_LOOP_MAX_ROUNDS`, `AGENT_LOOP_MAX_SECONDS` |
+| Tune parallel tool execution | `.env` — `AGENT_PARALLEL_ENABLED`, `AGENT_PARALLEL_MAX_WORKERS` |
+| Change Tier-4's context/RAG token budgets | `.env` — `CONTEXT_INPUT_BUDGET`, `CONTEXT_RECALL_BUDGET`, `CONTEXT_RECENT_TURNS_BUDGET` |
+| Plan email sends with regex instead of the Brain (provider content-filter workaround) | `.env` — `EMAIL_BYPASS_BRAIN=true` |
+| Deny/auto-approve specific tools outright | `.env` — `CIEL_DENY_TOOLS`, `CIEL_AUTO_TOOLS` (comma-separated tool names) |
 
 ---
 
