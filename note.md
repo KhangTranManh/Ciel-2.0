@@ -39,15 +39,26 @@ Tier 4 is also the blocker for **local/small models**: the 4,291-token floor mea
 contract itself is already model-agnostic — verified by swapping the Brain to a much
 cheaper alias with no loss of correctness (see the provider section below).
 
-## Current Status (as of 2026-07-25)
+## Current Status (as of 2026-07-29)
 
-**Model tiers — all on Vilao (OpenAI-compatible gateway):**
+**Model tiers — all on ONE custom OpenAI-compatible endpoint (switched from Vilao
+2026-07-27 after Vilao hit `INSUFFICIENT_BALANCE`; Vilao config kept in `.env`, unused,
+for rollback):**
 
 | Tier | Provider | Model | Config key |
 |------|----------|-------|------------|
-| Brain (Router/Planner) | Vilao | `ccf/claude-opus-4-8` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
-| Worker (Generator) | Vilao | `op/deepseek/deepseek-v4-pro` | `WORKER_PROVIDER`, **`CODER_MODEL`** |
-| Middleware (Finalizer) | Vilao | `op/deepseek/deepseek-v4-pro` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+| Brain (Router/Planner) | custom | `gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
+| Worker (Generator) | custom | `gpt-5.6-luna` | `WORKER_PROVIDER`, **`CODER_MODEL`** |
+| Middleware (Finalizer) | custom | `gpt-5.5` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+
+Switching provider going forward is a 2-variable `.env` edit (`API_KEY`+`BASE_URL`) plus
+whichever `*_MODEL` names change — see `agent_system/config.py`'s note.
+
+**Three front-ends now, all thin wrappers over the same `CielCore`:** `main.py` (CLI),
+`main_api.py` (WebSocket/REST, Vercel-facing), `main_telegram.py` (Telegram bot,
+`core/telegram_interface.py` — chat_id allow-listed, inline-keyboard confirms, accepts
+inbound photos/documents). All three can run in Docker (`docker/`) — see the Docker
+Deployment entry below.
 
 - **Config traps:** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`; its
   PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).
@@ -60,11 +71,17 @@ cheaper alias with no loss of correctness (see the provider section below).
 - `DISABLE_SAFETY_GATE=false` (default) → the destructive-tool **confirmation gate stays ACTIVE**.
   Coupling these two once let a *denied* confirmation still delete the file — keep them separate.
 
-**Testing:** `backtest/test_integration.py` (28/28 on the current build) and
-`backtest/test_rag_memory.py` (OPERATIONAL) are the model-eval suites; `test_hard_special.py`,
-`run_multi_gmail_test.py`, etc. send **real** email to the disposable `kxctran@gmail.com` and verify
-by a real Gmail Message Id, not by response text. A `venv` on **Python 3.12+** is required
-(`pandas-ta`).
+**Testing:** the 5 no-LLM suites (`test_context`, `test_outbound`, `test_proactive`,
+`test_user_model`, `test_conversation_bugs` — 369 assertions total) are the fast
+regression gate, run after every change to `core/`. `test_conversation_bugs.py` is
+**not log/state-sandboxed** — it builds real `CielCore()` instances, so running it
+writes its fixture conversations straight into the real `ciel_data/logs/thoughts.log`;
+confirmed live to read like a "repeating bug" on casual inspection after several runs
+in one session. `test_integration.py`/`test_hard_special.py`/`test_brain_worker.py`/
+`test_rag_memory.py` make real LLM calls and send **real** email — 3 disposable
+addresses are approved for this: `kxctran@gmail.com`, `kxcpro123@gmail.com`,
+`prokxcpro@gmail.com` — verified by a real Gmail Message Id, not by response text.
+A `venv` on **Python 3.12+** is required (`pandas-ta`).
 
 ---
 
@@ -138,6 +155,82 @@ to a component that only ever emits JSON. The 4,291-token floor is also the hard
 for small/local models — a 4K-context model cannot run this at all.
 
 ## Changelog (most recent first)
+
+### 2026-07-28 → 07-29 — Docker deployment, a Telegram front-end, and two real bugs found live
+
+**Docker (`docker/`).** Two front-ends, one image, split into separate compose files
+(`docker-compose.api.yml`/`docker-compose.telegram.yml`) so each can be
+built/started/stopped independently. `DISABLED_SKILL_MODULES` (new `.env` knob) lets
+`ToolManager` skip a whole skill module before even importing it — used to disable
+`vision_ops` (screen control needs a real display/mouse the container doesn't have).
+A detour worth recording: tried swapping RAG's embedding function to ChromaDB's own
+ONNX `DefaultEmbeddingFunction` to drop the ~10GB `torch`+CUDA dependency chain —
+reverted after discovering live that ChromaDB persists the embedding-fn choice IN the
+collection itself, so a different one at runtime doesn't migrate the real, existing
+`vector_memory/` (1250+ real memories) — it just fails at query time. Kept
+`sentence-transformers`, but the Dockerfile installs a CPU-only `torch` wheel first,
+landing at ~3.5GB instead of ~10GB. Both real images (`ciel-api`, `ciel-telegram`)
+verified end-to-end against a real Docker daemon — build, `/health`, `/skills`, a live
+Telegram round-trip, and a real RAG search against the real collection.
+
+**A third front-end: `main_telegram.py` / `core/telegram_interface.py`.** Long-polls the
+Bot API directly (no new dependency), chat_id allow-listed (this front-end can run real
+tools — shell, email, file writes — so an unauthorized sender must never reach
+`core.process()`), confirm gate via inline Yes/No keyboard (same `confirm_callback`
+contract as the CLI prompt and the WebSocket dialog). Verified live end-to-end,
+including a vision task (`vision_act` opening YouTube) run bare on Windows (Docker has
+no display for `pyautogui`). Also accepts inbound photos/documents — downloaded into
+`ciel_workspace/telegram_uploads/`, handed to Ciel as an ordinary message, routed like
+anything else (never a forced tool call). New tool for the image case:
+`describe_image_file` (`skills/internal/vision_ops.py`) — looks at an existing image
+FILE, not the live screen; shares `_call_vision_llm` with `vision_act`/`vision_describe`
+only as an implementation detail, and (a known trade-off, not a bug) is bundled into
+the same module so `DISABLED_SKILL_MODULES=vision_ops` disables it too even though it
+needs no display.
+
+**Two real bugs found reading `thoughts.log`, both fixed:**
+
+1. **`_self_correct()` discarded a good result when its own "fix" attempt failed.**
+   `read_document` fully extracted a 1-page CV; Brain's evaluator misjudged it "cut off
+   midway" and escalated to `execute_shell_command`, which failed twice (missing lib,
+   then a script bug) — the OLD code did `result = new_result` unconditionally, so the
+   Master was told "couldn't read it" about a file Ciel had already read correctly.
+   Fixed with `StepRecord(...).failed()` (Tier 1's own deterministic failure-signal
+   check) gating the overwrite — only replace the original when the new attempt
+   actually did better. Paired with a narrower fix for the same false judgment:
+   `read_document` now states the real PDF page count and "TOÀN BỘ N trang, không bị
+   cắt" IN the returned text itself (placed after the 30k-char truncation check, never
+   before) — a fact the evaluator reads outranks a prompt instruction it might ignore.
+   Verified with a scripted reproduction of the exact failure chain: the original CV
+   content now survives.
+2. **A Windows-style path (`D:/Ciel-2.0/ciel_workspace/...`) silently failed inside the
+   Linux container.** `_resolve_target_path()`'s `Path(...).is_absolute()` check is
+   true for that string on Windows, false on Linux (no drive-letter concept) — so once
+   Ciel moved into Docker, an otherwise-valid path into the real sandbox fell into the
+   relative-default branch and got glued onto `WORKSPACE_DIR` verbatim, producing a
+   path that never exists even though the real file was right there. Fixed with
+   `_remap_into_sandbox()`: a `^[A-Za-z]:/` regex catches what `is_absolute()` misses,
+   finds a `ciel_workspace/`/`agent_output/` segment anywhere in the string, and remaps
+   onto THIS host's real copy of that zone — a path with no such segment is still
+   rejected, so this widens recognition, not the sandbox boundary.
+
+**Gmail digest curation.** `core/scheduler.py::_fetch_unread_emails()`'s hardcoded
+`q="is:unread"` had no `category:primary`, so marketing/job-board mail Gmail
+auto-marks unread leaked into the morning digest — fixed. But verified live against a
+real inbox that `category:primary` alone is NOT sufficient (Gmail's own categorization
+puts many job-alert senders in Primary for this account, and the Master confirmed some
+of those — ITviec — are real, wanted mail, ruling out a sender blocklist). The fix that
+held: ask the digest prompt (`scripts/daily_digest.py`) to split "cần chú ý" (summarized
+in full) from "tự động/định kỳ" (sender+count only) — curation belongs in how results
+are presented, not in a query trying to guess intent it cannot know.
+
+**New CI job:** `.github/workflows/health_check.yml` now builds the real Docker image
+(not a bare `pip install` on the runner — doubles as a daily proof the image still
+builds) and, after the health check passes, runs `scripts/daily_digest.py` — asks Ciel
+through real Brain routing for a Gmail+news summary, reports to Telegram. Also fixed:
+the workflow's own env vars were stale (`BRAIN_PROVIDER=vilao`/`GPT_API_KEY` left over
+from before the 2026-07-27 provider switch), which is why it kept reporting "alive"
+against a model no longer in use and eventually failed with Vilao's 402.
 
 ### 2026-07-26 — The email was sent TWICE (fixed), and a correction to yesterday's note
 

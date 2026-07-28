@@ -79,11 +79,14 @@ Ciel-2.0/
 │   │   ├── system_ops.py            # Workspace file CRUD + Python runner + PDF/DOCX reader
 │   │   ├── os_ops.py                # Shell, screenshot, app launcher
 │   │   ├── productivity_ops.py      # Todos, time, weather, calculate, grep_in_workspace
-│   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay — disabled on headless
+│   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay, PLUS describe_image_file
+│   │                                  (looks at an existing image FILE, e.g. one Telegram-uploaded —
+│   │                                  not the live screen; shares _call_vision_llm as an implementation
+│   │                                  detail only). All three tools disabled together on headless
 │   │                                  deployments via .env `DISABLED_SKILL_MODULES=vision_ops`
-│   │                                  (ToolManager skips the module before import; no display/mouse
-│   │                                  needed in the container, and pyautogui isn't even installed
-│   │                                  there — see docker/requirements-docker.txt)
+│   │                                  (ToolManager skips the module before import) — a known trade-off:
+│   │                                  describe_image_file itself needs no display, but is bundled with
+│   │                                  the two that do.
 │   └── external/
 │       ├── gmail_ops.py             # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
 │       ├── trading_ops.py           # Crypto, Forex, Metals price + TA + build_market_report_html
@@ -112,13 +115,25 @@ Ciel-2.0/
 │   ├── test_outbound.py             # duplicate-send guard + stale-status strip — 36 assertions, tool layer stubbed
 │   ├── test_proactive.py            # T6 — 148 assertions, no LLM, no network, simulated clock
 │   ├── test_user_model.py           # T7 — 108 assertions, no LLM
-│   ├── test_conversation_bugs.py    # scope veto, recent-turns, router-task-hijack — 44 assertions
+│   ├── test_conversation_bugs.py    # scope veto, recent-turns, router-task-hijack — 55 assertions,
+│   │                                  no LLM (Worker stubbed) — but NOT log/state-sandboxed: it
+│   │                                  constructs real CielCore() instances, so every run appends its
+│   │                                  fixture conversations (verbatim past real incidents) straight
+│   │                                  into the REAL ciel_data/logs/thoughts.log. Confirmed live: 6
+│   │                                  runs in one session left 12 duplicate blocks that read like a
+│   │                                  live repeating bug on casual inspection. Sandboxing this (like
+│   │                                  backtest/_sandbox.py already does for run_test_samples.py) is a
+│   │                                  known, not-yet-done improvement — check thoughts.log's mtime/
+│   │                                  content against "did a test suite just run" before diagnosing
+│   │                                  a "repeating" symptom from it.
 │   ├── test_integration.py          # Full pipeline validation (real LLM calls)
 │   ├── test_brain_worker.py         # Multi-step workflow tests (real LLM calls)
 │   ├── test_rag_memory.py           # Amnesia stress test (real LLM calls)
 │   └── test_hard_special.py         # Hard/special cases + bug dashboard (real LLM calls)
 │
-├── scripts/                        # format_thoughts_log.py, prompt_harness.py, cost_report.py
+├── scripts/                        # format_thoughts_log.py, prompt_harness.py, cost_report.py,
+│                                    # health_check.py (CI liveness probe), daily_digest.py (CI
+│                                    # email+news → Telegram, see "Docker Deployment" below)
 ├── email_template/                 # Structured templates for outbound email bodies
 ├── instructionAI/                  # AI-assistant instruction files (start with SKILL.md)
 ├── ciel_workspace/                 # Sandbox for user files, logs, screenshots (quarantined)
@@ -680,3 +695,14 @@ service) and `docker-compose.telegram.yml` (`ciel-telegram` → `main_telegram.p
   one. Treat them as alternatives to pick one from until that's addressed with a proper
   shared store or a lock.
 - Full build/run commands and the shared-state caveat: `docker/README.md`.
+
+**`.github/workflows/health_check.yml`** builds this SAME image (not a bare `pip
+install` on the runner) and runs two one-shot containers from it daily: `scripts/
+health_check.py` (boots CielCore, one real Brain call, reports PASS/FAIL to Telegram —
+also doubles as a daily proof the image still builds), then, only if that succeeded,
+`scripts/daily_digest.py` (asks Ciel — via `core.process()`, real Brain routing, not a
+hand-rolled call — to summarize Gmail + news, reports to Telegram). Needed GitHub repo
+secrets: `API_KEY`, `BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`; optional
+`GOOGLE_CREDENTIALS_B64`/`GOOGLE_TOKEN_B64` (base64 of `credentials.json`/
+`ciel_data/gmail_token.json`) matter now that the digest genuinely calls `search_gmail`
+— previously (health-check-only) Gmail was truly optional.

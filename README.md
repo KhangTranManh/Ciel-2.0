@@ -445,10 +445,16 @@ not to run both at once yet: [docker/README.md](docker/README.md).
   zero code changes between the two. Skills panel (left, 100% backend-driven) and a
   chat workbench (right) with a stop button, safety-gate dialog, and live vitals.
 - **Telegram bot** (`main_telegram.py`) — a third front-end onto the same core, chat_id
-  allow-listed, with an inline-keyboard safety confirmation dialog and `/cancel`.
+  allow-listed, with an inline-keyboard safety confirmation dialog and `/cancel`. Accepts
+  photos/documents too — downloaded into the sandbox and handed to Ciel as a normal
+  message, routed like anything else (`read_document` for a file, `describe_image_file`
+  for a photo — never a forced/hardcoded tool call).
 - **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction
-  when no API/tool exists for a task. Skippable per-deployment via `.env`'s
-  `DISABLED_SKILL_MODULES=vision_ops` — e.g. a headless server has no display for it.
+  when no API/tool exists for a task, plus `describe_image_file` for looking at an
+  existing image FILE (not the live screen) — e.g. one just uploaded via Telegram.
+  Skippable per-deployment via `.env`'s `DISABLED_SKILL_MODULES=vision_ops` — e.g. a
+  headless server has no display for it (this also skips `describe_image_file`, which
+  doesn't strictly need one — a known trade-off, not a bug).
 - **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider,
   swappable via `.env` with no code changes.
 
@@ -646,6 +652,24 @@ time** yet: two independent `CielCore` processes writing the same JSON/SQLite-ba
 state concurrently is a real race condition. Treat them as alternatives to pick one from
 for now. Full instructions: [`docker/README.md`](docker/README.md).
 
+### Daily CI jobs (`.github/workflows/health_check.yml`)
+
+Builds this same image and runs it daily (cron, 07:00 Vietnam time) — not a bare
+`pip install` on the runner, so this also proves the image itself still builds:
+
+1. `scripts/health_check.py` — boots CielCore, makes exactly one real Brain call,
+   reports PASS/FAIL to Telegram.
+2. `scripts/daily_digest.py` (only if step 1 passed) — asks Ciel, through real Brain
+   routing (not a hand-rolled call), to summarize Gmail + today's news, reports the
+   result to Telegram. Splits "cần chú ý" (summarized in full) from "tự động/định kỳ"
+   (job-alerts/marketing — listed by sender+count only, not summarized), since Gmail's
+   own `category:primary` doesn't reliably exclude those senders.
+
+Needs these repo secrets (Settings → Secrets and variables → Actions): `API_KEY`,
+`BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and — now that the digest
+genuinely calls `search_gmail` — `GOOGLE_CREDENTIALS_B64`/`GOOGLE_TOKEN_B64` (base64 of
+`credentials.json`/`ciel_data/gmail_token.json`).
+
 ---
 
 ## Rebuilding the UI
@@ -728,7 +752,8 @@ Ciel 2.0/
 │
 ├── backtest/                   # test_context · test_outbound · test_proactive · test_user_model ·
 │                               #   test_conversation_bugs (369 assertions, no LLM — run these first)
-├── scripts/                    # format_thoughts_log.py, prompt_harness.py, cost_report.py
+├── scripts/                    # format_thoughts_log.py, prompt_harness.py, cost_report.py,
+│                                #   health_check.py + daily_digest.py (daily CI jobs, see Docker Deployment)
 ├── email_template/             # Structured templates for outbound email bodies
 ├── instructionAI/              # AI-assistant instruction files (start with SKILL.md)
 ├── ciel_workspace/              # Sandbox for user files, logs, screenshots

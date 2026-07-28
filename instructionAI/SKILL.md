@@ -234,3 +234,61 @@ model.
     "who is allowed to talk to this at all" (Telegram's `chat_id` allow-list is the
     first example), that check happens BEFORE the message ever reaches
     `core.process()` — never inside a tool or a prompt.
+
+23. **`_self_correct()` must never let a FAILED escalation discard a result that already
+    worked.** Caught live: `read_document` fully extracted a 1-page CV, but Brain's own
+    evaluator misjudged it "cut off midway" and escalated to `execute_shell_command` —
+    which itself failed twice. The old code did `result = new_result` unconditionally,
+    so the Master was told "couldn't read it" about a file Ciel had already read fine.
+    Fixed with `StepRecord(...).failed()` (the same deterministic failure-signal check
+    Tier 1 uses) gating the overwrite: only replace the original when the new attempt
+    actually did better. A second, narrower fix for the SAME false "unsatisfied"
+    judgment: `read_document` now states the real page count and "TOÀN BỘ N trang,
+    không bị cắt" IN the data itself (after the 30k-char truncation check, never
+    before) — a fact the evaluator reads beats a prompt instruction it might ignore.
+
+24. **A path is only "absolute" according to the OS actually running the process.**
+    `skills/internal/system_ops.py`'s `_resolve_target_path()` used `Path(...).is_absolute()`
+    to accept a path into the sandbox — true for `D:/Ciel-2.0/ciel_workspace/...` on
+    Windows, but pathlib has no concept of drive letters on Linux, so the exact same
+    string returns `False` there. Once Ciel moved into a Docker container (Linux), a
+    Windows-style path the Brain produces (per its WINDOWS SYSTEM ARCHITECT rules) fell
+    into the relative-default branch and got glued onto `WORKSPACE_DIR` verbatim —
+    `ciel_workspace/D:/Ciel-2.0/ciel_workspace/...`, which obviously never exists, even
+    though the real file was sitting right there. Fixed with `_remap_into_sandbox()`: a
+    `^[A-Za-z]:/` regex catches what `is_absolute()` misses on Linux, finds a
+    `ciel_workspace/`/`agent_output/` segment anywhere in the string, and remaps
+    everything after it onto THIS host's real copy of that zone — a path with no such
+    segment is still rejected outright, so this widens recognition, not the sandbox
+    boundary.
+
+25. **Telegram inbound photos/documents land in the sandbox as a FILE, then a normal
+    turn — never a forced tool call.** `core/telegram_interface.py` downloads a
+    `message.photo`/`message.document` into `ciel_workspace/telegram_uploads/` and
+    enqueues a plain note (`"[Ảnh/File Master vừa gửi... đã lưu tại: ..."] + caption`)
+    exactly like any text message — Brain routes it like anything else (usually to
+    `read_document` for a file, or the new `describe_image_file` for an image), never
+    a hardcoded path. `describe_image_file` (`skills/internal/vision_ops.py`) is
+    deliberately NOT the same tool as `vision_act`/`vision_describe` in intent even
+    though it shares the file — those two see the LIVE screen (`_capture_screen()`),
+    this one opens an existing FILE (`Image.open()`), and both share `_call_vision_llm`
+    only as an implementation detail. It lives in `vision_ops.py` (bundled with
+    `vision_act`/`vision_describe`), so `DISABLED_SKILL_MODULES=vision_ops` turns it
+    off too even though it needs no display/mouse — a known trade-off, not a bug,
+    unless a future deployment wants image-file viewing without screen control.
+
+26. **A Gmail query needs `category:primary` even when combining operators, and
+    `category:primary` alone is not a promotions filter.** Found live: a digest query
+    `newer_than:7d {is:unread is:important}` (valid Gmail OR syntax, not malformed)
+    with no `category:primary` surfaced marketing/job-board mail Gmail auto-marks
+    unread/important — `core/scheduler.py::_fetch_unread_emails()`'s hardcoded
+    `q="is:unread"` had the same gap, fixed to `"is:unread category:primary"`. But
+    verified live against a real inbox: `category:primary` does NOT reliably exclude
+    job-alert/marketing senders either — Gmail's own ML categorization puts many of
+    them in Primary for a given account. That is a curation problem the Gmail query
+    cannot solve (a stricter query risks excluding mail the Master actually wants —
+    confirmed live when "exclude ITviec" would have hidden real job applications the
+    Master made). The fix that held: ask the DIGEST prompt (`scripts/daily_digest.py`'s
+    `DIGEST_REQUEST`) to split "cần chú ý" (summarize fully) from "tự động/định kỳ"
+    (list sender + count only) — curation belongs in how results are presented, not in
+    a query trying to guess intent it cannot know.
