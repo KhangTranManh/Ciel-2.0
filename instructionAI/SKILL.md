@@ -27,9 +27,12 @@ consent, bounded context, interruptible requests, proactivity, and a model of th
 See `architecture.md` for what each one does and why it exists; every tier is
 individually switchable in `.env` and degrades to the pre-tier behaviour when off.
 
-Entry points: `main.py` (CLI, `--voice`/`--speak`) and `main_api.py`
-(FastAPI/WebSocket for the React/Tauri UI; also serves `GET /skills`, `/health`,
-`POST /tts`).
+Entry points: `main.py` (CLI, `--voice`/`--speak`), `main_api.py` (FastAPI/WebSocket for
+the React/Tauri UI; also serves `GET /skills`, `/health`, `POST /tts`), and
+`main_telegram.py` (Telegram bot via `core/telegram_interface.py`). All three are thin
+wrappers around the same `core.agent_loop.AgentLoop` / `core.llm_connector.CielCore` —
+see *Three Entry Points* in `architecture.md`. Container images for the first two are in
+`docker/` (see *Docker Deployment* in `architecture.md`).
 
 ## Instruction files in this folder
 
@@ -99,7 +102,12 @@ approvals) are finished and simply not surfaced in the UI yet.
    `core/` gates a new pack, the burden is on the pack** — read *Skill Contract* in
    `conventions.md` first. The rule that bites most: a tool can be invoked more than
    once per request (self-healing ×3, self-correction ×2, the agent loop ×N) — make
-   tools idempotent, or split preview/confirm via `make_result(confirm={...})`.
+   tools idempotent, or split preview/confirm via `make_result(confirm={...})`. A
+   module named in `.env`'s `DISABLED_SKILL_MODULES` (comma-separated stems, e.g.
+   `vision_ops`) is skipped before `ToolManager` even imports it — for a capability
+   class that genuinely can't work in a given deployment (vision needs a real display;
+   the Docker image has none), not for anything reachable by normal denial (that's
+   `CIEL_DENY_TOOLS`, rule 14, a runtime decision — this is a load-time one).
 
 8. **Workspace file ops are sandboxed** to `ciel_workspace/` / `agent_output/` via
    `_is_safe_path()`. Never weaken that check.
@@ -207,4 +215,22 @@ model.
     two places, both response-side (`_recent_turns_block()` feeding `execute_chat` and
     the tool-result format path) — never routing. `action == "code"`'s `task` is a
     different contract (a spec to execute, not a pre-written answer) and stays
-    untouched by both of these rules.
+    untouched by both of these rules. The same `action == "chat"` branch also appends
+    Brain's real `hidden_thought.reasoning` (when present) alongside `task`, labelled
+    the same non-binding way — caught live: without it, the Worker asked to explain a
+    "why not" it was never given the real reason for invented a plausible-sounding but
+    FALSE one (a denied browser-control request came back as "I don't have permission
+    to control the browser", when the real reason was Brain misreading an unrelated
+    "kệ lệnh đó đi" as cancelling the whole turn). Same lesson as rule 5: give the model
+    the fact, or it fabricates one to fill the gap.
+
+22. **A new front-end (CLI/WS/Telegram/...) must set `confirm_callback`, never bypass
+    it.** All three implementations — `main.py`'s blocking `input()`, `main_api.py`'s
+    WebSocket JSON round-trip, `core/telegram_interface.py`'s inline-keyboard
+    round-trip — share the exact signature `confirm_callback(tool_name, preview,
+    tool_args) -> bool` and the same fail-closed timeout behaviour (no answer = declined,
+    never approved). A front-end that can trigger real tools and skips this is a bypass
+    of the Tier-3 safety gate, not a new feature. If the front-end has its own notion of
+    "who is allowed to talk to this at all" (Telegram's `chat_id` allow-list is the
+    first example), that check happens BEFORE the message ever reaches
+    `core.process()` — never inside a tool or a prompt.

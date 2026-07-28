@@ -11,11 +11,18 @@ survive a change — or a downgrade — of model.
 Ciel-2.0/
 ├── main.py                       # CLI entry point (input loop, safety callback, --voice/--speak)
 ├── main_api.py                   # FastAPI/WebSocket backend: WS /ws, GET /skills /health, POST /tts
+├── main_telegram.py               # Telegram bot entry point — thin wrapper around core.telegram_interface
 ├── architect.md                  # Detailed project roadmap and changelog (dated)
 ├── note.md                       # Live status / rolling changelog (dated)
 ├── credentials.json              # Google OAuth credentials (not tracked in git)
 ├── requirements.txt               # Python dependencies
 ├── .env                           # API keys, provider config (not tracked in git)
+├── docker/                        # Container deployment — see "Docker Deployment" below
+│   ├── Dockerfile                  # Shared image for both docker-compose files below
+│   ├── docker-compose.api.yml      # ciel-api service (main_api.py, Vercel-facing)
+│   ├── docker-compose.telegram.yml # ciel-telegram service (main_telegram.py)
+│   ├── requirements-docker.txt     # Slimmed deps — no pyautogui/pyperclip/torch/sentence-transformers
+│   └── README.md                   # Build/run instructions, shared-state caveat
 │
 ├── core/                          # Main orchestration layer — every request goes through this
 │   ├── agent_loop.py              # Thin wrapper → CielCore.process()
@@ -23,8 +30,15 @@ Ciel-2.0/
 │   ├── router.py                  # Brain-based intent classification (4 actions)
 │   ├── middleware.py              # Middleware tier hookup (agent_system/models/middleware.py does the work)
 │   ├── recovery_manager.py        # Multi-attempt self-healing (code fix + param fix + skip-list)
-│   ├── rag_manager.py             # ChromaDB vector memory (long-term RAG)
-│   ├── tool_manager.py            # Auto-discovery tool registry & execution
+│   ├── rag_manager.py             # ChromaDB vector memory (long-term RAG) — chromadb's own ONNX
+│   │                                embedding function (DefaultEmbeddingFunction), NOT sentence-
+│   │                                transformers/torch; same all-MiniLM-L6-v2 model, no GPU/CUDA deps
+│   ├── tool_manager.py            # Auto-discovery tool registry & execution — skips any module
+│   │                                named in config.DISABLED_SKILL_MODULES before even importing it
+│   ├── telegram_interface.py      # TelegramInterface — third front-end consumer of CielCore
+│   │                                (long-polls the Bot API directly; chat_id allow-list; confirm
+│   │                                gate via inline Yes/No keyboard, same confirm_callback contract
+│   │                                as main.py's CLI prompt and main_api.py's WS dialog)
 │   ├── cost.py                    # LLM pricing table + estimate_cost() (overridable via ciel_data/model_pricing.json)
 │   ├── voice_input.py             # CLI speech-to-text (sounddevice + whisper/google/gemini backends)
 │   ├── speech_output.py           # CLI/UI text-to-speech (to_speech() normalizer + edge/pyttsx3/space backends)
@@ -59,7 +73,11 @@ Ciel-2.0/
 │   │   ├── system_ops.py            # Workspace file CRUD + Python runner + PDF/DOCX reader
 │   │   ├── os_ops.py                # Shell, screenshot, app launcher
 │   │   ├── productivity_ops.py      # Todos, time, weather, calculate, grep_in_workspace
-│   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay
+│   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay — disabled on headless
+│   │                                  deployments via .env `DISABLED_SKILL_MODULES=vision_ops`
+│   │                                  (ToolManager skips the module before import; no display/mouse
+│   │                                  needed in the container, and pyautogui isn't even installed
+│   │                                  there — see docker/requirements-docker.txt)
 │   └── external/
 │       ├── gmail_ops.py             # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
 │       ├── trading_ops.py           # Crypto, Forex, Metals price + TA + build_market_report_html
@@ -134,6 +152,14 @@ main.py also initializes:
 main.py (voice mode) also touches:
   └── core.voice_input / core.speech_output         (STT/TTS — lazy imports, fail-open)
 
+main_telegram.py → core.agent_loop.AgentLoop → core.llm_connector.CielCore
+  └── core.telegram_interface.TelegramInterface     (long-poll loop + confirm gate;
+                                                      sets ciel.core.confirm_callback,
+                                                      same signature as main.py/main_api.py's)
+  A separate process/entry point from main.py and main_api.py — its own CielCore
+  instance, not shared state, unless deliberately pointed at the same ciel_data/
+  (see docker/README.md's shared-memory note).
+
 skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json directly)
 ```
 
@@ -149,7 +175,12 @@ User input (text or voice transcript) → CielCore.process()
   → ContextAssembler bounds recall, then assembles [request, language, cwd] with a budget
   → Router (Brain LLM) classifies intent → JSON with hidden_thought + action
       action == "chat": the router's `task` is a HINT only — the Worker always gets the
-      Master's real words; `task` is appended labelled "for reference ONLY"
+      Master's real words; `task` is appended labelled "for reference ONLY", and Brain's
+      real `hidden_thought.reasoning` (when present) is appended alongside it — also
+      labelled non-binding — so the Worker explains a "why not" from the real reason
+      instead of inventing a plausible-sounding but false one (caught live: a false
+      "no permission to control the browser" excuse for a decision Brain made for an
+      unrelated reason)
   → Based on action:
       "chat"       → Worker generates a response, with recent-turns context injected
       "tool"       → dangerous-code / high-risk gate → Safety Gate (Y/N, or DEFER if
@@ -596,7 +627,7 @@ then: recency filter on the REAL pubDate → landing-page filter → trim to max
   `UNKNOWN … do NOT state a date` so the model cannot invent one.
 - Google News RSS is an UNOFFICIAL endpoint (like edge-tts) — keep the ddgs fallback.
 
-## Two Entry Points
+## Three Entry Points
 
 - **`main.py`** — CLI loop. Blocking `input("Y/N")` for safety confirmations. `--voice`
   (speak requests) and `--speak` (hear replies); `:v` for a one-off voice capture.
@@ -605,6 +636,39 @@ then: recency filter on the REAL pubDate → landing-page filter → trim to max
   (incl. live token/cost) to the React/Tauri UI. Safety confirmations sent as JSON over
   WebSocket with a 60s timeout; `{"type": "cancel"}` wires Tier 5. `POST /tts` powers
   the UI's read-aloud toggle with the same voice engine as the CLI.
+- **`main_telegram.py`** — thin wrapper around `core/telegram_interface.py`
+  (`TelegramInterface`). Long-polls the Bot API on one thread, processes messages one at
+  a time on a worker thread (a queue, not concurrent — CielCore's JSON/SQLite-backed
+  state is built for one writer). **Every inbound message is checked against a single
+  allow-listed `TELEGRAM_CHAT_ID`** before it ever reaches `core.process()` — this
+  front-end can run real tools (shell, email, file writes), so an unauthorized sender
+  must never reach routing. Safety confirmations become an inline Yes/No keyboard
+  (`confirm_callback`, same contract as the other two front-ends), auto-declining after
+  60s. `/cancel` wires Tier 5 (handled on the poll thread, not queued, so it interrupts
+  whatever the worker thread is currently doing instead of waiting behind it).
 
 See `voice_and_interface.md` for the UI's current layout, the full WebSocket protocol,
 and what a UI rebuild still needs to wire.
+
+## Docker Deployment (`docker/`)
+
+Two front-ends, one shared image (`docker/Dockerfile`, built from repo root so it can
+`COPY . .`), split into **separate compose files** so each can be built/started/stopped
+independently: `docker-compose.api.yml` (`ciel-api` → `main_api.py`, the Vercel-facing
+service) and `docker-compose.telegram.yml` (`ciel-telegram` → `main_telegram.py`).
+
+- **`docker/requirements-docker.txt`** drops what a headless container can't use:
+  `pyautogui`/`pyperclip` (no display — pair with `.env`'s
+  `DISABLED_SKILL_MODULES=vision_ops`) and `sounddevice`/`faster-whisper`/
+  `SpeechRecognition` (no mic — `core/voice_input.py` stays CLI-only, lazily imported).
+  `edge-tts` is kept (cloud TTS, no hardware). `sentence-transformers`/`torch` are
+  dropped too — see the `rag_manager.py` note in the File Tree above; this isn't
+  docker-specific, `core/rag_manager.py` no longer imports either package at all.
+- **Both compose files mount the SAME `ciel_data/`/`agent_output/`/`ciel_workspace/`**
+  on purpose, so whichever front-end the Master used, the other sees the same facts,
+  chat history, and long-term memory. That is also why the two services should **not**
+  run at the same time yet: two independent `CielCore` processes writing the same
+  JSON/SQLite-backed state concurrently is a real race condition, not a theoretical
+  one. Treat them as alternatives to pick one from until that's addressed with a proper
+  shared store or a lock.
+- Full build/run commands and the shared-state caveat: `docker/README.md`.

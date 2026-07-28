@@ -31,10 +31,12 @@ Short-Term (JSON)                    Long-Term (ChromaDB)
 ### Long-Term Memory (RAG)
 
 - **Storage**: `ciel_data/vector_memory/` (ChromaDB persistent directory).
-- **Embedding model**: `all-MiniLM-L6-v2` (local, fast, ~80MB).
+- **Embedding model**: `all-MiniLM-L6-v2` (local, fast, ~80MB), run via ChromaDB's own
+  ONNX `DefaultEmbeddingFunction` — not sentence-transformers/torch (dropped entirely;
+  same model, no GPU/CUDA dependency).
 - **Collection**: `ciel_long_term_memory`.
-- **Graceful degradation**: missing `chromadb`/`sentence-transformers` → RAG silently
-  disables; CielCore keeps working with JSON-only short-term memory.
+- **Graceful degradation**: missing/failing `chromadb` → RAG silently disables;
+  CielCore keeps working with JSON-only short-term memory.
 
 ### RAG Recall Pipeline
 

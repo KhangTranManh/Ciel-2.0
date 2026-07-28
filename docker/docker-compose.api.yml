@@ -12,7 +12,10 @@ services:
     volumes:
       # Persistent runtime state — facts.json, chat memory, vector_memory,
       # gmail_token.json, thoughts.log, task/deferred stores. Without this the
-      # container starts clean (and forgets everything) on every rebuild.
+      # container starts clean (and forgets everything) on every rebuild. Also
+      # shared with ciel-telegram (docker-compose.telegram.yml) so either
+      # front-end sees the same memory — see that file's note on why the two
+      # still shouldn't run at the same time yet.
       - ../ciel_data:/app/ciel_data
       # Files Ciel writes for/reads from the Master (reports, generated docs).
       - ../agent_output:/app/agent_output

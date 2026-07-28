@@ -34,6 +34,7 @@
 - [Voice I/O](#voice-io)
 - [Observability & Cost](#observability--cost)
 - [Backend API](#backend-api)
+- [Docker Deployment](#docker-deployment)
 - [Rebuilding the UI](#rebuilding-the-ui)
 - [File Structure](#file-structure)
 - [Customization](#customization)
@@ -127,12 +128,14 @@ breakdown.
 | **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
 | **Google OAuth credentials** | Gmail tools | `credentials.json` + token. Missing it disables *only* Gmail tools. |
 | **Microphone + internet** | Voice I/O only | Default STT/TTS backends are free and need no key, but do need a network connection. |
-| **TwelveData / Telegram tokens** | Trading tools, proactive digest | Optional; those tool packs degrade gracefully without them. |
+| **TwelveData / Telegram tokens** | Trading tools, proactive digest, Telegram bot front-end | Optional for trading/digest (degrades gracefully). Required for `main_telegram.py`: `TELEGRAM_BOT_TOKEN` + a real numeric `TELEGRAM_CHAT_ID` (not any of your other API keys). |
+| **Docker** | Container deployment only | Only needed for `docker/` — see [Docker Deployment](#docker-deployment). Skip for a bare CLI/UI run. |
 
-> **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a
-> working PyTorch install. If `c10.dll` fails to initialize (missing VC++
-> Redistributable, or a CPU without AVX), Ciel disables RAG gracefully rather than
-> crashing — you lose long-term memory, not the whole system.
+> **Note on RAG:** long-term memory (`core/rag_manager.py`) uses ChromaDB's own ONNX
+> embedding function (`DefaultEmbeddingFunction`, same `all-MiniLM-L6-v2` model) — no
+> PyTorch/`sentence-transformers`/GPU required. If ChromaDB itself fails to initialize
+> for any reason, Ciel disables RAG gracefully rather than crashing — you lose
+> long-term memory, not the whole system.
 
 ---
 
@@ -287,6 +290,35 @@ Click the 🔇 → 🔊 button beside the input box to have Ciel read replies al
 neural voice as the CLI). For the wrapped desktop app instead of the browser tab:
 `cd ui && npm run tauri dev` — see [ui/README.md](ui/README.md).
 
+### 5. (Optional) Run as a Telegram bot
+
+A third front-end, independent of the CLI/UI — same core underneath. Requires
+`TELEGRAM_BOT_TOKEN` and a real numeric `TELEGRAM_CHAT_ID` in `.env` (message
+`@userinfobot` on Telegram, or hit `getUpdates` after messaging your own bot, to find
+it — it's a number, not any of your other API keys).
+
+```bash
+python main_telegram.py
+```
+
+Every message is checked against `TELEGRAM_CHAT_ID` before it reaches Ciel — anyone
+else messaging the bot is ignored. High-risk actions arrive as an inline Yes/No
+keyboard instead of a CLI prompt; `/cancel` interrupts whatever is currently running
+(Tier 5). Don't run this alongside `main_api.py`/`main.py` against the same `ciel_data/`
+at the same time (see the Docker section below) — pick one front-end at a time until
+that's addressed.
+
+### 6. (Optional) Run in Docker
+
+```bash
+docker compose -f docker/docker-compose.api.yml up -d --build        # main_api.py, Vercel-facing
+docker compose -f docker/docker-compose.telegram.yml up -d --build   # main_telegram.py
+```
+
+Same image, split into separate compose files so either can be built/started/stopped
+independently. Full details — required host files, the shared-`ciel_data/` caveat, why
+not to run both at once yet: [docker/README.md](docker/README.md).
+
 ---
 
 ## Feature Overview
@@ -413,8 +445,11 @@ neural voice as the CLI). For the wrapped desktop app instead of the browser tab
 - **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with
   zero code changes between the two. Skills panel (left, 100% backend-driven) and a
   chat workbench (right) with a stop button, safety-gate dialog, and live vitals.
+- **Telegram bot** (`main_telegram.py`) — a third front-end onto the same core, chat_id
+  allow-listed, with an inline-keyboard safety confirmation dialog and `/cancel`.
 - **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction
-  when no API/tool exists for a task.
+  when no API/tool exists for a task. Skippable per-deployment via `.env`'s
+  `DISABLED_SKILL_MODULES=vision_ops` — e.g. a headless server has no display for it.
 - **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider,
   swappable via `.env` with no code changes.
 
@@ -566,6 +601,49 @@ risky action, while `tool_name == "plan"` is the Tier-3 plan-level approval — 
 question covering every step, asked *before anything runs*, where "no" means
 **nothing ran**.
 
+### Telegram bot (`main_telegram.py`)
+
+A third front-end (`core/telegram_interface.py`), independent of the WebSocket/UI pair
+above. Long-polls the Telegram Bot API directly — no extra dependency, same raw-`requests`
+style as `skills/external/telegram_ops.py`. Every inbound message is checked against a
+single allow-listed `TELEGRAM_CHAT_ID` **before** it reaches `core.process()`; safety
+confirmations arrive as an inline Yes/No keyboard (same `confirm_callback` contract as
+the CLI prompt and the WebSocket dialog, auto-declining after 60s); `/cancel` wires
+Tier 5. See *Run as a Telegram bot* above.
+
+---
+
+## Docker Deployment
+
+Two front-ends, one shared image (`docker/Dockerfile`), split into separate compose
+files so each can be built/started/stopped independently:
+
+| File | Service | Runs |
+|---|---|---|
+| `docker/docker-compose.api.yml` | `ciel-api` | `main_api.py` — the Vercel-facing WebSocket/REST backend |
+| `docker/docker-compose.telegram.yml` | `ciel-telegram` | `main_telegram.py` — the Telegram bot |
+
+```bash
+docker compose -f docker/docker-compose.api.yml up -d --build
+docker compose -f docker/docker-compose.telegram.yml up -d --build   # separately, not together yet
+```
+
+`docker/requirements-docker.txt` is a slimmed dependency set: no `pyautogui`/`pyperclip`
+(no display in a container — pair with `.env`'s `DISABLED_SKILL_MODULES=vision_ops`, which
+skips loading `vision_ops.py` entirely before `ToolManager` ever imports it), no
+`sounddevice`/`faster-whisper`/`SpeechRecognition` (no mic — `core/voice_input.py` stays
+CLI-only, lazily imported so its absence never blocks startup). `edge-tts` is kept (cloud
+TTS, no hardware). `sentence-transformers`/`torch` are dropped too, but that's not
+docker-specific — `core/rag_manager.py` no longer imports either package anywhere (see the
+RAG note in Prerequisites).
+
+Both compose files mount the **same** `ciel_data/`/`agent_output/`/`ciel_workspace/`, so
+whichever front-end the Master used, the other sees the same facts, chat history, and
+long-term memory — but that also means the two services shouldn't run **at the same
+time** yet: two independent `CielCore` processes writing the same JSON/SQLite-backed
+state concurrently is a real race condition. Treat them as alternatives to pick one from
+for now. Full instructions: [`docker/README.md`](docker/README.md).
+
 ---
 
 ## Rebuilding the UI
@@ -601,17 +679,20 @@ Full detail, including the current UI layout and every wiring trap: **[`instruct
 Ciel 2.0/
 ├── main.py                    # CLI entry point (text + voice)
 ├── main_api.py                 # FastAPI + WebSocket server for the UI (+ /skills, /health, /tts)
+├── main_telegram.py             # Telegram bot entry point (see core/telegram_interface.py)
 ├── architect.md                # Full architecture map (start here for deep dives)
 ├── note.md                    # Live status / rolling changelog
 ├── requirements.txt
+├── docker/                     # Container deployment — Dockerfile + 2 compose files (API, Telegram)
 │
 ├── core/                       # Main orchestration — the part every request goes through
 │   ├── llm_connector.py        # CielCore: routes → executes → responds
 │   ├── router.py                # Brain-based intent classification
 │   ├── middleware.py            # Email/report finalizer hookup
 │   ├── recovery_manager.py      # Self-healing with skip-list
-│   ├── rag_manager.py           # ChromaDB long-term memory
-│   ├── tool_manager.py          # Tool registry & execution
+│   ├── rag_manager.py           # ChromaDB long-term memory (ONNX embedding, no torch)
+│   ├── tool_manager.py          # Tool registry & execution (honors DISABLED_SKILL_MODULES)
+│   ├── telegram_interface.py    # Telegram bot front-end — long-poll loop + confirm gate
 │   ├── cost.py                  # LLM pricing + cost estimation
 │   │
 │   │  # --- agent capability tiers (see instructionAI/architecture.md) ---
@@ -676,6 +757,8 @@ Ciel 2.0/
 | Cap what the learned profile may cost per call | `.env` — `USER_MODEL_TOKEN_BUDGET`, or `USER_MODEL_ENABLED=false` |
 | Inspect / correct what Ciel believes about you | `ciel_data/user_model.json` — indented, unescaped, safe to hand-edit |
 | Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
+| Skip loading a whole capability class (e.g. vision on a headless server) | `.env` — `DISABLED_SKILL_MODULES` (comma-separated module stems, e.g. `vision_ops`) |
+| Restrict the Telegram bot to a different chat | `.env` — `TELEGRAM_CHAT_ID` (numeric; message `@userinfobot` to find yours) |
 
 ---
 
@@ -707,9 +790,11 @@ failure patterns instead of guessing from a handful of anecdotal bad responses.
 `test_conversation_bugs.py` cover 369 assertions with zero LLM calls and zero network —
 they catch a regression in seconds, before you spend a real call finding it.
 
-**Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on
-boot, that's PyTorch failing to initialize — not a code bug. Ciel disables RAG
-gracefully and keeps running.
+**RAG failing to initialize isn't a code bug.** `core/rag_manager.py` is wrapped so that
+any ChromaDB init failure (disk permissions, a corrupted `vector_memory/` dir, ...)
+disables long-term memory gracefully and keeps the rest of Ciel running — check the
+`[Ciel Warning] RAG disabled — ...` line in `thoughts.log` for the actual cause rather
+than assuming a deeper crash.
 
 ---
 
@@ -725,8 +810,8 @@ because of a specific, previously-observed failure.
 
 Built on [LangChain](https://github.com/langchain-ai/langchain) /
 [LangGraph](https://github.com/langchain-ai/langgraph),
-[ChromaDB](https://github.com/chroma-core/chroma),
-[sentence-transformers](https://github.com/UKPLab/sentence-transformers),
+[ChromaDB](https://github.com/chroma-core/chroma) (long-term memory, via its own
+built-in ONNX embedding function — no PyTorch dependency),
 [FastAPI](https://github.com/tiangolo/fastapi),
 [Tauri](https://github.com/tauri-apps/tauri),
 [edge-tts](https://github.com/rany2/edge-tts), and

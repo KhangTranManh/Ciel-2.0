@@ -1,0 +1,25 @@
+services:
+  # Same image as docker-compose.api.yml, different entrypoint —
+  # main_telegram.py is a plain long-polling script (no ASGI app, no port to
+  # expose), so it overrides `command:` instead of the Dockerfile's uvicorn CMD.
+  #
+  # Shares the SAME ciel_data/agent_output/ciel_workspace as ciel-api (see that
+  # file) so Master-facing memory (facts, chat history, vector_memory) is one
+  # continuous thing regardless of which front-end was used. That also means:
+  # don't run this alongside ciel-api yet — CielCore's JSON-file / SQLite-
+  # backed state isn't built for two independent processes writing to it at
+  # once. Treat the two as alternatives to pick one from for now, not a pair.
+  ciel-telegram:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ciel-telegram
+    restart: unless-stopped
+    command: ["python", "main_telegram.py"]
+    env_file:
+      - ../.env
+    volumes:
+      - ../ciel_data:/app/ciel_data
+      - ../agent_output:/app/agent_output
+      - ../ciel_workspace:/app/ciel_workspace
+      - ../credentials.json:/app/credentials.json:ro

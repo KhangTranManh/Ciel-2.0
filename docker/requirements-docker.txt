@@ -30,8 +30,10 @@ pandas
 pandas-ta
 
 # --- Memory & Vector Database ---
+# sentence-transformers (and the torch + CUDA stack it drags in) is deliberately
+# NOT here: core/rag_manager.py uses chromadb's own DefaultEmbeddingFunction
+# (ONNX runtime, same all-MiniLM-L6-v2 model) instead — see that file's note.
 chromadb
-sentence-transformers
 
 # --- Google Cloud & External APIs ---
 langchain-google-community

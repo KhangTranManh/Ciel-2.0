@@ -35,7 +35,6 @@ _available = True  # Set to False if imports fail
 # ==========================================================
 VECTOR_DB_DIR = Path(__file__).resolve().parent.parent / "ciel_data" / "vector_memory"
 COLLECTION_NAME = "ciel_long_term_memory"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_TOP_K = 3              # How many past conversations to retrieve
 MIN_RELEVANCE_SCORE = 0.65     # Ignore results below this similarity threshold
 MIN_QUERY_LENGTH = 15          # Skip RAG for very short/trivial inputs
@@ -83,10 +82,10 @@ def _ensure_initialized():
         # Create persistent storage directory
         VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Initialize embedding function (downloads model on first run)
-        _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
-        )
+        # Same model (all-MiniLM-L6-v2) as sentence-transformers would give us, but
+        # via chromadb's own ONNX runtime — cuts torch (~1.7GB w/ its CUDA deps) out
+        # of the dependency graph entirely for a feature that never needed a GPU.
+        _embedding_fn = embedding_functions.DefaultEmbeddingFunction()
 
         # Create/open persistent ChromaDB client
         client = chromadb.PersistentClient(path=str(VECTOR_DB_DIR))

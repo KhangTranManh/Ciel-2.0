@@ -4,8 +4,8 @@
 
 FROM python:3.13-slim AS base
 
-# build-essential: some deps (chromadb's sqlite extensions, sentence-transformers'
-# tokenizers) need a compiler if no prebuilt wheel matches the image's platform.
+# build-essential: some deps (chromadb's sqlite extensions) need a compiler if
+# no prebuilt wheel matches the image's platform.
 # curl: used by the container HEALTHCHECK to hit /health.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -30,4 +30,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
+# Default command — the WebSocket API. The Telegram bot (main_telegram.py) is a
+# plain polling script, not an ASGI app, so it can't be served by uvicorn; it
+# runs as a SEPARATE service in docker-compose.yml that overrides this command
+# with `python main_telegram.py` on the same image instead.
 CMD ["uvicorn", "main_api:app", "--host", "0.0.0.0", "--port", "8000"]

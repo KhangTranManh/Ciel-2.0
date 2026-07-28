@@ -262,8 +262,9 @@ disposable.
    different text/voice.
 
 **Degradation and isolation**
-8. `rag_manager.py` lazy-loads ChromaDB/sentence-transformers; if missing, RAG degrades
-   gracefully and CielCore keeps working with JSON-only short-term memory.
+8. `rag_manager.py` lazy-loads ChromaDB (embedding via its own ONNX
+   `DefaultEmbeddingFunction`, not sentence-transformers/torch); if missing, RAG
+   degrades gracefully and CielCore keeps working with JSON-only short-term memory.
 9. Self-correction retries (Brain evaluating tool results) are not saved to chat memory
    or RAG, to prevent noise accumulation.
 10. Scheduled/legacy clock tasks must never write to `memory_bank.json` or call
