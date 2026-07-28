@@ -1,0 +1,64 @@
+# Server image dependency set — derived from the root requirements.txt, with
+# hardware-bound packages removed. A headless container has no display and no
+# microphone, so these would either fail to import or do nothing useful:
+#   pyautogui, pyperclip   -> screen/mouse control (vision_ops, disabled via
+#                             DISABLED_SKILL_MODULES=vision_ops; not installed
+#                             so the image doesn't need any X11/display libs)
+#   sounddevice            -> mic capture (needs PortAudio + an actual input
+#                             device; core/voice_input.py is lazy-imported by
+#                             the CLI only, main_api.py never touches it)
+#   faster-whisper         -> local STT model, only used behind sounddevice
+#   SpeechRecognition      -> STT fallback, same story
+# edge-tts is KEPT: core/speech_output.synth_to_bytes() calls Microsoft's cloud
+# TTS and returns raw bytes over the websocket — no local audio hardware needed,
+# and main_api.py does use it.
+#
+# If you re-enable vision or voice-input for this deployment, add the relevant
+# packages back here (and drop vision_ops from DISABLED_SKILL_MODULES) rather
+# than switching back to the root requirements.txt wholesale.
+
+# --- Core Intelligence & Framework ---
+langchain>=0.1.0
+langchain-community
+langchain-core>=0.1.10
+langchain-ollama
+langchain-google-genai
+langchain-openai
+langgraph
+tenacity
+pandas
+pandas-ta
+
+# --- Memory & Vector Database ---
+chromadb
+sentence-transformers
+
+# --- Google Cloud & External APIs ---
+langchain-google-community
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+google-genai
+beautifulsoup4
+
+# --- Web Server & Communication ---
+fastapi>=0.115.2
+uvicorn
+websockets
+
+# --- Web Search & Scraping ---
+ddgs
+requests
+
+# --- Document Reading ---
+pypdf
+python-docx
+
+# --- Voice output (server-safe: cloud TTS, no hardware) ---
+edge-tts
+
+# --- Scheduler & Utilities ---
+schedule
+python-dotenv
+colorama
+psutil

@@ -24,8 +24,8 @@ from ..config import (
     OLLAMA_BASE_URL,
     VILAO_URL,
     VILAO_API_KEY,
-    GPT_API_KEY,
-    GPT_BASE_URL,
+    API_KEY,
+    BASE_URL,
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
@@ -185,18 +185,21 @@ class Brain:
             self._router_llm = ChatOpenAI(**llm_kwargs)
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {model_name} (Vilao, safety-bypass={bool(extra)})")
-        elif BRAIN_PROVIDER.lower() == "gpt":
-            # Support for GPT / OpenAI-compatible providers (e.g. custom gateways with model gx/gpt-5.5)
-            base = GPT_BASE_URL or None
+        elif BRAIN_PROVIDER.lower() == "custom":
+            # Any single OpenAI-compatible endpoint (Vilao, TEM/hhtechapi.net, a
+            # future replacement) — swapping providers is now a 2-var .env edit
+            # (API_KEY + BASE_URL), never a new branch here. No safety-bypass
+            # extra_body (that hint is a Vilao-specific API feature; sending an
+            # unrecognized param to a different gateway risks a hard 400, not a help).
             self._router_llm = ChatOpenAI(
                 model=BRAIN_MODEL,
-                api_key=GPT_API_KEY,
-                base_url=base,
+                api_key=API_KEY,
+                base_url=BASE_URL or None,
                 temperature=BRAIN_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
             )
             self._reflect_llm = self._router_llm
-            log.system(f"Brain initialized: {BRAIN_MODEL} (GPT/OpenAI-compatible)")
+            log.system(f"Brain initialized: {BRAIN_MODEL} (custom/OpenAI-compatible)")
         else:
             self._router_llm = ChatGoogleGenerativeAI(
                 model=BRAIN_MODEL,

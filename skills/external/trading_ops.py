@@ -45,9 +45,18 @@ def fetch_market_price(symbol: str) -> str:
         # Format symbol for TwelveData (e.g. EUR/USD)
         if len(symbol) == 6 and "/" not in symbol:
             symbol = f"{symbol[:3]}/{symbol[3:]}"
-        
-        url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={API_KEY}"
-        data = requests.get(url, timeout=10).json()
+
+        # Bug found live: the symbol used to be spliced straight into the URL string
+        # ("...?symbol={symbol}&apikey=...") with no encoding. A symbol containing
+        # '&' — e.g. Brain asking for "S&P 500" — split the query string itself, so
+        # TwelveData received symbol=S (the '&' truncated it) instead of erroring.
+        # "S" happens to be a real ticker (SentinelOne), so the call "succeeded" and
+        # silently returned THAT stock's price (18.09) labeled as "S&P 500" in the
+        # report — a wrong number that looked plausible instead of a clean error.
+        # `params=` lets requests URL-encode the value properly instead of hand-
+        # splicing it into the query string.
+        url = "https://api.twelvedata.com/price"
+        data = requests.get(url, params={"symbol": symbol, "apikey": API_KEY}, timeout=10).json()
         if "price" in data: return f"Giá {symbol}: {data['price']}"
         return f"Error: Could not find price for {symbol}. Ensure format is correct (e.g. EUR/USD, XAU/USD, AAPL)."
     except Exception as e: return f"API Error: {e}"

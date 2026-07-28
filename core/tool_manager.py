@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from agent_system import config
+
 
 class ToolManager:
     def __init__(self):
@@ -36,6 +38,9 @@ class ToolManager:
         for py_file in sorted(package_path.glob("*.py")):
             modname = py_file.stem
             if modname.startswith("__"):
+                continue
+            if modname in config.DISABLED_SKILL_MODULES:
+                print(Fore.YELLOW + f"[Ciel System] Skipped {modname} — disabled via DISABLED_SKILL_MODULES." + Style.RESET_ALL)
                 continue
 
             try:

@@ -35,10 +35,11 @@ except ImportError:
     PYAUTOGUI_AVAILABLE = False
 
 try:
-    from google import genai
-    GENAI_AVAILABLE = True
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import HumanMessage
+    LLM_VISION_AVAILABLE = True
 except ImportError:
-    GENAI_AVAILABLE = False
+    LLM_VISION_AVAILABLE = False
 
 # ==========================================
 # CONSTANTS
@@ -250,23 +251,26 @@ def _image_to_base64(img: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def _call_gemini_vision(img: Image.Image, prompt: str) -> str:
-    """Send an image + text prompt to Gemini Vision and return the response."""
-    from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-    load_dotenv(env_path)
-    
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not found in .env")
-    
-    client = genai.Client(api_key=api_key)
-    
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt, img]
-    )
-    return response.text.strip()
+def _call_vision_llm(img: Image.Image, prompt: str) -> str:
+    """Send an image + text prompt to the same LLM endpoint Brain/Worker/Middleware
+    already use (API_KEY/BASE_URL, see agent_system/config.py) and return the
+    response. Vision used to require its own separate GEMINI_API_KEY — confirmed
+    live (2026-07-27) that VISION_MODEL already accepts image input and describes
+    screenshots accurately, so this no longer needs a key of its own."""
+    from agent_system.config import API_KEY, BASE_URL, VISION_MODEL
+    if not (API_KEY and BASE_URL):
+        raise RuntimeError("API_KEY/BASE_URL not found in .env")
+
+    client = ChatOpenAI(model=VISION_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0.2)
+    msg = HumanMessage(content=[
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_image_to_base64(img)}"}},
+    ])
+    response = client.invoke([msg])
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
+    return content.strip()
 
 
 def _execute_action(action_data: dict, screen_width: int, screen_height: int) -> str:
@@ -375,22 +379,18 @@ RULES:
 """
 
 
-def _call_gemini_text(prompt: str) -> str:
-    """Send a text-only prompt to Gemini (cheap, no image)."""
-    from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-    load_dotenv(env_path)
-    
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not found in .env")
-    
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[prompt]
-    )
-    return response.text.strip()
+def _call_text_llm(prompt: str) -> str:
+    """Text-only prompt (cheap, no image) — same endpoint as _call_vision_llm."""
+    from agent_system.config import API_KEY, BASE_URL, VISION_MODEL
+    if not (API_KEY and BASE_URL):
+        raise RuntimeError("API_KEY/BASE_URL not found in .env")
+
+    client = ChatOpenAI(model=VISION_MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0.2)
+    response = client.invoke(prompt)
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
+    return content.strip()
 
 
 def _execute_cli_actions(cli_actions: list) -> list:
@@ -414,7 +414,7 @@ def _execute_cli_actions(cli_actions: list) -> list:
 def _preflight_plan(task: str) -> dict:
     """Tier 1: Ask Gemini (text-only) if the task can use CLI shortcuts."""
     try:
-        raw = _call_gemini_text(PREFLIGHT_PROMPT.format(task=task))
+        raw = _call_text_llm(PREFLIGHT_PROMPT.format(task=task))
         
         # Strip markdown fences
         cleaned = raw
@@ -440,8 +440,8 @@ def _vision_act(task: str) -> dict:
         return _make_result(False, code="MISSING_DEP", message="Pillow not installed.", tool_name="vision_act")
     if not PYAUTOGUI_AVAILABLE:
         return _make_result(False, code="MISSING_DEP", message="PyAutoGUI not installed.", tool_name="vision_act")
-    if not GENAI_AVAILABLE:
-        return _make_result(False, code="MISSING_DEP", message="google-generativeai not installed.", tool_name="vision_act")
+    if not LLM_VISION_AVAILABLE:
+        return _make_result(False, code="MISSING_DEP", message="langchain-openai not installed.", tool_name="vision_act")
     
     action_log = []
     
@@ -505,7 +505,7 @@ def _vision_act(task: str) -> dict:
             
             # 5. Ask Gemini Vision what to do
             prompt = VISION_ANALYSIS_PROMPT.format(task=task) + history
-            raw_response = _call_gemini_vision(gridded, prompt)
+            raw_response = _call_vision_llm(gridded, prompt)
             
             # 6. Parse the JSON response
             # Strip markdown fences if present
@@ -596,22 +596,22 @@ def _vision_act(task: str) -> dict:
 
 
 def _vision_describe() -> dict:
-    """Take a screenshot and describe what's on screen using Gemini Vision."""
+    """Take a screenshot and describe what's on screen."""
     if not PILLOW_AVAILABLE:
         return _make_result(False, code="MISSING_DEP", message="Pillow not installed.", tool_name="vision_describe")
-    if not GENAI_AVAILABLE:
-        return _make_result(False, code="MISSING_DEP", message="google-generativeai not installed.", tool_name="vision_describe")
-    
+    if not LLM_VISION_AVAILABLE:
+        return _make_result(False, code="MISSING_DEP", message="langchain-openai not installed.", tool_name="vision_describe")
+
     try:
         screen = _capture_screen()
-        
+
         # Save screenshot
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = SCREENSHOT_DIR / f"vision_describe_{ts}.png"
         screen.save(path)
-        
-        # Ask Gemini to describe
-        description = _call_gemini_vision(screen, VISION_DESCRIBE_PROMPT)
+
+        # Ask the vision-capable LLM to describe
+        description = _call_vision_llm(screen, VISION_DESCRIBE_PROMPT)
         
         return _make_result(
             True,

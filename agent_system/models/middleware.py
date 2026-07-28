@@ -32,8 +32,8 @@ from ..config import (
     VILAO_URL,
     VILAO_API_KEY,
     VILAO_SAFETY_BYPASS,
-    GPT_API_KEY,
-    GPT_BASE_URL,
+    API_KEY,
+    BASE_URL,
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
@@ -119,16 +119,18 @@ class Middleware:
                 timeout=LLM_REQUEST_TIMEOUT,
             )
             log.system(f"Middleware initialized: {MIDDLEWARE_MODEL} (DeepSeek)")
-        elif provider == "gpt":
+        elif provider == "custom":
+            # Any single OpenAI-compatible endpoint — see brain.py's "custom" branch
+            # for the rationale (2-var .env swap instead of a new branch per provider).
             from langchain_openai import ChatOpenAI
             self._llm = ChatOpenAI(
                 model=MIDDLEWARE_MODEL,
-                api_key=GPT_API_KEY,
-                base_url=GPT_BASE_URL or None,
+                api_key=API_KEY,
+                base_url=BASE_URL or None,
                 temperature=MIDDLEWARE_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
             )
-            log.system(f"Middleware initialized: {MIDDLEWARE_MODEL} (GPT/OpenAI-compatible)")
+            log.system(f"Middleware initialized: {MIDDLEWARE_MODEL} (custom/OpenAI-compatible)")
         elif provider == "ollama":
             from langchain_ollama import ChatOllama
             self._llm = ChatOllama(

@@ -25,6 +25,8 @@ from ..config import (
     LLM_REQUEST_TIMEOUT,
     VILAO_URL,
     VILAO_API_KEY,
+    API_KEY,
+    BASE_URL,
 )
 from ..utils.logger import log
 from ..utils.usage import extract_usage
@@ -144,6 +146,17 @@ class Worker:
                 llm_kwargs["extra_body"] = extra_body
             self._llm = ChatOpenAI(**llm_kwargs)
             log.system(f"Worker initialized: {WORKER_MODEL} (Vilao, safety-bypass={bool(extra_body)})")
+        elif WORKER_PROVIDER.lower() == "custom":
+            # Any single OpenAI-compatible endpoint — see brain.py's "custom" branch
+            # for the rationale (2-var .env swap instead of a new branch per provider).
+            self._llm = ChatOpenAI(
+                model=WORKER_MODEL,
+                api_key=API_KEY,
+                base_url=BASE_URL or None,
+                temperature=WORKER_TEMPERATURE,
+                timeout=LLM_REQUEST_TIMEOUT,
+            )
+            log.system(f"Worker initialized: {WORKER_MODEL} (custom/OpenAI-compatible)")
         elif WORKER_PROVIDER.lower() == "gemini":
             from langchain_google_genai import ChatGoogleGenerativeAI
             from ..config import GEMINI_API_KEY

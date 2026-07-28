@@ -10,7 +10,8 @@ from agent_system.utils.usage import extract_usage, format_usage
 from agent_system.config import (
     RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL,
     ROUTER_ASSISTANT_ENABLED, ROUTER_ASSISTANT_PROVIDER, ROUTER_ASSISTANT_MODEL,
-    VILAO_URL, VILAO_API_KEY, LLM_REQUEST_TIMEOUT, ROUTER_PERSONA_MODE,
+    VILAO_URL, VILAO_API_KEY, API_KEY, BASE_URL, LLM_REQUEST_TIMEOUT,
+    ROUTER_PERSONA_MODE,
 )
 
 # Stage-0 deterministic gate: any of these signals means the turn almost certainly needs
@@ -136,12 +137,40 @@ SEARCH QUERY LANGUAGE (stealth_search):
 PATH HANDLING FOR WRITES / CREATE FILE:
 - If the user's request does not mention a clear destination path (e.g. "ciel_workspace/..." or "agent_output/..."), the system will ask the user for the path before writing.
 - If the request already contains the path ("where"), use it directly. Do not force agent_output or any default.
+- A "[RECENT ENTITIES]" block may appear alongside the request — file paths and
+  email addresses literally named in the last few turns of THIS conversation.
+  USE these to fill in a path/address the CURRENT message itself doesn't repeat
+  (e.g. Master named "stuff.txt" two turns ago, then just now supplied the
+  content with no path in this message — the path is in [RECENT ENTITIES], not
+  missing). Real failure this prevents: asking "where should I save this?"
+  again after the Master already answered, then claiming "I can't write files"
+  when nothing actually blocked it — the destination was sitting right there.
 
 EMAIL SEND REQUESTS:
 - If the request asks to send information via email (keywords like "gửi mail", "send email", "gửi đến", "send to kxctran@gmail.com", "gửi báo cáo"), use multi_tool to first gather the necessary data/tools, then send a professional email as the final step.
 - The email should be a clean, professional message that directly addresses the user's request using only real data from the tools. Do not force any specific template or dashboard layout unless the user explicitly asks for visual/dashboard style.
 - Professional email means: clear structure, polite tone, facts only, useful and direct, no internal paths, no meta comments. Use send_gmail_message (or send_gmail_html_message if richer formatting improves readability) with the body synthesized after data collection.
 - ANTI-HALLUCINATION FOR EMAIL BODIES: if you choose action="tool" for an email-sending tool (send_gmail_message, send_gmail_html_message, reply_to_email) and compose the body yourself, you may ONLY reuse facts/numbers that already appear verbatim in the conversation history above. Note that this history is truncated per message — if you cannot see the full prior content or the user is asking for NEW data (prices, stats, news) you don't already have, route to multi_tool to fetch it instead of inventing numbers, indices, or statistics to make the email sound complete.
+
+DEICTIC / PRONOUN REFERENCES ("it", "that", "đó", "cái đó", "nó", "cái vừa rồi") —
+WHICH TURN THEY MEAN:
+- These words point at something said in the LIVE conversation's immediately
+  preceding turn — NEVER at anything inside a "[RECALLED PAST CONTEXT]" block.
+  That block is retrieved by topic similarity from a possibly UNRELATED past
+  session (maybe days old); it is background only, never a stand-in for "what
+  did we just say".
+- You do not see the full live chat history — only "[CURRENT USER REQUEST]" and
+  any "[RECALLED...]" block. If a request is deictic and nothing in front of you
+  names the referent, do NOT borrow one from the recalled block just because it
+  is topically similar. Prefer action="chat" and ask what it refers to, or set
+  "needs_followup": true, rather than guess a concrete entity (a symbol, a name,
+  an address) that turns a request about X into tool_args about Y.
+- Real failure this rule exists for: user asked for the EUR/USD quote, then said
+  "compare it with the price you just checked for gold" — recalled context from
+  days earlier happened to mention Bitcoin and gold together, and the Brain
+  wrongly fetched Bitcoin data instead of EUR/USD. "it" meant EUR/USD (asked ONE
+  turn ago, in this live conversation), never Bitcoin — recalled context is not
+  where "it" gets resolved from.
 
 NEVER LEAK INTERNAL PATHS:
 - In any email, external message, or report sent outside, NEVER mention internal paths like agent_output/, ciel_workspace/, or any filesystem locations.
@@ -172,6 +201,15 @@ class Router:
                         timeout=LLM_REQUEST_TIMEOUT,
                     )
                     log.system(f"Router assistant: {ROUTER_ASSISTANT_MODEL} (Vilao, triage)")
+                elif ROUTER_ASSISTANT_PROVIDER.lower() == "custom":
+                    self._assistant_llm = ChatOpenAI(
+                        model=ROUTER_ASSISTANT_MODEL,
+                        api_key=API_KEY,
+                        base_url=BASE_URL or None,
+                        temperature=0.0,
+                        timeout=LLM_REQUEST_TIMEOUT,
+                    )
+                    log.system(f"Router assistant: {ROUTER_ASSISTANT_MODEL} (custom, triage)")
                 else:
                     log.system(f"Router assistant provider '{ROUTER_ASSISTANT_PROVIDER}' not wired — assistant disabled.")
             except Exception as e:

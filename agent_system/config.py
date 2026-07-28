@@ -18,9 +18,28 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 VILAO_URL = os.getenv("VILAO_URL", "")
 VILAO_API_KEY = os.getenv("VILAO_KEY", "")
 
-# GPT / OpenAI-compatible (for custom models like gx/gpt-5.5)
-GPT_API_KEY = os.getenv("GPT_API_KEY", "")
-GPT_BASE_URL = os.getenv("GPT_BASE_URL", "")
+# CUSTOM — any single OpenAI-compatible endpoint (Vilao, TEM/hhtechapi.net, a
+# future replacement, ...), used by ALL FOUR tiers (Brain/Worker/Middleware/
+# Router-assistant) via *_PROVIDER=custom. Swapping providers going forward is a
+# 2-variable edit (API_KEY + BASE_URL) plus whichever *_MODEL names change — no
+# code change and no new provider branch needed. Kept separate from VILAO_URL/
+# VILAO_API_KEY above (not deleted) so the old vilao-specific branch still works
+# as a fallback/rollback path if ever needed.
+API_KEY = os.getenv("API_KEY", "")
+BASE_URL = os.getenv("BASE_URL", "")
+
+# vision_ops.py (vision_act/vision_describe) used to require its own separate
+# GEMINI_API_KEY — confirmed live (2026-07-27) that the same API_KEY/BASE_URL/
+# model already running Brain also accepts image input and describes screenshots
+# accurately, so vision no longer needs a key of its own. Defaults to BRAIN_MODEL
+# (already proven vision-capable) but stays independently overridable.
+VISION_MODEL = os.getenv("VISION_MODEL", BRAIN_MODEL)
+
+# Skill modules to skip entirely at load time (comma-separated stem names, e.g.
+# "vision_ops,os_ops"). Used for server deployments where a capability class
+# (screen capture, browser control, ...) should not even be reachable — not
+# just discouraged in the prompt. Empty by default (all discovered skills load).
+DISABLED_SKILL_MODULES = {s.strip() for s in os.getenv("DISABLED_SKILL_MODULES", "").split(",") if s.strip()}
 
 # --- Router Assistant (fast front-line triage; escalates hard cases to the Brain) ---
 # A cheap/fast model that decides "answerable as plain chat" vs "needs the Brain to

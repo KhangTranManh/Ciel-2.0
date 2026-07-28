@@ -1,0 +1,31 @@
+# Keep the build context small and avoid baking secrets/dev-only state into the image.
+# Runtime state (ciel_data, agent_output, ciel_workspace) is volume-mounted by
+# docker-compose.yml, not copied in — excluding it here just speeds up the build;
+# it does not affect what the running container sees.
+
+.git/
+.github/
+.claude/
+.agents/
+myenv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+ciel_data/
+agent_output/
+ciel_workspace/
+backtest/logs/
+ui/node_modules/
+
+.env
+credentials.json
+*.log
+
+docs/
+note.md
+architect.md
+PROMPT_INVENTORY.md

@@ -109,6 +109,82 @@ _DANGEROUS_CODE_PATTERNS = (
 # is still a valid-looking address. Gmail's +tag form is common, so this is not exotic.
 _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w.\-]+\.\w+")
 
+# ONE definition of "does this message actually ask to SEND something", used by
+# both send-step safeguards below (single-tool promotion and multi_tool). Found
+# live, 5 turns in a row: a Master repeatedly said "chỉ tìm và đọc email thôi,
+# không gửi gì hết" ("just search and read, don't send anything") — the OLD
+# check was a bare substring test for "gửi"/"send"/etc. with no negation
+# awareness, and it ALSO fired on "người gửi" ("sender" — describing an
+# email's metadata, e.g. "search by người gửi john@abc.com"), which contains
+# the same substring but has nothing to do with sending. Every one of those
+# turns still had a concrete email address on-screen (john@abc.com), so the
+# safeguard kept re-appending send_gmail_message and getting DEFERRED for
+# approval, on a plan the Master explicitly, repeatedly said was read-only.
+_SENDER_NOUN_RE = re.compile(r"người\s*g[uử]i|from\s*:", re.IGNORECASE)
+_SEND_VERB_RE = re.compile(r"\b(g[uử]i|g[oở]i|send|forward|chuy[eể]n|mail)\b", re.IGNORECASE)
+_SEND_NEGATION_RE = re.compile(
+    r"(không|đừng|khỏi|chưa|no\b|don'?t|never)\s+(?:\w+\s+){0,3}?"
+    r"(g[uử]i|g[oở]i|send|forward|chuy[eể]n|mail)",
+    re.IGNORECASE)
+
+
+def _has_send_intent(text: str) -> bool:
+    """True only for a genuine request to SEND something — see the module note
+    above for the two false positives this exists to rule out."""
+    scrubbed = _SENDER_NOUN_RE.sub(" ", text or "")
+    if not _SEND_VERB_RE.search(scrubbed):
+        return False
+    return not _SEND_NEGATION_RE.search(text or "")
+
+
+# ONE definition of "does this message name a write target with a save/write
+# verb", shared by the single-tool promotion (new) and the existing multi_tool
+# write-step safeguard — was previously two separate inline copies that could
+# drift. Found live: "thêm 3 kỹ năng vào CV rồi lưu thành cv_updated.txt" got
+# planned as a single action="tool" read_file call three turns in a row —
+# read_file is in _SKIP_SELF_CORRECTION, so nothing ever noticed the write the
+# Master asked for never happened; Ciel just re-displayed the unmodified file
+# each time. The multi_tool version of this safeguard already existed but only
+# ever ran for action=="multi_tool" — it never saw a plan that was, itself,
+# just one lone read_file call.
+_WRITE_TARGET_PATH_RE = re.compile(
+    r'((?:[A-Za-z]:[\\/](?:[\w .-]+[\\/])*)?(?:agent_output|ciel_workspace)[\\/][\w.\\/ -]*[\w-]\.\w+'
+    # A bare filename with no folder prefix also counts — found live: "lưu lại
+    # thành cv_updated.txt" (no ciel_workspace/ prefix at all) is exactly how a
+    # real Master names a save target most of the time; requiring the prefix
+    # meant this exact wording never matched, and bug A's whole fix depends on it.
+    r'|\b[\w-]+\.(?:txt|md|html?|py|json|csv|docx?|xlsx|log|ya?ml)\b)',
+    re.IGNORECASE)
+_WRITE_VERB_RE = re.compile(
+    r"\b(viết|ghi|write|save|lưu|tạo|create|make|generate|note|tao file|tạo file)\b", re.IGNORECASE)
+
+
+def _has_write_intent(text: str):
+    """Returns the matched target path if the text names one AND uses a save/
+    write verb, else None. A path alone (e.g. just mentioning a file that
+    exists) is not intent; a verb alone with no path is too vague to act on.
+
+    When TWO filenames appear ("mở cv_new.txt ra, ... rồi lưu thành
+    cv_updated.txt"), the LAST one is taken — a source-then-destination shape
+    is how this is phrased in practice, and the first match alone would have
+    picked the file being read FROM, not saved TO, as the write target."""
+    matches = list(_WRITE_TARGET_PATH_RE.finditer(text or ""))
+    if matches and _WRITE_VERB_RE.search(text or ""):
+        return matches[-1].group(1)
+    return None
+
+
+# "Đừng ghi đè, tạo file mới" — explicit no-clobber request. write_file always
+# overwrites (that's its whole contract); honoring "make a new one" means
+# picking a DIFFERENT filename before the tool ever runs, deterministically,
+# rather than hoping the Brain remembers on the next attempt. Found live: a
+# Master said this 5 times across 5 turns and every write still landed on the
+# exact same filename.
+_NO_OVERWRITE_RE = re.compile(
+    r"đừng\s*(có\s*)?ghi\s*đè|không\s*(được\s*)?ghi\s*đè|file\s*m[oớ]i|"
+    r"\bnew\s+file\b|\bdon'?t\s+overwrite\b|\bdo\s+not\s+overwrite\b",
+    re.IGNORECASE)
+
 
 def _find_dangerous_code_patterns(text: str) -> list:
     """Deterministic scan for genuinely destructive code/commands (drive format, mkfs,
@@ -648,6 +724,50 @@ class CielCore:
     # "tại sao lại thế" or "phân tích thêm về tin đó" routinely fails to clear.
     _RECENT_TURNS_MAX = 3
 
+    # Concrete, unambiguous tokens only — a file path or email is a FACT, never an
+    # instruction, which is exactly what keeps this safe to show the Router (see
+    # _recent_entities_note's docstring for why that distinction matters).
+    _RECENT_ENTITY_FILE_RE = re.compile(
+        r"\b[\w\-./\\]*\.(?:txt|py|json|csv|pdf|docx?|html?|md|png|jpe?g|log|xlsx|ya?ml|js|ts|css)\b",
+        re.IGNORECASE)
+
+    def _recent_entities_note(self) -> str:
+        """Deterministic, narrow signal for the Router: concrete entities (file
+        paths, email addresses) literally mentioned in the last few turns of
+        THIS session. Distinct from both RAG (semantic-similarity, cross-
+        session, gated behind _wants_past_recall) and _recent_turns_block
+        (free text, Worker-only, deliberately kept out of the Router) — this
+        is neither: it is a closed list of tokens extracted by regex, never
+        free-form text or an unresolved request. A file path or address is a
+        fact, not an instruction, so it cannot bleed a stale REQUEST into a
+        new one the way raw chat_history once did (see _recent_turns_block's
+        docstring for that bug) — there is nothing here for the Router to
+        mistakenly act ON, only something to ground an argument WITH.
+
+        Found live: Brain asked "where should I save this?", the Master named
+        ciel_workspace/stuff.txt, then on the NEXT turn (content now supplied)
+        Brain asked "where do you want this?" again and Worker fabricated "I
+        can't write files in this chat" — the path was sitting right there in
+        chat_history, but the Router never saw it at all.
+        """
+        try:
+            if not CONTEXT_RECENT_TURNS_ENABLED:
+                return ""
+            history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+            msgs = history[-(self._RECENT_TURNS_MAX * 2):]
+            found = []
+            for m in msgs:
+                text = m.content or ""
+                for match in self._RECENT_ENTITY_FILE_RE.findall(text):
+                    if match not in found:
+                        found.append(match)
+                for match in _EMAIL_RE.findall(text):
+                    if match not in found:
+                        found.append(match)
+            return ", ".join(found[:8])
+        except Exception:
+            return ""
+
     def _recent_turns_block(self) -> str:
         """The last few turns of THIS conversation, or "" when there is nothing yet.
 
@@ -878,6 +998,37 @@ class CielCore:
                                   f"stale year in search query bumped to {cur_year}: {tool_args['query']!r} -> {new_q!r}")
                 tool_args = dict(tool_args)
                 tool_args["query"] = new_q
+
+        # NO-OVERWRITE REQUEST: write_file's own contract is "create or completely
+        # overwrite" — it has no refuse-if-exists mode, so honoring "đừng ghi đè, tạo
+        # file mới" means picking a DIFFERENT filename before the tool ever runs.
+        # Found live: a Master said this 5 times across 5 turns ("tao muốn file mới
+        # chứ không phải ghi đè") and every write still landed on the exact same
+        # filename, because nothing downstream of the Brain's own tool_args ever
+        # checked it. Deterministic and narrow: only fires when (a) the wording
+        # explicitly asks for this, and (b) the target already exists — an explicit
+        # request for a file that doesn't exist yet has nothing to clobber.
+        if tool_name == "write_file" and isinstance(tool_args.get("filename"), str) and _NO_OVERWRITE_RE.search(user_input or ""):
+            try:
+                from skills.internal.system_ops import _is_safe_path
+                existing_path = _is_safe_path(tool_args["filename"])
+                if existing_path.exists():
+                    stem, suffix = existing_path.stem, existing_path.suffix
+                    parent_rel = tool_args["filename"].rsplit("/", 1)[0] + "/" if "/" in tool_args["filename"] else ""
+                    n = 2
+                    while True:
+                        candidate = f"{parent_rel}{stem}_v{n}{suffix}"
+                        if not _is_safe_path(candidate).exists():
+                            break
+                        n += 1
+                    self._log_thought(
+                        "SAFETY", "no_overwrite_renamed",
+                        f"write_file: Master asked not to overwrite; '{tool_args['filename']}' already "
+                        f"exists — writing to '{candidate}' instead.")
+                    tool_args = dict(tool_args)
+                    tool_args["filename"] = candidate
+            except Exception:
+                pass  # never let the rename attempt itself break a legitimate write
 
         # DANGEROUS CODE GATE: write_file/append_file can save arbitrary Worker-generated
         # code straight to disk with no confirmation (unlike pre-declared _HIGH_RISK_TOOLS).
@@ -2356,6 +2507,40 @@ RULES:
         r"\bsend it\b",
     )
 
+    # RAG recall used to be injected into the Router's prompt on EVERY turn,
+    # regardless of whether the request actually needed anything from a past
+    # session. Found live: "compare it with the price you just checked for gold"
+    # (referring to EUR/USD asked ONE turn ago, in the live conversation) got a
+    # topically-similar-but-unrelated days-old "Gold & BTC" recall injected
+    # anyway, and the Brain fetched Bitcoin data instead — recalled context is
+    # semantic-similarity-based, not recency-based, so injecting it on every turn
+    # gives the model something irrelevant to latch onto exactly when a request
+    # is ambiguous and most needs the REAL last turn (which the Router never
+    # sees) rather than a plausible-looking old one. Now only injected when the
+    # wording itself signals the Master is asking about something from an
+    # earlier session — a deliberate "look back" request, not silent background
+    # dressing on ordinary conversation.
+    _PAST_RECALL_SIGNAL_PATTERNS = (
+        r"l[aầ]n\s*tr[uướ]?[oớ]c", r"h[oô]m\s*qua", r"h[oô]m\s*kia",
+        r"tu[aầ]n\s*tr[uướ]?[oớ]c", r"th[aá]ng\s*tr[uướ]?[oớ]c", r"tr[uướ]?[oớ]c\s*đ[aâ]y",
+        r"đ[aã]\s*t[uừ]ng", r"h[oồ]i\s*tr[uướ]?[oớ]c", r"nh[uư]\s*(đ[aã]|t[oô]i\s*đ[aã])\s*n[oó]i",
+        r"nh[aắ]c\s*l[aạ]i", r"nh[oớ]\s*l[aạ]i",
+        r"\blast\s+(time|week|month|year)\b", r"\byesterday\b", r"\bpreviously\b",
+        r"\bearlier\s+(you|we|i)\b", r"\byou\s+mentioned\b", r"\bwe\s+(discussed|talked\s+about)\b",
+        r"\bin\s+(our\s+)?(the\s+)?previous\s+conversation\b",
+    )
+
+    @staticmethod
+    def _wants_past_recall(user_input: str) -> bool:
+        """True only when the wording itself signals the Master is deliberately
+        asking about an earlier session ("lần trước", "you mentioned", ...) —
+        the gate for whether RAG recall reaches the Router at all. Same-session
+        continuity ("lúc nãy", "vừa rồi") is intentionally NOT included here: that
+        is what `_recent_turns_block()` already covers, from the real chat_history
+        instead of a similarity search — recall is for further back than that."""
+        lowered = (user_input or "").lower()
+        return any(re.search(p, lowered) for p in CielCore._PAST_RECALL_SIGNAL_PATTERNS)
+
     # The counterpart the comment above calls out but never got its own guard:
     # "gửi qua email đó" / "cứ gửi qua email đó đi" refers to a RECIPIENT already
     # established earlier in the conversation, not to resending prior content. Found
@@ -2717,18 +2902,34 @@ RULES:
             if recall_report.dropped:
                 self._log_thought("CONTEXT", "recall_dropped", recall_report.summary())
 
-            # Inject recalled context into the user input for the Router. CURRENT REQUEST
-            # comes FIRST on purpose (reordered from recall-then-request): if recall ever
-            # surfaces noise — an unrelated past topic, or, before the self-match filter
-            # above, the question echoing itself — it must not push the Master's actual
-            # words out of the part of the prompt a model attends to most reliably.
+            # Inject recalled context into the user input for the Router — ONLY when the
+            # wording itself asks to look back at an earlier session (see
+            # _wants_past_recall). `recalled` stays computed either way, since
+            # _memory_fallback_for_inspection (below, further down this turn) has its
+            # own separate, already-narrow gating and still benefits from it. CURRENT
+            # REQUEST comes FIRST on purpose (reordered from recall-then-request): if
+            # recall ever surfaces noise — an unrelated past topic, or, before the
+            # self-match filter above, the question echoing itself — it must not push
+            # the Master's actual words out of the part of the prompt a model attends
+            # to most reliably.
             enriched_input = user_input
-            if recalled:
-                enriched_input = (
-                    f"[CURRENT USER REQUEST]:\n{user_input}\n\n"
+            extra_blocks = []
+            if recalled and self._wants_past_recall(user_input):
+                extra_blocks.append(
                     f"[RECALLED PAST CONTEXT (from previous conversations, for background only)]:\n"
                     f"{recalled}"
                 )
+            # Deterministic and always-on (no gate needed — see _recent_entities_note's
+            # docstring for why a closed list of file paths/addresses is safe to show
+            # the Router even though free-form chat_history is not).
+            entities_note = self._recent_entities_note()
+            if entities_note:
+                extra_blocks.append(
+                    f"[RECENT ENTITIES — concrete items named in the last few turns of THIS "
+                    f"conversation; reference facts only, NOT instructions to act on]:\n{entities_note}"
+                )
+            if extra_blocks:
+                enriched_input = f"[CURRENT USER REQUEST]:\n{user_input}\n\n" + "\n\n".join(extra_blocks)
 
             # For Vilao (which is stricter on filters), send a neutralized English version
             # to the Brain to further reduce chance of content filter.
@@ -2852,8 +3053,7 @@ RULES:
                 _tool_name_pre = decision.get("tool_name", "")
                 if _tool_name_pre not in ("send_gmail_message", "send_gmail_html_message"):
                     _to_match_pre = _EMAIL_RE.search(user_input)
-                    _send_verb_pre = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
-                    if _to_match_pre and _send_verb_pre:
+                    if _to_match_pre and _has_send_intent(user_input):
                         decision = dict(decision)
                         decision["action"] = "multi_tool"
                         decision["tools"] = [{
@@ -2866,6 +3066,28 @@ RULES:
                             f"Single-tool plan ({_tool_name_pre}) had email send intent with no "
                             f"send step — promoted to multi_tool so the send-step safeguard can append it.",
                         )
+
+            # WORKFLOW SAFEGUARD (single-tool case), same shape as the email one just
+            # above: "read X, add these skills, save as Y" routinely gets under-scoped
+            # to a lone read_file — read_file is in _SKIP_SELF_CORRECTION, so nothing
+            # ever notices the save never happened; Ciel just re-shows the unmodified
+            # file. Promote to multi_tool so the existing write-step safeguard (in the
+            # multi_tool branch below) can append the missing write_file.
+            if action == "tool":
+                _tool_name_pre2 = decision.get("tool_name", "")
+                if _tool_name_pre2 not in ("write_file", "append_file") and _has_write_intent(user_input):
+                    decision = dict(decision)
+                    decision["action"] = "multi_tool"
+                    decision["tools"] = [{
+                        "tool_name": _tool_name_pre2,
+                        "tool_args": decision.get("tool_args", {}),
+                    }]
+                    action = "multi_tool"
+                    self._log_thought(
+                        "BRAIN", "tool_promoted_to_multi_tool",
+                        f"Single-tool plan ({_tool_name_pre2}) had save/write intent with no "
+                        f"write step — promoted to multi_tool so the write-step safeguard can append it.",
+                    )
 
             # TIER-1 LOOP REACHABILITY: a result-dependent request ("check X, and if
             # it's clean, commit") is exactly the shape a flat plan cannot express, so
@@ -2961,9 +3183,8 @@ RULES:
                 # any send verb is a reliable, low-false-positive signal on its own.
                 has_send_step = any(t.get("tool_name") in ("send_gmail_message", "send_gmail_html_message") for t in tools)
                 to_match = _EMAIL_RE.search(user_input)
-                send_verb_present = any(v in lowered for v in ("gửi", "gởi", "send", "forward", "chuyển", "mail"))
 
-                if not has_send_step and to_match and send_verb_present:
+                if not has_send_step and to_match and _has_send_intent(user_input):
                     tools = list(tools) + [{
                         "tool_name": "send_gmail_message",
                         "tool_args": {
@@ -2982,19 +3203,17 @@ RULES:
                 # path with a write verb and the plan has no write step, append a
                 # deferred write that execute_multi_tool fills with the synthesized report.
                 has_write_step = any(t.get("tool_name") in ("write_file", "append_file") for t in tools)
-                path_match = re.search(r'((?:[A-Za-z]:[\\/](?:[\w .-]+[\\/])*)?(?:agent_output|ciel_workspace)[\\/][\w.\\/ -]*[\w-]\.\w+)', user_input)
-                write_verb_present = any(v in lowered for v in (
-                    "viết", "ghi", "write", "save", "lưu", "tạo", "create", "make", "generate", "note", "tao file", "tạo file"))
-                if not has_write_step and path_match and write_verb_present:
+                _write_path = _has_write_intent(user_input)
+                if not has_write_step and _write_path:
                     tools = list(tools) + [{
                         "tool_name": "write_file",
                         "tool_args": {
-                            "filename": path_match.group(1),
+                            "filename": _write_path,
                             "content": "[REPORT_CONTENT_TO_BE_SYNTHESIZED]",
                         },
                     }]
                     self._log_thought("BRAIN", "multi_tool_write_step_added",
-                                      f"Plan was missing a write step despite explicit target path — appended write_file to {path_match.group(1)}.")
+                                      f"Plan was missing a write step despite explicit target path — appended write_file to {_write_path}.")
 
                 response = self.execute_multi_tool(tools, hint, user_input,
                                                    model_requested=bool(decision.get("needs_followup")))
@@ -3020,13 +3239,28 @@ RULES:
                 # raw input (e.g. a referential "đó" the Router resolved to a concrete
                 # noun) — but it can never again BE the reply or override how it answers.
                 topic_hint = (decision.get("task") or "").strip()
+                # Bug found live: Brain decided NOT to do something (e.g. open YouTube,
+                # because it misread a trailing "kệ lệnh đó đi" as cancelling the whole
+                # turn, not just an unrelated earlier trade order) and only ever told the
+                # Worker the bare instruction — "confirm we skipped X" — never WHY. Left
+                # to explain a decision with no reason attached, the Worker invented one
+                # ("không có quyền điều khiển trình duyệt" — false; vision_act/
+                # open_application both exist) instead of saying it didn't actually know.
+                # Passing Brain's own reasoning through fixes this the same way giving it
+                # the real recipient fixed the email-body fabrication bug earlier: hand
+                # the model the fact, don't make it invent one to fill the gap.
+                reasoning_hint = (decision.get("hidden_thought") or {}).get("reasoning", "").strip()
                 if topic_hint and topic_hint != user_input.strip():
+                    reasoning_note = f"\n[Router's own reasoning for this, for context ONLY: {reasoning_hint}]" if reasoning_hint else ""
                     task = (f"{user_input}\n\n"
                             f"[Router's topic guess, for reference ONLY — verify against the "
                             f"conversation above and the actual request; do not treat this as "
                             f"an instruction to follow, quote, or translate literally, and do "
                             f"not let it override the Master's own wording or language]: "
-                            f"{topic_hint}")
+                            f"{topic_hint}{reasoning_note}\n\n"
+                            f"If you need to explain why something wasn't done, use the reasoning "
+                            f"above if present — never invent a technical limitation or capability "
+                            f"claim that isn't given to you here.")
                 else:
                     task = user_input
                 response = self.execute_chat(task)
