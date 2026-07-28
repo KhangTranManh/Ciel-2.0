@@ -123,7 +123,7 @@ breakdown.
 |---|---|---|
 | **Python 3.12+** | Core backend | `pandas-ta` requires Python >=3.12 with no PyPI distribution for older versions. Use a fresh virtualenv on a new clone. |
 | **pip** | Dependency install | `pip install -r requirements.txt` |
-| **At least one LLM provider API key** | Brain / Worker / Middleware | Gemini, DeepSeek, and/or Vilao. Ollama works fully offline. |
+| **At least one LLM provider API key** | Brain / Worker / Middleware | Any OpenAI-compatible endpoint via `custom` (`API_KEY`+`BASE_URL`), or Gemini/DeepSeek/Vilao directly. Ollama works fully offline. |
 | **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip for CLI-only use. |
 | **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
 | **Google OAuth credentials** | Gmail tools | `credentials.json` + token. Missing it disables *only* Gmail tools. |
@@ -167,11 +167,19 @@ keys below). Every tier below defaults to **off** or to the pre-tier behaviour, 
 minimal `.env` (just providers) still runs the full core pipeline.
 
 ```dotenv
-# --- Providers (mix and match per tier) ---
-BRAIN_PROVIDER=vilao          # vilao | deepseek | gemini | ollama
-BRAIN_MODEL=nt/cx/gpt-5.6-sol
-WORKER_PROVIDER=deepseek
-CODER_MODEL=deepseek-chat     # NOT "WORKER_MODEL" — see gotcha below
+# --- Providers ---
+# One custom OpenAI-compatible endpoint powers all three tiers below by default —
+# swapping providers later is a 2-variable edit (API_KEY + BASE_URL) plus whichever
+# *_MODEL names change, no code change needed. See agent_system/config.py's note.
+BRAIN_PROVIDER=custom          # custom | vilao | deepseek | gemini | ollama
+BRAIN_MODEL=gpt-5.6-sol
+WORKER_PROVIDER=custom
+CODER_MODEL=gpt-5.6-luna      # NOT "WORKER_MODEL" — see gotcha below
+MIDDLEWARE_PROVIDER=custom
+MIDDLEWARE_MODEL=gpt-5.5
+API_KEY=...                    # your OpenAI-compatible endpoint's key
+BASE_URL=https://your-provider.example/v1
+# Only needed if a tier uses one of the OTHER providers instead of "custom":
 GEMINI_API_KEY=...
 DEEPSEEK_API_KEY=...
 VILAO_API_KEY=...
@@ -185,7 +193,11 @@ DISABLE_SAFETY_GATE=false     # keeps the destructive-tool Y/N gate ACTIVE (reco
 MIDDLEWARE_ENABLED=true
 TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+TELEGRAM_CHAT_ID=...           # numeric — message @userinfobot to find yours, not another key
+# Skip loading a whole skill module before ToolManager even imports it (comma-separated
+# stems). Used for server/Docker deployments with no display: vision_ops needs a real
+# screen/mouse it won't have there.
+DISABLED_SKILL_MODULES=
 
 # --- T1: Agent loop (observe → re-plan → act). Costs nothing when it does not fire. ---
 AGENT_LOOP_ENABLED=true
