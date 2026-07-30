@@ -458,7 +458,13 @@ class CielCore:
     # Tools with obviously-correct results — skip Brain self-correction to save API cost
     _SKIP_SELF_CORRECTION = {
         "list_workspace", "read_file", "write_file", "append_file",
-        "save_fact", "delete_fact", "get_fact",
+        # NOT get_fact — removed deliberately. get_fact("name") missing a fact saved as
+        # "Tên" used to dead-end on "no fact found" even though the tool's own result
+        # lists the real keys ("Available keys in the vault: Tên, ..."); nothing ever
+        # retried with it. get_fact is read-only (no side effects a retry could
+        # duplicate/corrupt) and used rarely, so the extra self-correction call's cost
+        # is worth automatically recovering from a wrong-language/wrong-case key guess.
+        "save_fact", "delete_fact",
         "take_screenshot", "get_file_info", "open_application",
         "get_crypto_stats", "vision_describe",
     }
@@ -1249,7 +1255,7 @@ class CielCore:
             self._set_pending_action(confirm_spec["tool"], confirm_spec.get("args", {}), source=tool_name)
 
         if tool_name in {"get_fact", "save_fact", "delete_fact"}:
-            return self._format_fact_result(tool_name, result_text)
+            return self._format_fact_result(tool_name, result_text, user_input)
 
         if tool_name not in self._TOOLS_NEEDING_FORMAT:
             return result_text
@@ -1304,6 +1310,7 @@ class CielCore:
             f"{self._profile_block()}"
             f"{lead_line}"
             f"{_recent_section}"
+            f"[USER LANGUAGE: {self._detect_language(user_input)}]\n"
             f"User's request: {user_input}\n"
             f"Tool: {tool_name}\n"
             f"Raw result:\n{clean_text}\n\n"
@@ -1319,7 +1326,12 @@ class CielCore:
             f"NEVER invent, fabricate, or simulate data that is not in the raw result. "
             f"NEVER generate fake file contents, fake statistics, or fake execution output.\n"
             f"4. NO PROCESS NARRATION: Do NOT write status lines like 'Retrieving...', "
-            f"'Scanning...', 'Initiating...', 'Fetching...'. Report ONLY the final data/facts."
+            f"'Scanning...', 'Initiating...', 'Fetching...'. Report ONLY the final data/facts.\n"
+            f"5. LANGUAGE: Reply in [USER LANGUAGE] above, no matter what language the Raw "
+            f"result itself is written in. Many tools return English status strings ('Fact "
+            f"saved successfully', 'No fact found for key...') even for a Vietnamese request — "
+            f"translate the MEANING into the Master's language; never mirror the tool's own "
+            f"wording/language verbatim, and never echo a raw key name — write a real sentence."
         )
         self._log_thought("WORKER", "format_task", format_task)
         formatted = self.worker.generate(format_task)
@@ -1373,32 +1385,41 @@ class CielCore:
         except (json.JSONDecodeError, TypeError):
             return self._strip_html(text)[:2000]
 
-    def _format_fact_result(self, tool_name: str, result_text: str) -> str:
-        """Convert memory vault tool output into clean user-facing text."""
+    def _format_fact_result(self, tool_name: str, result_text: str, user_input: str = "") -> str:
+        """Convert memory vault tool output into clean user-facing text.
+
+        Deterministic Python, zero LLM calls — which is exactly why it used to be a
+        real persona bug hiding in plain sight: it hardcoded ENGLISH templates
+        ("Master, I saved your...") regardless of the Master's actual language. Every
+        other reply path gets a language fix via the Worker's prompt (see
+        `_detect_language` + `[USER LANGUAGE: ...]` elsewhere in this file); this path
+        never reaches the Worker at all, so it has to pick its own template here.
+        """
+        is_vi = self._detect_language(user_input) == "Vietnamese"
+
         if tool_name == "get_fact":
             match = re.match(r"Fact '([^']+)':\s*(.*)", result_text, flags=re.DOTALL)
             if match:
-                key = match.group(1).replace("_", " ")
-                value = match.group(2).strip()
-                return f"Master, your {key} is {value}."
+                key, value = match.group(1), match.group(2).strip()
+                return f"{key}: {value}" if is_vi else f"Master, your {key} is {value}."
             match = re.match(r"No fact found for key '([^']+)'", result_text)
             if match:
-                key = match.group(1).replace("_", " ")
-                return f"Master, I do not have a saved {key}."
+                key = match.group(1)
+                return f"Chưa có thông tin đã lưu cho '{key}'." if is_vi else f"Master, I do not have a saved {key}."
             return result_text
 
         if tool_name == "save_fact":
             match = re.match(r"Fact saved successfully:\s*([^.]+)\.", result_text)
             if match:
-                key = match.group(1).replace("_", " ")
-                return f"Master, I saved your {key}."
+                key = match.group(1)
+                return f"Đã lưu: {key}." if is_vi else f"Master, I saved your {key}."
             return result_text
 
         if tool_name == "delete_fact":
             match = re.match(r"Fact deleted successfully:\s*([^.]+)\.", result_text)
             if match:
-                key = match.group(1).replace("_", " ")
-                return f"Master, I deleted your {key}."
+                key = match.group(1)
+                return f"Đã xoá: {key}." if is_vi else f"Master, I deleted your {key}."
             return result_text
 
         return result_text

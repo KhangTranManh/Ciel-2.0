@@ -1,3 +1,4 @@
+import os
 import re
 import requests
 import xml.etree.ElementTree as ET
@@ -136,6 +137,84 @@ def _google_news_rss(query: str, max_results: int, lang: str):
     return rows
 
 
+_SERPAPI_TBS = {"d": "qdr:d", "w": "qdr:w", "m": "qdr:m", "y": "qdr:y"}
+
+_RELATIVE_AGE_RE = re.compile(
+    r"^\s*(\d+)\s*(phút|giờ|ngày|tuần|tháng|năm|"
+    r"minute|min|hour|hr|day|week|month|year)s?\s*(?:ago|trước)?\s*$",
+    re.IGNORECASE,
+)
+_RELATIVE_AGE_UNIT_DAYS = {
+    "phút": 0, "minute": 0, "min": 0,
+    "giờ": 0, "hour": 0, "hr": 0,
+    "ngày": 1, "day": 1,
+    "tuần": 7, "week": 7,
+    "tháng": 30, "month": 30,
+    "năm": 365, "year": 365,
+}
+
+
+def _parse_relative_age(raw: str):
+    """SerpApi's Google engine reports freshness as a relative string on the result
+    itself ("12 hours ago", "2 ngày trước") rather than a real timestamp — this is
+    exactly the freshness signal visible on a real google.com/search page that
+    Google News RSS / DDG's separate index don't carry for ordinary web results.
+    Returns a real UTC datetime, or None if the string isn't a recognized relative
+    age (e.g. it's an absolute date instead — caller should try _parse_dt for that)."""
+    if not raw:
+        return None
+    m = _RELATIVE_AGE_RE.match(raw)
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    if unit in ("phút", "minute", "min", "giờ", "hour", "hr"):
+        return datetime.now(timezone.utc) - timedelta(hours=n if "gi" in unit or "hour" in unit or "hr" in unit else 0,
+                                                        minutes=n if unit in ("phút", "minute", "min") else 0)
+    days = _RELATIVE_AGE_UNIT_DAYS.get(unit, 0) * n
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def _serpapi_search(query: str, max_results: int, timelimit: str) -> list:
+    """Real Google web search results via SerpApi — the same index/ranking/freshness
+    a human sees on google.com/search (verified live: fresh, on-topic Vietnamese
+    finance results a Vietnamese-locale DuckDuckGo query missed entirely), instead of
+    DuckDuckGo's separate, often thinner index or Google News RSS's narrower "News"
+    vertical. Needs SEARCH_API_KEY (+ API_ENDPOINT, defaults to SerpApi's Google
+    engine) in .env — returns [] (never raises) when the key is missing or the
+    request fails, so callers fall back to the pre-existing RSS/DDG chain unchanged.
+    `tbs=qdr:X` is Google's own native recency filter, mapped from `timelimit`."""
+    api_key = os.getenv("SEARCH_API_KEY", "")
+    if not api_key:
+        return []
+    endpoint = os.getenv("API_ENDPOINT", "https://serpapi.com/search?engine=google")
+
+    params = {"api_key": api_key, "q": query, "num": min(max(max_results, 1), 10)}
+    if timelimit in _SERPAPI_TBS:
+        params["tbs"] = _SERPAPI_TBS[timelimit]
+
+    try:
+        resp = requests.get(endpoint, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    rows = []
+    for item in data.get("organic_results", []):
+        raw_date = (item.get("date") or "").strip()
+        dt = _parse_relative_age(raw_date) or _parse_dt(raw_date)
+        date = dt.strftime("%Y-%m-%d") if dt else (raw_date or "")
+        age = raw_date if (raw_date and dt) else ""
+        rows.append({
+            "title": item.get("title", ""),
+            "url": item.get("link", ""),
+            "body": item.get("snippet", ""),
+            "date": date, "age": age, "dt": dt,
+            "source": item.get("source") or (urlparse(item.get("link", "")).netloc or ""),
+        })
+    return rows
+
+
 def _is_index_page(url: str, title: str, body: str, source: str = "") -> bool:
     """True when a hit looks like a site/section landing page rather than one article."""
     blob = f"{title or ''} {body or ''}".lower()
@@ -199,53 +278,75 @@ def get_web_tools() -> dict:
                 rows = []          # normalized: title, url, body, date, age, dt, source
                 source_used = "web"
 
-                # PRIMARY for news-intent: Google News RSS (fresh, dated, region-aware).
-                if is_news_intent:
-                    try:
-                        rows = _google_news_rss(query, max_results, _detect_query_lang(query))
-                        if rows:
-                            source_used = "Google News RSS"
-                    except Exception:
-                        rows = []   # unofficial endpoint — fall through to DuckDuckGo
+                # PRIMARY, unconditional: real Google web search via SerpApi — the
+                # same index/ranking a human typing into google.com/search hits, a
+                # different and for most queries stronger index than DuckDuckGo's.
+                # Silently returns [] when SEARCH_API_KEY isn't set or the request
+                # fails — everything below is unchanged and only runs when this
+                # produced nothing, so it's a pure fallback chain now, not a parallel
+                # path.
+                rows = _serpapi_search(query, max_results, timelimit)
+                if rows:
+                    source_used = "Google (SerpApi)"
 
-                with DDGS() as ddgs:
-                    # FALLBACK 1: DuckDuckGo news index (also dated) when RSS gave nothing.
-                    if is_news_intent and not rows:
+                if not rows:
+                    # PRIMARY for news-intent (fallback tier 1): Google News RSS.
+                    if is_news_intent:
                         try:
-                            for r in ddgs.news(query, **kwargs):
-                                d, age, dt = _fmt_date(r.get("date", ""))
-                                rows.append({
-                                    "title": r.get("title"), "url": r.get("url"),
-                                    "body": r.get("body"), "date": d, "age": age, "dt": dt,
-                                    "source": r.get("source", ""),
-                                })
+                            rows = _google_news_rss(query, max_results, _detect_query_lang(query))
                             if rows:
-                                source_used = "DDG news (RSS fallback)"
+                                source_used = "Google News RSS"
                         except Exception:
-                            pass
+                            rows = []   # unofficial endpoint — fall through to DuckDuckGo
 
-                    # FALLBACK 2 / non-news: plain web results (no dates available).
-                    if len(rows) < max_results:
-                        seen = {r["url"] for r in rows}
-                        for r in ddgs.text(query, **kwargs):
-                            if r.get("href") in seen:
-                                continue
-                            rows.append({
-                                "title": r.get("title"), "url": r.get("href"),
-                                "body": r.get("body"), "date": "", "age": "", "dt": None,
-                                "source": "",
-                            })
-                            if len(rows) >= max_results:
-                                break
-                        if rows and source_used == "web":
-                            source_used = "web"
+                    with DDGS() as ddgs:
+                        # FALLBACK: DuckDuckGo news index (also dated) when RSS gave nothing.
+                        if is_news_intent and not rows:
+                            try:
+                                for r in ddgs.news(query, **kwargs):
+                                    d, age, dt = _fmt_date(r.get("date", ""))
+                                    rows.append({
+                                        "title": r.get("title"), "url": r.get("url"),
+                                        "body": r.get("body"), "date": d, "age": age, "dt": dt,
+                                        "source": r.get("source", ""),
+                                    })
+                                if rows:
+                                    source_used = "DDG news (RSS fallback)"
+                            except Exception:
+                                pass
+
+                        # FALLBACK / non-news: plain web results (no dates available).
+                        if len(rows) < max_results:
+                            seen = {r["url"] for r in rows}
+                            for r in ddgs.text(query, **kwargs):
+                                if r.get("href") in seen:
+                                    continue
+                                rows.append({
+                                    "title": r.get("title"), "url": r.get("href"),
+                                    "body": r.get("body"), "date": "", "age": "", "dt": None,
+                                    "source": "",
+                                })
+                                if len(rows) >= max_results:
+                                    break
+                            if rows and source_used == "web":
+                                source_used = "web"
 
                 # Enforce the recency window on real dates (DuckDuckGo's own timelimit
                 # proved unreliable). Undated items are kept — they are not provably stale.
+                #
+                # Found live: this used to require `len(fresh) >= 3` before applying the
+                # filter, so a niche/low-coverage query (e.g. Vietnamese "world news
+                # roundup") with only 1-2 genuinely fresh hits fell through to the FULL
+                # unfiltered pool — a real request for `timelimit="d"` (past 2 days)
+                # silently returned an article 216 days old. The tool was still honest
+                # (real Published date + computed age shown), but the recency request
+                # itself was defeated. Now: use whatever fresh results exist, even just
+                # one — fewer honest results beats padding with old ones. Only fall back
+                # to the unfiltered pool when NOTHING survives the window at all.
                 if timelimit in _WINDOW_DAYS:
                     cutoff = datetime.now(timezone.utc) - timedelta(days=_WINDOW_DAYS[timelimit])
                     fresh = [r for r in rows if r.get("dt") is None or r["dt"] >= cutoff]
-                    if len(fresh) >= 3:
+                    if fresh:
                         rows = fresh
                 # NOTE: do NOT truncate to max_results yet — the landing-page filter below
                 # needs the larger pool, otherwise its "keep everything if <3 survive"

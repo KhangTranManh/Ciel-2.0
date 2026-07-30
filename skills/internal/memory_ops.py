@@ -53,20 +53,45 @@ def _save_fact(key: str, value: str) -> str:
     _save_facts(data)
     return f"Fact saved successfully: {key}."
 
+def _find_key_ci(data: dict, key: str) -> str | None:
+    """Case-insensitive lookup. Found live: a fact was saved as "Tên" (Vietnamese,
+    capitalized) but get_fact("tên") / get_fact("name") both missed it — dict lookup
+    is exact-match, and the tool's own prompt tells the model to use snake_case
+    English-ish keys ("name"), which is a different string entirely from how a key
+    may have actually been saved. Case alone is cheap and safe to normalize; this does
+    NOT translate "name" -> "Tên" (that would be guessing), it only catches the same
+    word typed in a different case."""
+    if key in data:
+        return key
+    lowered = key.strip().lower()
+    for real_key in data:
+        if real_key.strip().lower() == lowered:
+            return real_key
+    return None
+
 def _get_fact(key: str) -> str:
     """Retrieve a specific fact from the Master's local vault by its key."""
     data = _load_facts()
-    if key not in data:
-        return f"No fact found for key '{key}' in the vault."
-    return f"Fact '{key}': {data[key]}"
+    found = _find_key_ci(data, key)
+    if found is not None:
+        return f"Fact '{found}': {data[found]}"
+    if not data:
+        return f"No fact found for key '{key}' — the vault is empty."
+    # Hand back the REAL keys rather than a bare miss — lets a retry (self-correction,
+    # or the same turn if the model reads this result) use the actual key instead of
+    # guessing a different spelling/language/case again.
+    return (f"No fact found for key '{key}'. Available keys in the vault: "
+            f"{', '.join(data.keys())}. Retry get_fact with the exact key shown above.")
 
 def _delete_fact(key: str) -> str:
     """Delete a specific fact from the local vault."""
     data = _load_facts()
-    if key in data:
-        del data[key]
+    found = _find_key_ci(data, key)
+    if found is not None:
+        del data[found]
         _save_facts(data)
-    return f"Fact deleted successfully: {key}."
+        return f"Fact deleted successfully: {found}."
+    return f"No fact found for key '{key}' — nothing deleted."
 
 # ==========================================
 # FACTORY (matches the standard get_*_tools() pattern)
