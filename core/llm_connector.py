@@ -782,6 +782,16 @@ class CielCore:
         r"\b[\w\-./\\]*\.(?:txt|py|json|csv|pdf|docx?|html?|md|png|jpe?g|log|xlsx|ya?ml|js|ts|css)\b",
         re.IGNORECASE)
 
+    # Trading pairs, as a CLOSED LIST of real instrument codes rather than a generic
+    # `[A-Z]{3,5}/[A-Z]{3,5}` shape. This is a software project: the generic form
+    # matches HTML/CSS, JSON/YAML and HTTP/HTTPS, which would put meaningless noise in
+    # front of the Router on ordinary coding turns. Same precision-over-recall call as
+    # _DISTRIBUTIVE_RE in continuation.py — a miss costs one clarifying question, a
+    # false positive costs noise on every turn that mentions a tech stack.
+    _SYMBOL_CODE = (r"(?:XAU|XAG|XPT|XPD|BTC|ETH|USDT|USDC|BNB|SOL|XRP|ADA|DOGE"
+                    r"|USD|EUR|GBP|JPY|AUD|NZD|CAD|CHF|CNY|VND)")
+    _RECENT_ENTITY_SYMBOL_RE = re.compile(rf"\b{_SYMBOL_CODE}/{_SYMBOL_CODE}\b", re.IGNORECASE)
+
     def _recent_entities_note(self) -> str:
         """Deterministic, narrow signal for the Router: concrete entities (file
         paths, email addresses) literally mentioned in the last few turns of
@@ -800,6 +810,20 @@ class CielCore:
         Brain asked "where do you want this?" again and Worker fabricated "I
         can't write files in this chat" — the path was sitting right there in
         chat_history, but the Router never saw it at all.
+
+        Found live AGAIN, same shape, different entity type — which is why trading
+        pairs joined the list: Ciel offered "em kiểm tra XAU/USD hiện tại", the
+        Master answered "thử xem, kiểm tra đi", and the Router — seeing only those
+        five words, with no symbol in this note because it extracted files and
+        addresses only — logged {"observation": "Master yêu cầu kiểm tra nhưng chưa
+        nêu đối tượng", "reasoning": "Cần hỏi lại"} and routed to chat. The Worker,
+        which DOES get recent turns, correctly identified XAU/USD but had no tools
+        on that path, and invented "bật lại công cụ thị trường" — false, since
+        get_market_price was loaded and working. Note the asymmetry that makes a
+        symbol safe here where an address needs more care: an address is the TARGET
+        of an irreversible send, a symbol is only ever an argument to a read-only
+        lookup, so a stale one costs a visibly wrong quote, not a real email to the
+        wrong person.
         """
         try:
             if not CONTEXT_RECENT_TURNS_ENABLED:
@@ -815,6 +839,13 @@ class CielCore:
                 for match in _EMAIL_RE.findall(text):
                     if match not in found:
                         found.append(match)
+                # Uppercased on the way in: "xau/usd" and "XAU/USD" are the same
+                # instrument, and uppercase is the form get_market_price expects, so
+                # the Router gets a symbol it can pass straight through as an argument.
+                for match in self._RECENT_ENTITY_SYMBOL_RE.findall(text):
+                    sym = match.upper()
+                    if sym not in found:
+                        found.append(sym)
             return ", ".join(found[:8])
         except Exception:
             return ""
@@ -2442,14 +2473,35 @@ RULES:
         # (error message, empty, "not found") must always trigger self-correction.
         # Doing this here — not after json.loads — means a malformed Brain response
         # (which lands in the except branch) can never rubber-stamp an error as satisfied.
-        if self._is_failure_result(result):
+        # "Must never be called satisfied" is NOT the same as "may only be explained".
+        # This used to `return` here with action="chat" hardcoded, which short-circuited
+        # the evaluation below — the ONE path that is handed `Available tools:` and can
+        # therefore name a working alternative. So the single moment recovery mattered
+        # most was the single moment it was impossible: a failed tool could only ever be
+        # narrated, never retried differently.
+        #
+        # Found live: get_market_price("DXY") -> "Error: Could not find price for DXY"
+        # -> forced action="chat" -> the Worker, told to "suggest a next step" with no
+        # tool context of its own, invented "Mình chưa gọi được tra cứu web trực tiếp"
+        # — false: stealth_search was loaded, working, and would have answered it.
+        #
+        # Now the evaluation still runs and may propose a real alternative, while
+        # `satisfied` is forced False afterwards no matter what it replies — so the
+        # floor's actual guarantee (a malformed reply can never rubber-stamp an error
+        # as success) is preserved without also blocking every recovery.
+        forced_unsatisfied = self._is_failure_result(result)
+        if forced_unsatisfied:
             self._log_thought("BRAIN", "evaluate_override",
-                              "Result matches a failure signal — forcing self-correction.")
-            return {"satisfied": False,
-                    "reasoning": "Result is an error, empty, or not-found response.",
-                    "action": "chat",
-                    "task": ("Honestly explain to the Master that the previous attempt "
-                             "did not return usable data, and suggest a next step.")}
+                              "Result matches a failure signal — forcing self-correction "
+                              "(asking Brain for a better tool, not only an explanation).")
+
+        honest_explain = {
+            "satisfied": False,
+            "reasoning": "Result is an error, empty, or not-found response.",
+            "action": "chat",
+            "task": ("Honestly explain to the Master that the previous attempt "
+                     "did not return usable data, and suggest a next step."),
+        }
 
         eval_request = (
             f"User's request: {user_input}\n"
@@ -2479,11 +2531,21 @@ RULES:
                 raw = raw.strip()
 
             if not raw:
-                return {"satisfied": True}
-            return json.loads(raw)
+                return dict(honest_explain) if forced_unsatisfied else {"satisfied": True}
+            evaluation = json.loads(raw)
+            if forced_unsatisfied:
+                # The floor holds regardless of what Brain replied.
+                evaluation["satisfied"] = False
+                if evaluation.get("action") not in ("tool", "chat"):
+                    # It found no concrete alternative — the Master is still owed an
+                    # honest account of the failure rather than silence.
+                    return dict(honest_explain)
+            return evaluation
         except (json.JSONDecodeError, Exception) as e:
             self._log_thought("BRAIN", "evaluate_result_error", str(e))
-            return {"satisfied": True}  # Fail-safe: assume satisfied if evaluation fails
+            # Fail-safe: assume satisfied — EXCEPT when the result was provably a
+            # failure, where "satisfied" would hand the Master an error as an answer.
+            return dict(honest_explain) if forced_unsatisfied else {"satisfied": True}
 
     @staticmethod
     def _is_failure_result(result: str) -> bool:

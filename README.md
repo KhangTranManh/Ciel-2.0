@@ -198,6 +198,11 @@ TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...           # numeric — message @userinfobot to find yours, not another key
 DISABLED_SKILL_MODULES=       # e.g. vision_ops — skip a whole skill module at load (Docker)
+# Real Google results for stealth_search, via SerpApi. WITHOUT this, search still works
+# but silently drops to the weaker DuckDuckGo/News-RSS tier — it never errors, so a
+# missing key looks exactly like a working one. API_ENDPOINT has a code default.
+SEARCH_API_KEY=...
+API_ENDPOINT=https://serpapi.com/search?engine=google
 ```
 
 > **Gotcha:** `agent_system/config.py` reads the Worker model from `CODER_MODEL`, not
@@ -325,9 +330,16 @@ not to run both at once yet: [docker/README.md](docker/README.md).
   of burning a guaranteed-to-fail Worker call.
 - **Memory-aware recall fallback** — an inspection tool that comes back empty falls
   back to recalled long-term context, labeled "unverified from workspace".
-- **Dated, sourced web search** — `stealth_search` reads Google News RSS first, falling
-  back to DuckDuckGo; every hit carries a real publication date and outlet, and the
-  query is built in **your** language.
+- **Dated, sourced web search** — `stealth_search` hits **real Google** via SerpApi
+  first (the same index a human searching gets), falling back to Google News RSS then
+  DuckDuckGo if no key is set or the call fails; every hit carries a real publication
+  date and outlet, the requested time window is enforced on that real date rather than
+  trusted, and the query is built in **your** language.
+- **It looks things up before saying "I don't know"** — when a reply concedes a
+  knowledge gap, a deterministic Python gate searches the web and re-answers from the
+  results. Costs nothing on an ordinary turn (the gate only fires on an actual
+  admission), skips questions about your own stored data, and keeps the honest "I
+  couldn't find it" rather than inventing an answer when the search comes back empty.
 
 ### Proactivity & Personalisation
 - **Ciel speaks first** (Tier 6, `core/notifier.py` + `core/triggers.py`) — nine
@@ -624,9 +636,14 @@ Builds this same image and runs it daily (cron, 07:00 Vietnam time) — not a ba
    own `category:primary` doesn't reliably exclude those senders.
 
 Needs these repo secrets (Settings → Secrets and variables → Actions): `API_KEY`,
-`BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and — now that the digest
-genuinely calls `search_gmail` — `GOOGLE_CREDENTIALS_B64`/`GOOGLE_TOKEN_B64` (base64 of
-`credentials.json`/`ciel_data/gmail_token.json`).
+`BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SEARCH_API_KEY`, and — now that
+the digest genuinely calls `search_gmail` — `GOOGLE_CREDENTIALS_B64`/`GOOGLE_TOKEN_B64`
+(base64 of `credentials.json`/`ciel_data/gmail_token.json`).
+
+> A secret in `.env` is **not** enough: the workflow passes env explicitly via
+> `docker run -e`, so anything missing from `health_check.yml` is simply absent in the
+> container. `SEARCH_API_KEY` is the one that fails quietly — search degrades to the
+> weaker source and the digest still looks correct.
 
 ---
 
@@ -744,6 +761,8 @@ Ciel 2.0/
 | Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
 | Skip loading a whole capability class (e.g. vision on a headless server) | `.env` — `DISABLED_SKILL_MODULES` (comma-separated module stems, e.g. `vision_ops`) |
 | Restrict the Telegram bot to a different chat | `.env` — `TELEGRAM_CHAT_ID` (numeric; message `@userinfobot` to find yours) |
+| Use real Google results instead of the DuckDuckGo fallback | `.env` — `SEARCH_API_KEY` (SerpApi), optionally `API_ENDPOINT` |
+| Change which instruments resolve a deictic "check it" | `core/llm_connector.py` — `_SYMBOL_CODE` in `_recent_entities_note()`'s regex |
 | Tune the Tier-1 agent loop's rounds/timeout | `.env` — `AGENT_LOOP_ENABLED`, `AGENT_LOOP_MAX_ROUNDS`, `AGENT_LOOP_MAX_SECONDS` |
 | Tune parallel tool execution | `.env` — `AGENT_PARALLEL_ENABLED`, `AGENT_PARALLEL_MAX_WORKERS` |
 | Change Tier-4's context/RAG token budgets | `.env` — `CONTEXT_INPUT_BUDGET`, `CONTEXT_RECALL_BUDGET`, `CONTEXT_RECENT_TURNS_BUDGET` |

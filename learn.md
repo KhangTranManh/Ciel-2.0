@@ -155,10 +155,27 @@ từ test tự động — đây chính là lý do file log không bao giờ đ�
    thật). Bài học: việc phân loại "cần chú ý" vs "rác tự động" thuộc về **cách trình bày
    kết quả** (prompt tóm tắt), không phải câu truy vấn.
 
-**Bài học chung xuyên suốt cả 5 bug**: khi 1 component không biết lý do/dữ liệu thật, nó
-sẽ **tự bịa ra** thứ gì đó nghe hợp lý. Cách sửa luôn giống nhau — đưa thẳng sự thật
-(reasoning, page count, kết quả gốc) vào dữ liệu mà component đó đọc, thay vì kỳ vọng nó
-tự suy luận đúng hoặc chỉ dặn dò suông trong prompt.
+6. **Một "sàn an toàn" cấm luôn cả đường cứu vãn.** Khi một tool thất bại,
+   `_evaluate_result()` đúng khi từ chối coi kết quả lỗi là thành công — nhưng nó làm
+   điều đó bằng cách `return` ngay với `action="chat"` ép cứng, cắt mất chính đoạn đánh
+   giá bên dưới, vốn là nơi *duy nhất* được đưa danh sách tool để chọn cách khác. Hậu
+   quả: **đúng lúc cần cứu vãn nhất thì lại bị cấm thử** — tool hỏng chỉ được kể lể, không
+   bao giờ được thử lại bằng công cụ khác. Phát hiện thật: `get_market_price("DXY")` lỗi →
+   ép sang chat → Worker được bảo "gợi ý bước tiếp theo" mà không biết mình có
+   `stealth_search`, nên bịa "chưa gọi được tra cứu web" (sai). Sửa: vẫn chạy đánh giá,
+   nhưng ép `satisfied=False` **sau đó** — giữ nguyên đảm bảo, bỏ được lệnh cấm.
+
+**Bài học chung — 2 tầng:**
+
+*Tầng 1 (bug 1-5)*: khi một component không có lý do/dữ liệu thật, nó sẽ **tự bịa** thứ
+gì đó nghe hợp lý. Cách sửa luôn giống nhau — đưa thẳng sự thật (reasoning, số trang, kết
+quả gốc) vào dữ liệu component đó đọc, thay vì kỳ vọng nó suy luận đúng hoặc dặn dò suông
+trong prompt.
+
+*Tầng 2 (bug 6)*: khi viết một guard tất định, phải hỏi nó đang cấm một **câu trả lời
+sai** hay cấm luôn một **hướng đi**. Cấm câu trả lời sai là đúng; cấm hướng đi thì biến
+chính cơ chế an toàn thành nguyên nhân gây lỗi — và vì mọi thứ vẫn "chạy bình thường",
+loại lỗi này rất khó thấy.
 
 ---
 

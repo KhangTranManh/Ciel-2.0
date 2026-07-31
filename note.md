@@ -82,6 +82,8 @@ Docker: `docker/` (`docker-compose.api.yml`, `docker-compose.telegram.yml`).
 - Worker model = **`CODER_MODEL`**; worker provider = **`WORKER_PROVIDER`**.
 - Model aliases drift — 4xx/empty output: check alias before code.
 - Windows `thoughts.log` is CRLF; parsers must normalize (`_iter_entries`).
+- `SEARCH_API_KEY` missing → search **silently degrades** to DDG/RSS, never errors. Must be set in `.env` **and** as a GitHub secret, or CI digests look fine while using the weaker source.
+- A long-running bot keeps the code it started with. Restart after editing `core/` — a whole session was once debugged against stale in-memory code.
 
 ---
 
@@ -114,10 +116,12 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 | Outbound | Sanitizer + optional Middleware (fail-open) |
 | Placeholders / subject | Block unsynthesized shells; enforce exact subject |
 | multi_tool | `{{step_N}}` / workflow auto-send; one delivery per recipient/turn |
-| Search | Provenance dates; language-aware locale |
+| Search | SerpApi primary → RSS/DDG fallback; provenance dates; recency enforced on the REAL pubDate |
 | Router JSON | Tolerant extract; `chat` `task` is hint not final reply |
-| Self-correct | Don’t overwrite a good result with a failed “fix” |
+| Self-correct | Don’t overwrite a good result with a failed “fix”; a failure floor forces `satisfied=False` but must NOT dictate the recovery path |
+| Don’t-know | Chat reply conceding a knowledge gap triggers a lookup before it stands |
 | Paths in Docker | Remap Windows-style paths into Linux sandbox |
+| Deictic refs | `[RECENT ENTITIES]` = closed list (files, emails, trading pairs) — facts for the Router, never instructions |
 
 ---
 
@@ -140,6 +144,15 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 ---
 
 ## Changelog *(newest first — prune aggressively)*
+
+### 2026-07-30 → 07-31 — Real Google search; agent stops giving up early
+
+- **Search**: SerpApi (`SEARCH_API_KEY`) is now primary in `web_agent_ops.py`; News-RSS/DDG demoted to fallback. Also fixed a recency filter that silently skipped itself when <3 fresh hits survived — a `timelimit="d"` query had been returning 216-day-old articles.
+- **Stopped giving up**: `_evaluate_result`'s failure floor hardcoded `action="chat"`, so a failed tool could only ever be narrated, never retried with a better one — `get_market_price("DXY")` failed and the Worker then invented "chưa gọi được tra cứu web" (false). Floor still forces `satisfied=False`, but Brain may now propose an alternative tool.
+- **Chat path**: `_search_fallback_for_chat` looks something up before conceding "I don't have that". Free unless the reply actually admitted a knowledge gap.
+- **Fact vault** (`memory_ops.py`): case-insensitive keys ("tên" finds "Tên"), a miss now lists the real keys, `get_fact` left `_SKIP_SELF_CORRECTION`. `_format_fact_result` was hardcoded English regardless of the Master's language.
+- **Also**: trading pairs join `[RECENT ENTITIES]` (deictic "kiểm tra đi" resolves to XAU/USD); Worker retries once on an empty response; restored `email_template/`, deleted by an unrelated commit, which had broken `build_market_report_html`.
+- Verified: 3 no-LLM suites green throughout; SerpApi proven in-container **both with and without** the key. DXY recovery verified by mock only — the provider hit **402 (out of credit)** before a live run.
 
 ### 2026-07-28 → 07-29 — Docker, Telegram, path + self-correct fixes
 - Docker images for API + Telegram; CPU torch; `DISABLED_SKILL_MODULES`.

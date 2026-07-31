@@ -204,6 +204,12 @@ User input (text or voice transcript) → CielCore.process()
       unrelated reason)
   → Based on action:
       "chat"       → Worker generates a response, with recent-turns context injected
+                     → if that reply CONCEDES a knowledge gap ("chưa có dữ liệu…"), a
+                       free Python gate runs stealth_search and re-answers from the
+                       results (_search_fallback_for_chat) — a capability refusal, a
+                       non-question, or a question about the Master's own stored data
+                       is left alone, and a search that finds nothing keeps the honest
+                       "I don't know" rather than replacing it with a guess
       "tool"       → dangerous-code / high-risk gate → Safety Gate (Y/N, or DEFER if
                      unattended) → ToolManager executes → outbound send is deduped by
                      recipient → Worker formats non-email results
@@ -629,8 +635,16 @@ publication dates, surfaced section landing pages instead of articles, and honor
 own `timelimit` unreliably (a "past day" window still returned 8–16-day-old hits):
 
 ```
+any query
+  → 0. SerpApi (real Google)    PRIMARY, unconditional — the same index/ranking a human
+       typing into google.com/search gets. Needs SEARCH_API_KEY (+ API_ENDPOINT).
+       `tbs=qdr:X` is Google's own recency filter, mapped from our `timelimit` letters.
+       Dates arrive as RELATIVE strings ("12 hours ago" / "2 ngày trước"), parsed by
+       _parse_relative_age() — plain web results carry no absolute timestamp.
+       Returns [] (never raises) with no key → everything below runs unchanged.
+  ↓ (only if the above produced nothing)
 news-intent query
-  → 1. Google News RSS          PRIMARY — free, no API key, no extra library
+  → 1. Google News RSS          free, no API key, no extra library
        ├─ generic "what's the news" query  → TOP STORIES feed (no q=)
        └─ query names a topic              → keyword search (q=)
        locale (hl/gl/ceid) picked from the QUERY's language: vi/VN, en-US/US, ja/JP, …
@@ -638,6 +652,17 @@ news-intent query
   → 3. ddgs.text()              non-news queries, or to top up
 then: recency filter on the REAL pubDate → landing-page filter → trim to max_results
 ```
+
+Two traps this chain has already sprung, both fixed:
+
+- **The recency filter used to skip itself.** It only applied when ≥3 fresh hits
+  survived, so a low-coverage query (Vietnamese "world news roundup") with 1–2 genuinely
+  fresh results fell through to the FULL unfiltered pool — a real `timelimit="d"` request
+  returned a 216-day-old article, honestly dated and completely unwanted. Now any
+  non-empty fresh set wins; only a totally empty one falls back.
+- **A missing `SEARCH_API_KEY` is invisible.** Tier 0 no-ops rather than erroring, so the
+  whole chain still "works", just worse — see rule 29 in `SKILL.md`, and note the key must
+  be set in `.env` **and** in `.github/workflows/health_check.yml`'s `docker run -e` list.
 
 - **Top stories vs keyword search matters.** "Top news headlines today" would otherwise
   match articles *titled* that (roundups); the top-stories feed returns the actual lead

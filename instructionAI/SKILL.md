@@ -292,3 +292,41 @@ model.
     `DIGEST_REQUEST`) to split "cần chú ý" (summarize fully) from "tự động/định kỳ"
     (list sender + count only) — curation belongs in how results are presented, not in
     a query trying to guess intent it cannot know.
+
+27. **A deterministic floor must constrain the OUTCOME, not the RECOVERY PATH.** The
+    single worst bug of this cycle: `_evaluate_result()` correctly refused to let an
+    obviously-failed tool result be rubber-stamped as `satisfied`, but implemented that
+    by `return`ing early with `action="chat"` hardcoded — short-circuiting the very
+    evaluation below it, the only path handed `Available tools:` and therefore the only
+    one able to name a working alternative. Net effect: the one moment recovery mattered
+    most was the one moment it was structurally impossible; a failed tool could only ever
+    be narrated. Found live: `get_market_price("DXY")` → "Could not find price" → forced
+    chat → the Worker, told to "suggest a next step" with no tool context of its own,
+    invented *"Mình chưa gọi được tra cứu web trực tiếp"* — false; `stealth_search` was
+    loaded, working, and would have answered it. Fix: run the evaluation anyway, then
+    force `satisfied=False` afterwards regardless of the reply. The guarantee is
+    unchanged; the recovery is no longer forbidden. Generalise it: when adding a
+    deterministic guard, ask whether it is forbidding a bad *answer* or a whole *avenue*.
+
+28. **A non-LLM code path still owes the persona's rules — no prompt can fix it.**
+    `_format_fact_result()` is plain Python that never reaches the Worker, and it
+    hardcoded English templates ("Master, I saved your {key}"), so a Vietnamese Master
+    got English replies from the fact vault no matter what the persona said. Anything
+    that renders user-facing text outside the Worker must resolve language itself
+    (`_detect_language(user_input)`); grep for f-strings returned straight to the user
+    before assuming the persona covers them. Related, same file: dict lookups are
+    exact — `get_fact("tên")` missed a fact saved as `"Tên"`, and the tool's own prompt
+    tells the model to use snake_case English-ish keys, guaranteeing the mismatch. A
+    lookup a human would call obvious should be case-insensitive, and a miss should
+    hand back the real keys so the next attempt can succeed instead of re-guessing.
+
+29. **An optional integration that degrades silently will degrade unnoticed.**
+    `_serpapi_search()` returns `[]` (never raises) when `SEARCH_API_KEY` is absent, so
+    search falls through to the weaker DuckDuckGo/RSS tier and everything still *looks*
+    like it worked. That is correct for graceful degradation and dangerous for
+    operations: the CI workflow passes env explicitly via `docker run -e`, so a key
+    present in `.env` but missing from `.github/workflows/` meant the daily digest ran
+    for days on the older source. Verified by running the container **both with and
+    without** the key — a negative control is what turns "I added the var" into "the
+    behaviour actually changed". Whenever a capability can silently no-op, add the
+    variable in **both** places and prove the difference, don't infer it.
