@@ -208,5 +208,22 @@ class Worker:
         # Issue 3 fix: Robust markdown stripping
         content = _strip_markdown_fences(content)
 
+        # A provider returning an empty string is NOT an exception, so the @retry
+        # decorator above never sees it and never retries — found live: this reached
+        # the Master as the generic "core formatting disrupted." fallback with zero
+        # diagnostic value. One immediate retry here covers the common transient case
+        # (a content-filter flake, a truncated stream) without the cost of a full
+        # backoff cycle; if it's STILL empty, let the caller see that honestly instead
+        # of silently returning "" a second time.
+        if not content:
+            log.worker("Empty response — retrying once before giving up")
+            response = self._llm.invoke(messages)
+            if self.on_call:
+                try:
+                    self.on_call(WORKER_MODEL, extract_usage(response))
+                except Exception:
+                    pass
+            content = _strip_markdown_fences(response.content.strip())
+
         log.worker(f"Generated {len(content)} chars")
         return content
