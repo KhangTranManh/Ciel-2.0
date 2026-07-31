@@ -106,6 +106,14 @@ jobs:
           BASE_URL: ${{ secrets.BASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Real Google results via SerpApi (skills/external/web_agent_ops.py's primary
+          # source). Easy to miss: _serpapi_search() returns [] rather than raising when
+          # the key is absent, so WITHOUT this the CI digest silently degrades to the
+          # DuckDuckGo/RSS fallback and looks like it worked — just with the older,
+          # thinner results this replaced. API_ENDPOINT is not a secret; it has a code
+          # default, and lives here only so the endpoint can change without a code edit.
+          SEARCH_API_KEY: ${{ secrets.SEARCH_API_KEY }}
+          API_ENDPOINT: ${{ vars.API_ENDPOINT || 'https://serpapi.com/search?engine=google' }}
         run: |
           docker run --rm \
             --name ciel-daily-digest \
@@ -124,6 +132,8 @@ jobs:
             -e DISABLED_SKILL_MODULES=vision_ops \
             -e TELEGRAM_BOT_TOKEN \
             -e TELEGRAM_CHAT_ID \
+            -e SEARCH_API_KEY \
+            -e API_ENDPOINT \
             -v "$PWD/ciel_data:/app/ciel_data" \
             -v "$PWD/credentials.json:/app/credentials.json:ro" \
             ciel-health-check \

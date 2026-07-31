@@ -186,6 +186,51 @@ _NO_OVERWRITE_RE = re.compile(
     re.IGNORECASE)
 
 
+# --- "I don't have that information" detection (chat path) -------------------------
+# Found live: Master asked "đang có chế độ gì mới ko" about LoL; Ciel answered "Mình
+# chưa có dữ liệu live để xác nhận chính xác" and STOPPED — the Master then had to
+# type "tra cứu đi" by hand. The chat path gives the Worker no tools, so an honest
+# "I don't know" is where the turn ends, even for a question stealth_search answers
+# trivially. Two independent signals in ONE sentence are required, rather than one
+# broad regex: a negation AND a knowledge/data noun. That distinguishes a KNOWLEDGE
+# gap (searchable) from a CAPABILITY refusal ("Mình không thể xác định danh tính từ
+# ảnh", "không có công cụ chơi Poker") — both contain a negation, neither is fixed by
+# searching, and both appear verbatim in the real log.
+_KNOWLEDGE_GAP_NEGATION_RE = re.compile(
+    r"\b(?:chưa|không|chẳng|no|not|don'?t|doesn'?t|cannot|can'?t|unable|lack)\b",
+    re.IGNORECASE)
+_KNOWLEDGE_NOUN_RE = re.compile(
+    r"(?:dữ\s*liệu|thông\s*tin|kết\s*quả|số\s*liệu|tin\s*tức|cập\s*nhật|tra\s*cứu|"
+    r"\blive\b|\bdata\b|\binformation\b|\binfo\b|\bresults?\b|\bupdates?\b|"
+    r"\bcurrent\b|\blatest\b)",
+    re.IGNORECASE)
+
+# Questions about the Master's OWN stored things — the fact vault, todo store, Gmail
+# and workspace own these, never the public web. Searching them would be useless at
+# best and would put the Master's private wording into a third-party query at worst.
+# Narrow on purpose: a personal-artifact noun sitting next to a first-person pronoun.
+# "tôi muốn biết chế độ mới của LoL" contains "tôi" but no artifact noun, so it stays
+# searchable — excluding every first-person question would gut the feature.
+_OWN_DATA_RE = re.compile(
+    r"(?:tên|mật\s*khẩu|email|mail|todo|công\s*việc|lịch|file|tệp|ghi\s*chú|"
+    r"tài\s*khoản|số\s*điện\s*thoại|địa\s*chỉ|password|note|account|address|phone)"
+    r"[^.?!\n]{0,20}?\b(?:của\s+)?(?:tôi|t|mình|em|my)\b"
+    r"|\bmy\s+(?:name|password|email|todo|file|note|account|address|phone|schedule)\b",
+    re.IGNORECASE)
+
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
+
+
+def _admits_missing_knowledge(text: str) -> bool:
+    """True when a reply concedes it lacks the DATA to answer (not the ABILITY).
+    Scoped per sentence so "I have no poker tool. Here is the latest data..." — a
+    negation and a knowledge noun in unrelated sentences — does not false-positive."""
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        if _KNOWLEDGE_GAP_NEGATION_RE.search(sentence) and _KNOWLEDGE_NOUN_RE.search(sentence):
+            return True
+    return False
+
+
 def _find_dangerous_code_patterns(text: str) -> list:
     """Deterministic scan for genuinely destructive code/commands (drive format, mkfs,
     rmtree, fork bombs, etc.) — same bar backtest/test_hard_special.py checks against.
@@ -2318,6 +2363,74 @@ RULES:
         )
         return self.execute_chat(fallback_task)
 
+    def _search_fallback_for_chat(self, user_input: str, response: str) -> str:
+        """Look it up before giving up. Sibling of _memory_fallback_for_inspection —
+        same shape, different missing rung: that one covers an inspection tool coming
+        back empty, this one covers the CHAT path, where the Worker has no tools at
+        all and an honest "I don't have that data" simply ends the turn.
+
+        Observed live: "Biết game LOL không" -> "Biết chứ" -> "đang có chế độ gì mới
+        ko" -> "Mình chưa có dữ liệu live để xác nhận chính xác." -> the Master had to
+        type "tra cứu đi" himself, for a question stealth_search answers in one call.
+
+        Every trigger condition is free Python, so an ordinary turn — where the model
+        answered normally — costs exactly nothing. Only a reply that already conceded
+        a knowledge gap pays for the search. Bails out (returning the original honest
+        answer untouched) on: a capability refusal rather than a knowledge gap, a
+        non-question, a question about the Master's own stored data, stealth_search
+        not being loaded, a search error, or a search that found nothing — because a
+        fabricated answer is worse than the honest "I don't know" it would replace.
+        """
+        if not response or not _admits_missing_knowledge(response):
+            return response
+        lowered = (user_input or "").lower()
+        if not any(m in lowered for m in self._QUESTION_MARKERS):
+            return response
+        if _OWN_DATA_RE.search(lowered):
+            return response
+        if not any(t.name == "stealth_search" for t in self.tool_manager.tools):
+            return response
+
+        # The question alone is often an unusable query — "đang có chế độ gì mới ko"
+        # never names LoL; the subject lived one turn back. Python decided to search;
+        # the model only phrases the query, from the same recent-turns context the
+        # chat reply already had.
+        recent = self._recent_turns_block()
+        query = self.worker.generate(
+            (f"[RECENT CONVERSATION]:\n{recent}\n\n" if recent else "")
+            + f"The Master asked: \"{user_input}\"\n\n"
+            f"Write ONE short web-search query, in the Master's own language, that would "
+            f"find the answer. Resolve any pronoun or implied subject from the conversation "
+            f"above — the question by itself may be missing its topic. "
+            f"Output ONLY the query text: no quotes, no explanation, no label."
+        ).strip().splitlines()[0].strip().strip('"\'')[:200]
+        if not query:
+            return response
+
+        self._log_thought("SEARCH", "chat_fallback_triggered",
+                          f"Reply conceded a knowledge gap; searching before reporting "
+                          f"it as unknown.\nQuestion: {user_input}\nQuery: {query}")
+        try:
+            raw = self.tool_manager.execute_tool("stealth_search",
+                                                 {"query": query, "max_results": 5})
+            search_text = self.tool_manager.format_tool_result(raw)
+        except Exception as e:
+            self._log_thought("SEARCH", "chat_fallback_failed", f"{type(e).__name__}: {e}")
+            return response
+        if not search_text or "No results found" in search_text:
+            self._log_thought("SEARCH", "chat_fallback_empty",
+                              "Search returned nothing — keeping the original honest answer.")
+            return response
+
+        return self.execute_chat(
+            f"The Master asked: \"{user_input}\"\n\n"
+            f"[WEB SEARCH RESULTS just retrieved for this question]:\n{search_text[:8000]}\n\n"
+            f"Answer the Master's question using ONLY these results. Cite the date and "
+            f"source for anything time-sensitive. If the results do not actually answer "
+            f"it, say honestly that you looked it up and still could not find the answer "
+            f"— never invent one."
+        )
+
     def _evaluate_result(self, user_input: str, tool_name: str, tool_args: dict, result: str) -> dict:
         """Ask Brain to evaluate if a tool result satisfies the user's request."""
         # Ensure result is never empty (Gemini rejects empty content)
@@ -3301,6 +3414,11 @@ RULES:
                 else:
                     task = user_input
                 response = self.execute_chat(task)
+                # Look it up before settling for "I don't have that". Free unless the
+                # reply actually conceded a knowledge gap — see the method's docstring.
+                # Passed `user_input`, never `task`: the search must be built from the
+                # Master's real words, not from a router hint appended to them.
+                response = self._search_fallback_for_chat(user_input, response)
 
             self.chat_history.add_ai_message(response)
             self._save_chat_memory()
