@@ -102,11 +102,28 @@ async def startup_event():
 
         # SAFETY GATE: WebSocket confirmation callback
         def _ws_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
-            """Send confirmation request via WebSocket and block until response."""
+            """Send confirmation request via WebSocket and block until response.
+
+            No active WebSocket (client disconnected mid-run, or never connected for
+            this session) means nobody is here to answer — per the Tier 6 unattended
+            ceiling, silence must never resolve to "yes". Record it in DeferredStore
+            and deny, instead of silently running the risky step. See "Known-open" in
+            instructionAI/safety_and_risk.md — this closes that gap."""
             global _confirm_event, _confirm_result, _confirm_ws, _confirm_lock
             if _confirm_ws is None or _confirm_lock is None:
-                print("[API Safety] No active WebSocket — auto-approving.")
-                return True
+                try:
+                    ciel_agent.core.deferred.add(
+                        tool_name, tool_args,
+                        reason="no active WebSocket to ask",
+                        source="api (no client)",
+                    )
+                    ciel_agent.core._log_thought(
+                        "SAFETY", "deferred", f"{tool_name}: no active WebSocket to ask")
+                except Exception as e:
+                    print(f"[API Safety] Failed to record deferred action: {e}")
+                print(f"[API Safety] No active WebSocket — deferring {tool_name} "
+                      f"instead of auto-approving.")
+                return False
 
             _confirm_event.clear()
             _confirm_result["approved"] = False

@@ -94,6 +94,42 @@ this stays cheap. If you touch it: never propose replacing the React shell to ge
 orb look — the app's `SkillGrid`/`VitalsBar`/`ConfirmDialog`/cancel button have no
 equivalent in a from-scratch orb-only UI.
 
+## The Floating Desktop Widget (`ui/src/Widget.tsx`, Tauri only)
+
+A second, much smaller surface than the dashboard above: an always-on-top bubble that
+expands into a compact 340×460 chat panel — chat + voice only, no skills rail/vitals.
+Same `useCiel()` hook and bus as `App.tsx`; a separate root component, not a separate
+frontend. `main.tsx` picks `App` vs `Widget` by `getCurrentWindow().label` (`"main"` vs
+`"widget"`, declared in `src-tauri/tauri.conf.json`) — **not** a URL query param. An
+earlier version tried `?widget=1`; it rendered the FULL dashboard inside the tiny
+window instead of the widget, because a per-window `url` composing with `devUrl` in
+`tauri dev` is not reliable — a window's own `label` is a plain synchronous field Tauri
+sets directly and can't be affected by how the page URL was constructed.
+
+**Draggable like a mobile assistive-touch bubble** via `data-tauri-drag-region` (Tauri's
+own drag mechanism, not a hand-rolled mousedown/mousemove threshold — that was tried
+first and didn't reliably distinguish a click from a drag). Requires its own
+`capabilities/widget.json` (`core:window:allow-set-size/-position/-outer-position/
+-outer-size/-current-monitor/-start-dragging`, `core:event:allow-listen/-unlisten`) —
+the default capability file scopes to `"windows": ["main"]` only, so every one of these
+calls silently no-ops on the widget window without it.
+
+Expand/collapse resizes the SAME window in place (not two separate windows), anchored
+to wherever the user last dragged it — position/size are tracked passively via
+`onMoved`/`onResized` listeners into a ref, never read back synchronously at
+click-time (that path was tried and never confirmed reliable; the event-driven version
+is what's actually verified working).
+
+**Safety confirmations and cancellation reach the widget too** — `pendingConfirm` from
+`useCiel()` force-expands the bubble (a confirmation nobody can see is not a
+confirmation) and renders the same `ConfirmDialog` the dashboard uses; a Stop button
+replaces the mic while a request is in flight (`cancel()`, Tier 5), matching the
+dashboard's busy state.
+
+`WidgetErrorBoundary` wraps the panel specifically because a native window can resize
+correctly while React fails to render inside it — that failure mode looks identical to
+"nothing happened," and cost real debugging time before the boundary made it visible.
+
 ## Modality Seam (why voice was cheap to add, and why removing the orb was cheap too)
 
 Everything talks to `ui/src/core/bus.ts`, never directly to the WebSocket. Input

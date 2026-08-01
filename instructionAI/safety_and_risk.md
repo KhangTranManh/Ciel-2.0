@@ -94,9 +94,13 @@ not the same action at 09:00, and approving it from a one-line summary is approv
 fragment — the exact failure Tier 3 removed. The Master re-issues it as a fresh
 request, planned against the world as it now is.
 
-**Known-open:** `main_api.py` still auto-approves when no WebSocket is attached. That
-path predates this ceiling and should be routed through it (`core.unattended = True`
-for the no-socket path, so risky steps `DEFER` instead of silently running).
+`main_api.py`'s `_ws_confirm()` applies this at the point it matters most: if no
+WebSocket is attached when a high-risk step needs approval (client disconnected
+mid-run, or a background step outlives the connection that started it), it records
+the action via `DeferredStore.add()` and returns `False` — deny, not auto-approve.
+This does not go through `core.unattended`/`permissions.decide()` like the scheduler
+path does; it is a second, narrower enforcement point specific to the one channel
+(`main_api.py`) where "socket present" is the actual attendance signal.
 
 ## Outbound Idempotence — one delivery per recipient per turn
 

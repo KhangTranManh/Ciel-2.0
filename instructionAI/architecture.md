@@ -604,18 +604,25 @@ Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
 Each tier (Brain / Worker / Middleware) selects its provider and model independently
 via `.env` — no code changes to switch.
 
-| Tier | Provider | Model | Config Key |
+**Current (since 2026-07-27):** all three tiers run on a single `custom`
+OpenAI-compatible endpoint (`API_KEY` + `BASE_URL`), switched from Vilao for balance
+reasons. Vilao lines are deliberately left unused in `.env` for rollback — see `note.md`
+for the exact date and reasoning; that file is the live source of truth for which
+provider/model is actually running, not this table.
+
+| Tier | Provider | Model (live) | Config Key |
 |------|----------|-------|------------|
-| **Brain (Router)** | Vilao | `nt/cx/gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
-| **Worker (Generator)** | Vilao | `op/deepseek/deepseek-v4-pro` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
-| **Middleware (Verifier, optional)** | Vilao | `op/deepseek/deepseek-v4-pro` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+| **Brain (Router)** | `custom` | `gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
+| **Worker (Generator)** | `custom` | `gpt-5.6-luna` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
+| **Middleware (Verifier, optional)** | `custom` | `gpt-5.5` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
 
-> Provider model names drift — DeepSeek retired `deepseek-chat` for `deepseek-v4-pro` /
-> `deepseek-v4-flash`; Vilao aliases rename over time. If a tier returns empty output or
-> a 4xx, check the alias is still live before suspecting the code.
+> Provider model names/aliases drift — check the alias is still live (a trivial request,
+> compare reported `input_tokens` against what you actually sent) before suspecting the
+> code on empty output or a 4xx. See rule 11 in `SKILL.md`.
 
-Also supported per tier: Gemini, Ollama (fully offline). All three tiers can run on
-Vilao. **Tested fallback:** if Vilao is unavailable, `BRAIN_PROVIDER=deepseek` + a valid
+Also supported per tier: Vilao, DeepSeek, Gemini, Ollama (fully offline) — swap by
+changing `*_PROVIDER` + the matching `*_API_KEY`/model name, no code change. **Tested
+fallback:** if the primary endpoint is unavailable, `BRAIN_PROVIDER=deepseek` + a valid
 DeepSeek model works with zero code changes.
 
 **Measure a new alias before adopting it.** On the same endpoint/key, one Brain alias
