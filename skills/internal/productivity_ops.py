@@ -3,7 +3,7 @@ import re
 import ast
 import math
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -108,15 +108,41 @@ def get_productivity_tools() -> dict:
         ))
 
         def get_current_time() -> str:
+            """Wall clock from the host OS — use before news/search that needs 'today'."""
             try:
-                now = datetime.now()
-                return f"Thời gian hiện tại: {now.strftime('%Y-%m-%d %H:%M:%S')} (local)"
+                local = datetime.now().astimezone()
+                utc = datetime.now(timezone.utc)
+                # Master is Vietnam-local; CI runners are often UTC-only. Report both
+                # so "hôm nay" for search is never taken from the model's training date.
+                try:
+                    from zoneinfo import ZoneInfo
+                    vn = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+                    vn_line = (
+                        f"Vietnam (Asia/Ho_Chi_Minh): {vn.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                        f"— calendar date for 'hôm nay' / news: {vn.strftime('%Y-%m-%d')} "
+                        f"({vn.strftime('%d/%m/%Y')})"
+                    )
+                except Exception:
+                    vn_line = "Vietnam timezone unavailable on this host."
+                return (
+                    f"Thời gian hệ thống (source of truth — not model memory):\n"
+                    f"- Local process: {local.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                    f"- UTC: {utc.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                    f"- {vn_line}\n"
+                    f"When searching news for 'hôm nay', use the Vietnam calendar date above "
+                    f"and stealth_search timelimit='d'."
+                )
             except Exception as e:
                 return f"Lỗi lấy thời gian: {e}"
         tools.append(StructuredTool.from_function(
             func=get_current_time,
             name="get_current_time",
-            description="Get the current date and time. Useful for scheduling or time-based queries."
+            description=(
+                "Get the real current date/time from the system clock (local, UTC, "
+                "and Asia/Ho_Chi_Minh). YOU MUST USE THIS before answering 'what day "
+                "is it', scheduling, or when a news/search query depends on 'today'/"
+                "'hôm nay' and the date is not already given in the request."
+            ),
         ))
 
         def get_weather(city: str) -> str:

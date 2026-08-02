@@ -232,6 +232,109 @@ def _is_index_page(url: str, title: str, body: str, source: str = "") -> bool:
     except Exception:
         return False
 
+
+# Daily-roundup pages whose TITLE carries an old calendar day ("Tin thế giới nổi bật
+# trong ngày 15/5") while the page's own pubDate is fresh (reposted/re-indexed). The
+# Published-date recency filter then keeps them, and the daily digest lists month-old
+# headlines as "today". Match the embedded title date, not the page crawl date.
+_TITLE_DAY_RE = re.compile(
+    r"(?:nổi\s+bật\s+)?trong\s+ngày\s+(\d{1,2})\s*[/-]\s*(\d{1,2})"
+    r"(?:\s*[/-]\s*(\d{2,4}))?",
+    re.IGNORECASE,
+)
+_TITLE_DAY_RE_EN = re.compile(
+    r"(?:headlines?|news)\s+(?:for|on|of)\s+"
+    r"(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\s+(\d{1,2})",
+    re.IGNORECASE,
+)
+_MONTH_NAME_TO_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
+
+def _date_from_title(title: str):
+    """Best-effort calendar date embedded in a roundup title, or None."""
+    t = title or ""
+    m = _TITLE_DAY_RE.search(t)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        year_raw = m.group(3)
+        now = datetime.now(timezone.utc)
+        if year_raw:
+            year = int(year_raw)
+            if year < 100:
+                year += 2000
+        else:
+            # DD/M without year: assume current year, roll back one year if the
+            # date is still more than ~2 weeks in the future (Dec→Jan wrap).
+            year = now.year
+            try:
+                candidate = datetime(year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                return None
+            if candidate > now + timedelta(days=14):
+                year -= 1
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    m = _TITLE_DAY_RE_EN.search(t)
+    if m:
+        month = _MONTH_NAME_TO_NUM.get(m.group(1).lower())
+        day = int(m.group(2))
+        if not month:
+            return None
+        year = datetime.now(timezone.utc).year
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _is_stale_roundup_title(title: str, max_age_days: int = 3) -> bool:
+    """Drop dated daily-roundup titles whose embedded day is older than max_age_days.
+
+    Found live (daily digest CI): SerpApi returned baolangson.vn hits titled
+    'Tin thế giới nổi bật trong ngày 15/5' … '31/5' with Published dates of
+    2026-07-31/08-01 — the recency window kept them; the Master got empty title
+    lists for the wrong month. Prefer fewer real headlines over these shells.
+    """
+    embedded = _date_from_title(title or "")
+    if embedded is None:
+        return False
+    # Only treat as roundup-junk when the title is essentially "highlights of day X"
+    # (no specific event name) — a real article "Earthquake on 15/5 …" keeps its date.
+    t = (title or "").strip().lower()
+    looks_roundup = bool(re.search(
+        r"(tin\s+(thế\s+giới|tức|thời\s+sự)|nổi\s+bật|headlines?|top\s+news|"
+        r"bản\s+tin|điểm\s+tin)",
+        t,
+    ))
+    if not looks_roundup:
+        return False
+    age = (datetime.now(timezone.utc).date() - embedded.date()).days
+    return age > max_age_days
+
+
+def _merge_rows(primary: list, extra: list, limit: int) -> list:
+    """Append `extra` hits not already in `primary` (by URL), up to `limit`."""
+    seen = {(r.get("url") or "").strip() for r in primary}
+    out = list(primary)
+    for r in extra:
+        u = (r.get("url") or "").strip()
+        if u and u in seen:
+            continue
+        if u:
+            seen.add(u)
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
 WEB_AGENT_SYSTEM_PROMPT = """
 [CIEL STEALTH WEB AGENT]
 Role: You have live internet access to search and read websites.
@@ -277,59 +380,99 @@ def get_web_tools() -> dict:
 
                 rows = []          # normalized: title, url, body, date, age, dt, source
                 source_used = "web"
+                # Fetch more than max_results so index/roundup filters still leave enough.
+                fetch_n = max(max_results * 3, max_results + 4)
+                generic_news = is_news_intent and _is_generic_news_query(query)
 
-                # PRIMARY, unconditional: real Google web search via SerpApi — the
-                # same index/ranking a human typing into google.com/search hits, a
-                # different and for most queries stronger index than DuckDuckGo's.
-                # Silently returns [] when SEARCH_API_KEY isn't set or the request
-                # fails — everything below is unchanged and only runs when this
-                # produced nothing, so it's a pure fallback chain now, not a parallel
-                # path.
-                rows = _serpapi_search(query, max_results, timelimit)
-                if rows:
-                    source_used = "Google (SerpApi)"
+                # Source order depends on query shape:
+                #
+                # GENERIC "tin nổi bật hôm nay" / "top news today":
+                #   Google News TOP STORIES RSS first. Searching that phrase on the
+                #   open web (SerpApi) matches articles *titled* the phrase — provincial
+                #   roundups like "Tin thế giới nổi bật trong ngày 15/5" — not today's
+                #   lead stories. _is_generic_news_query + RSS top feed were built for
+                #   exactly this; SerpApi-as-unconditional-primary defeated them when a
+                #   key was present (daily digest CI, live 2026-08).
+                #
+                # TOPICAL / non-news:
+                #   SerpApi first (real google.com ranking), then RSS/DDG fallbacks.
+                #   SerpApi returns [] (never raises) when SEARCH_API_KEY is missing.
+                if generic_news:
+                    try:
+                        rows = _google_news_rss(
+                            query, fetch_n, _detect_query_lang(query)
+                        )
+                        if rows:
+                            source_used = "Google News RSS"
+                    except Exception:
+                        rows = []
+                    if len(rows) < max_results:
+                        serp = _serpapi_search(query, fetch_n, timelimit)
+                        if serp:
+                            rows = _merge_rows(rows, serp, fetch_n)
+                            if source_used == "web":
+                                source_used = "Google (SerpApi)"
+                            elif source_used == "Google News RSS":
+                                source_used = "Google News RSS + SerpApi"
+                else:
+                    rows = _serpapi_search(query, fetch_n, timelimit)
+                    if rows:
+                        source_used = "Google (SerpApi)"
 
                 if not rows:
-                    # PRIMARY for news-intent (fallback tier 1): Google News RSS.
+                    # News-intent fallback (topical queries that SerpApi missed, or
+                    # generic path when RSS also failed): Google News RSS then DDG.
                     if is_news_intent:
                         try:
-                            rows = _google_news_rss(query, max_results, _detect_query_lang(query))
+                            rows = _google_news_rss(
+                                query, fetch_n, _detect_query_lang(query)
+                            )
                             if rows:
                                 source_used = "Google News RSS"
                         except Exception:
-                            rows = []   # unofficial endpoint — fall through to DuckDuckGo
+                            rows = []
 
                     with DDGS() as ddgs:
-                        # FALLBACK: DuckDuckGo news index (also dated) when RSS gave nothing.
                         if is_news_intent and not rows:
                             try:
                                 for r in ddgs.news(query, **kwargs):
                                     d, age, dt = _fmt_date(r.get("date", ""))
                                     rows.append({
                                         "title": r.get("title"), "url": r.get("url"),
-                                        "body": r.get("body"), "date": d, "age": age, "dt": dt,
-                                        "source": r.get("source", ""),
+                                        "body": r.get("body"), "date": d, "age": age,
+                                        "dt": dt, "source": r.get("source", ""),
                                     })
                                 if rows:
                                     source_used = "DDG news (RSS fallback)"
                             except Exception:
                                 pass
 
-                        # FALLBACK / non-news: plain web results (no dates available).
                         if len(rows) < max_results:
-                            seen = {r["url"] for r in rows}
+                            seen = {r.get("url") for r in rows}
                             for r in ddgs.text(query, **kwargs):
                                 if r.get("href") in seen:
                                     continue
                                 rows.append({
                                     "title": r.get("title"), "url": r.get("href"),
-                                    "body": r.get("body"), "date": "", "age": "", "dt": None,
-                                    "source": "",
+                                    "body": r.get("body"), "date": "", "age": "",
+                                    "dt": None, "source": "",
                                 })
                                 if len(rows) >= max_results:
                                     break
                             if rows and source_used == "web":
                                 source_used = "web"
+                elif len(rows) < max_results and not generic_news:
+                    # Topical SerpApi hit but thin — top up from RSS when news-intent.
+                    if is_news_intent:
+                        try:
+                            rss = _google_news_rss(
+                                query, fetch_n, _detect_query_lang(query)
+                            )
+                            if rss:
+                                rows = _merge_rows(rows, rss, fetch_n)
+                                source_used = f"{source_used} + News RSS"
+                        except Exception:
+                            pass
 
                 # Enforce the recency window on real dates (DuckDuckGo's own timelimit
                 # proved unreliable). Undated items are kept — they are not provably stale.
@@ -356,17 +499,39 @@ def get_web_tools() -> dict:
                 if not rows:
                     return f"No results found for '{query}' (as of {today}, timelimit={timelimit or 'all'})."
 
-                # Drop section/landing pages when enough real articles remain (they only
-                # yield content-free summary lines); otherwise keep but flag them.
-                keep = [r for r in rows
-                        if not _is_index_page(r["url"], r["title"], r["body"], r.get("source", ""))]
+                # Drop landing pages + dated roundup shells ("…nổi bật trong ngày 15/5"
+                # with an old embedded day). Prefer a short honest list over padding.
+                title_age_days = _WINDOW_DAYS.get(timelimit, 3)
+                def _keep_hit(r):
+                    if _is_stale_roundup_title(r.get("title") or "", title_age_days):
+                        return False
+                    if _is_index_page(
+                        r.get("url") or "", r.get("title") or "",
+                        r.get("body") or "", r.get("source") or "",
+                    ):
+                        return False
+                    return True
+
+                keep = [r for r in rows if _keep_hit(r)]
                 dropped = len(rows) - len(keep)
-                if len(keep) < 3:
+                # Only fall back to the unfiltered pool when filtering wiped everything
+                # AND the query was not generic news (for generic news, empty-after-
+                # filter is better than reintroducing baolangson-style shells).
+                if not keep and rows and not generic_news:
                     keep, dropped = rows, 0
                 keep = keep[:max_results]          # trim only after filtering
 
                 window = {"d": "past day", "w": "past week", "m": "past month",
                           "y": "past year"}.get(timelimit, "all time")
+                if not keep:
+                    return (
+                        f"No usable results for '{query}' (as of {today}, "
+                        f"recency: {window}, source: {source_used}). "
+                        f"[{dropped} hit(s) dropped as landing pages or stale "
+                        f"dated roundups.] Do NOT invent headlines; say no solid "
+                        f"news results were available."
+                    )
+
                 output = (f"Search Results for '{query}' (as of {today}, recency: {window}, "
                           f"source: {source_used}):\n")
                 for i, r in enumerate(keep, 1):
@@ -386,9 +551,16 @@ def get_web_tools() -> dict:
                     output += "\n"
 
                 if dropped:
-                    output += f"[{dropped} section/landing page(s) omitted — they contained no specific event.]\n"
-                output += ("[SYSTEM HINT: Report each item's Published date. Never invent a date for an "
-                           "UNKNOWN item. If you need full article text, use 'smart_scrape' on a URL above.]")
+                    output += (
+                        f"[{dropped} landing page(s) / stale dated-roundup title(s) "
+                        f"omitted — they were not specific current events.]\n"
+                    )
+                output += (
+                    "[SYSTEM HINT: Report each item's Published date. Never invent a "
+                    "date for an UNKNOWN item. Prefer items with a real Snippet. If "
+                    "snippets are missing or thin, use smart_scrape on 2–3 article "
+                    "URLs before summarizing — do not list bare titles as the digest.]"
+                )
                 return output
             except ImportError:
                 return "Error: The 'ddgs' library is not installed. Please run: pip install ddgs"
