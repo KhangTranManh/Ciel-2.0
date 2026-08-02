@@ -161,7 +161,12 @@ def get_productivity_tools() -> dict:
         tools.append(StructuredTool.from_function(
             func=get_weather,
             name="get_weather",
-            description="Get current weather for a city (e.g. 'Hanoi', 'Ho Chi Minh City', 'London', 'New York'). City names with spaces are supported. Uses wttr.in public service."
+            description=(
+                "Get CURRENT weather only for a city (e.g. 'Hanoi', 'Ho Chi Minh City', "
+                "'London'). Uses wttr.in nowcast — NOT multi-day forecast. For "
+                "'ngày mai' / 'dự báo' / 'tomorrow' or when Master says 'tra google', "
+                "use stealth_search instead. City names with spaces are supported."
+            ),
         ))
 
         def calculate(expression: str) -> str:

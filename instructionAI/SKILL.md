@@ -11,6 +11,27 @@ description: >
 
 # Ciel 2.0 — AI Instruction Set
 
+## Hand-off for any AI (no prior chat required)
+
+If the Master (or a new session) only points you at **`instructionAI/`**, do this:
+
+1. **Read this file** (`SKILL.md`) end-to-end for rules and the file index.
+2. **Open `../improve.md`** — living upgrade roadmap: P0–P3 checklists, Level A/B/C pass bars, test commands, journal. **Continue from the first unchecked item** unless the Master says otherwise.
+3. Open topic files in this folder as needed (`architecture.md`, `conventions.md`, `safety_and_risk.md`, `data_pipeline.md`, `voice_and_interface.md`).
+4. Implement **one** roadmap item → run the tests named there → tick Pass only when criteria match → add a journal row in `improve.md`.
+
+**Product scope:** personal multi-tool agent (machine, mail, tools, proactive).  
+**Not in scope:** cloning Claude Code / OpenHands as an IDE coding product. Large agents are **structure references only**.
+
+**Suggested cold-start prompt the Master can paste:**
+
+```text
+Read instructionAI/SKILL.md and improve.md.
+Continue Ciel personal-agent upgrades from the first unchecked P0 item.
+Keep Python decisions / LLM compose. Do not turn this into a coding-IDE product.
+Run the tests listed for that item and only tick Pass when criteria match.
+```
+
 ## What this project is
 
 Ciel is an autonomous AI assistant and System Sentinel built on a **Brain → Router →
@@ -38,15 +59,24 @@ see *Three Entry Points* in `architecture.md`. Container images for the first tw
 
 | File | Purpose |
 |------|---------|
-| `SKILL.md` | This file — project overview, file index, critical rules |
+| `SKILL.md` | This file — project overview, file index, critical rules, **AI hand-off** |
 | `architecture.md` | File tree, module map, runtime flow, and the seven agent-capability tiers |
 | `conventions.md` | Code patterns, naming, tool registration contract, safe/dangerous changes, gotchas |
 | `safety_and_risk.md` | The decoupled safety model, the 8-tool + content gates, the unattended DEFER ceiling, outbound idempotence, sandbox, vision/self-heal guardrails |
 | `data_pipeline.md` | Short/long-term memory, the two memory stores (fact vault vs. user model), condition triggers, cost/audit tracking |
 | `voice_and_interface.md` | Voice I/O, the UI's current layout, the WebSocket protocol, and what a UI rebuild needs to wire |
 
+## Living files at repo root (not inside this folder, but required for upgrades)
+
+| File | Purpose |
+|------|---------|
+| `../improve.md` | **Upgrade roadmap** — P0–P3 checklists, Level A/B/C pass criteria, `run_all` commands, journal. Update checkboxes when work lands. |
+| `../architect.md` | Full project map + changelog (heavier; optional after SKILL + architecture) |
+| `../note.md` | Dated live status / provider notes (diary; not stable rules) |
+| `../backtest/run_all.py` | Unified regression runner (`python -m backtest.run_all`) |
+
 For the dated changelog and current live status, see `../architect.md` and `../note.md`
-— **not this folder**; `instructionAI/` holds stable knowledge, not a diary.
+— **stable rules stay in `instructionAI/`**; **what to improve next stays in `../improve.md`**.
 
 A project-agnostic prompt that bootstraps/maintains an `instructionAI/`-style folder in
 any other project lives at `references/portable_instruction_generator_prompt.md`.

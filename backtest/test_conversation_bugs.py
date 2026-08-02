@@ -385,6 +385,105 @@ def test_referential_recipient_override():
           in open("core/llm_connector.py", encoding="utf-8").read())
 
 
+def test_open_thread_for_router():
+    print("\n[7] Open-thread (Direction A) — short follow-ups after a clarifying ask "
+          "must reach the Router as a bounded prior exchange, without free-form history")
+    from core.llm_connector import CielCore
+    from langchain_community.chat_message_histories import ChatMessageHistory
+
+    core = CielCore()
+    core.chat_history = ChatMessageHistory()
+
+    # Exact live shape (2026-08-02 Telegram): weather tomorrow → ask city → "Hồ Chí Minh"
+    core.chat_history.add_user_message("thời tiết ngày mai")
+    core.chat_history.add_ai_message("ở thành phố nào, Master?")
+    core.chat_history.add_user_message("Hồ Chí Minh")  # current, as process() would append
+    note = core._open_thread_note("Hồ Chí Minh")
+    check("city answer after weather clarify produces an open-thread note",
+          bool(note) and "thời tiết ngày mai" in note and "Hồ Chí Minh" in note, note)
+    check("open-thread labels the prior ask",
+          "thành phố" in note.lower() or "Master" in note, note)
+
+    # Nudge after "couldn't fetch"
+    core2 = CielCore()
+    core2.chat_history = ChatMessageHistory()
+    core2.chat_history.add_user_message("thời tiết ngày mai")
+    core2.chat_history.add_ai_message("Chưa lấy được dữ liệu thời tiết trực tiếp cho TP.HCM ngày mai.")
+    core2.chat_history.add_user_message("tra google để lấy đi")
+    note2 = core2._open_thread_note("tra google để lấy đi")
+    check("nudge after unfulfilled weather answer opens a thread",
+          bool(note2) and "tra google" in note2.lower() and "thời tiết" in note2, note2)
+
+    # Control: self-contained new request must NOT open a stale thread
+    core3 = CielCore()
+    core3.chat_history = ChatMessageHistory()
+    core3.chat_history.add_user_message("việc cũ chưa giải quyết xong")
+    core3.chat_history.add_ai_message("Ciel cần thêm đường dẫn để tiếp tục.")
+    core3.chat_history.add_user_message("giờ là mấy giờ")
+    note3 = core3._open_thread_note("giờ là mấy giờ")
+    check("a new standalone topic does not open-thread over an unrelated prior",
+          note3 == "", repr(note3))
+
+    # Control: long self-contained request never open-threads
+    check("long request is not a candidate",
+          not core3._is_open_thread_candidate(
+              "tra cứu forex factory và xem nay có tin tức nào quan trọng"))
+
+    # process() must actually inject the block into what the Router sees
+    seen = []
+    core4 = CielCore()
+    core4.chat_history = ChatMessageHistory()
+    core4.chat_history.add_user_message("thời tiết ngày mai")
+    core4.chat_history.add_ai_message("? thành phố nào, Master?")
+    core4.router.route = lambda u, t, h: (seen.append(u), {
+        "action": "tool",
+        "tool_name": "get_weather",
+        "tool_args": {"city": "Ho Chi Minh City"},
+    })[1]
+    core4.worker.generate = lambda p, *a, **k: "stub"
+    # Stub tool execution so process doesn't hit the network
+    core4.execute_tool = lambda *a, **k: "HCM 32C"
+    core4.process("Hồ Chí Minh")
+    routed = seen[-1] if seen else ""
+    check("Router receives [OPEN THREAD] for the city slot-fill",
+          "OPEN THREAD" in routed and "thời tiết ngày mai" in routed, routed[:300])
+    check("Router still does NOT receive an unrelated free-form older topic "
+          "when none exists — only the gated open exchange",
+          "việc cũ" not in routed)
+
+    print("  case C — file deictic after write/read (persona test 2026-08-03)")
+    core5 = CielCore()
+    core5.chat_history = ChatMessageHistory()
+    core5.chat_history.add_user_message(
+        'Ghi file ciel_workspace/persona_test_note.txt với nội dung: "hello"')
+    core5.chat_history.add_ai_message(
+        "Đã GHI ĐÈ thành công vào 'ciel_workspace/persona_test_note.txt'.")
+    core5.chat_history.add_user_message("Đọc lại file ciel_workspace/persona_test_note.txt")
+    core5.chat_history.add_ai_message("hello")
+    core5.chat_history.add_user_message('Append thêm dòng "append line 2" vào file đó')
+    note5 = core5._open_thread_note('Append thêm dòng "append line 2" vào file đó')
+    check("append-to-that-file opens a thread", bool(note5), note5)
+    check("thread grounds the active path",
+          "persona_test_note.txt" in (note5 or ""), note5)
+    check("thread forbids claiming tools are missing",
+          "ARE loaded" in (note5 or "") or "never claim" in (note5 or "").lower(), note5)
+    seen5 = []
+    core5.router.route = lambda u, t, h: (seen5.append(u), {
+        "action": "tool",
+        "tool_name": "append_file",
+        "tool_args": {
+            "filename": "ciel_workspace/persona_test_note.txt",
+            "content": "\nappend line 2",
+        },
+    })[1]
+    core5.worker.generate = lambda p, *a, **k: "stub"
+    core5.execute_tool = lambda *a, **k: "appended"
+    core5.process('Append thêm dòng "append line 2" vào file đó')
+    routed5 = seen5[-1] if seen5 else ""
+    check("Router sees OPEN THREAD for file deictic",
+          "OPEN THREAD" in routed5 and "persona_test_note" in routed5, routed5[:350])
+
+
 def test_selfmatch_filter():
     print("\n[5] RAG must not recall the current question's own prior failure")
     check("identical questions normalise the same",
@@ -407,7 +506,8 @@ def main():
     print("=" * 72)
     for fn in (test_scope_veto, test_long_paste_style_rule, test_recent_turns_block,
                test_recent_turns_never_reaches_router, test_router_task_hijack,
-               test_referential_recipient_override, test_selfmatch_filter):
+               test_referential_recipient_override, test_open_thread_for_router,
+               test_selfmatch_filter):
         fn()
 
     print("\n" + "=" * 72)

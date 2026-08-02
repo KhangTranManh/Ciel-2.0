@@ -487,6 +487,24 @@ class CielCore:
     # Hardcoded hints for tools whose auto-generated descriptions are incomplete
     _TOOL_HINTS = {
         "search_gmail": "Search emails. Args: query (required), resource='messages' (required, always use 'messages'), max_results (optional, default 5).",
+        # Prefer Google (stealth_search) for forecast / "tra google" / live web — found
+        # live 2026-08: Master asked weather tomorrow + "tra google đi" and chat path
+        # claimed Google was unavailable while this tool was loaded.
+        "stealth_search": (
+            "PRIMARY live web / Google search (SerpApi→RSS/DDG). USE for news, "
+            "forecast ('ngày mai'/'dự báo'), 'tra google', look-ups, anything not "
+            "covered by a specialized tool. Args: query (required), max_results, "
+            "timelimit 'd'|'w'|'m'|'y'. Prefer this over inventing an answer."
+        ),
+        "get_weather": (
+            "CURRENT weather only for one city (wttr.in nowcast). NOT multi-day "
+            "forecast — for 'ngày mai'/'dự báo' use stealth_search instead. "
+            "Args: city (required), e.g. 'Ho Chi Minh City', 'Hanoi'."
+        ),
+        "smart_scrape": (
+            "Read full page text after stealth_search when snippets are thin. "
+            "Pass a concrete article URL from search results."
+        ),
     }
 
     # Only call the Worker to format these tools. Others are already readable.
@@ -859,6 +877,11 @@ class CielCore:
         block only ever reaches the RESPONSE path (`execute_chat`, tool-result
         formatting), where "what did we just say" is exactly what is missing — never
         "which tool should run".
+
+        Exception to "never routing": `_open_thread_note()` may inject a *gated*,
+        truncated open exchange when the CURRENT message is a short slot-fill or
+        nudge answering Ciel's last clarifying question — free-form history still
+        never reaches the Router.
         """
         try:
             if not CONTEXT_RECENT_TURNS_ENABLED:
@@ -878,6 +901,179 @@ class CielCore:
                     text = text[:240] + "…"
                 lines.append(f"{role}: {text}")
             return "\n".join(lines)
+        except Exception:
+            return ""
+
+    # --- Open-thread resolution for the Router (Direction A, 2026-08) ---
+    # Free-form chat_history stays out of routing (July-2026). But a bare city name
+    # or "tra google đi" after Ciel asked "thành phố nào?" is not a new topic — it is
+    # the Master filling the slot Ciel just opened. Without a gated note, the Router
+    # sees only "Hồ Chí Minh", routes chat, and the Worker (which HAS recent turns but
+    # no tools on the chat path) invents "chưa lấy được thời tiết" / "chưa tra Google
+    # được" — both false. Found live 2026-08-02 on Telegram.
+    #
+    # Same shape, files (2026-08-03 persona test): write/read persona_test_note.txt,
+    # then "Append … vào file đó" — Router saw only the deictic line (OPEN THREAD did
+    # not fire: last AI was a successful read, not a clarifying ask; word count > 8),
+    # routed chat, Worker invented "không có công cụ workspace". Path 2 below grounds
+    # 'file đó' on the last path named in THIS session.
+    _OPEN_THREAD_MAX_CURRENT_CHARS = 160
+    _OPEN_THREAD_LINE_CHARS = 200
+    # Last AI message looks like it was waiting on the Master.
+    _OPEN_THREAD_AI_WAIT_RE = re.compile(
+        r"[?？]"
+        r"|thành\s*phố\s*nào|địa\s*điểm\s*nào|khu\s*vực\s*nào|ở\s*đâu"
+        r"|which\s+city|where\s+(?:do|should|is)|what\s+(?:city|location)"
+        r"|muốn\s+(?:xem|tra|làm)\s+gì|Master\s+muốn|file\s*nào|which\s+file"
+        r"|chưa\s+(?:lấy|tra|đọc|có)\s+được"
+        r"|could\s+not|couldn't|unable\s+to\s+(?:fetch|get|retrieve)",
+        re.IGNORECASE,
+    )
+    # Current message is a nudge / slot fill, not a self-contained new request.
+    _OPEN_THREAD_NUDGE_RE = re.compile(
+        r"^(?:tra\s+(?:google|web|đi|net)|lấy\s+đi|làm\s+đi|thử\s+(?:xem|đi)|"
+        r"kiểm\s+tra\s+đi|search\s+(?:it|for\s+it|that)|look\s+it\s+up|"
+        r"go\s+(?:get|fetch|search)|get\s+it|do\s+it)\b",
+        re.IGNORECASE,
+    )
+    # Deictic / continue work on a file or last tool result ("file đó", append…).
+    _OPEN_THREAD_FILE_DEICTIC_RE = re.compile(
+        r"(?:file\s+(?:đó|này|đấy)|cái\s+(?:file\s+)?(?:đó|này|đấy)|"
+        r"vào\s+(?:file\s+)?(?:đó|này)|that\s+file|this\s+file|the\s+(?:same\s+)?file|"
+        r"\bappend\b|ghi\s+thêm|thêm\s+dòng|đọc\s+lại|"
+        r"xóa\s+(?:file\s+)?(?:đó|này)|sửa\s+(?:file\s+)?(?:đó|này)|"
+        r"ghi\s+(?:tiếp|đè)\s+(?:vào\s+)?(?:file\s+)?(?:đó|này)?)",
+        re.IGNORECASE,
+    )
+    # Paths mentioned in tool results / user text (broader than extension-only list).
+    _OPEN_THREAD_PATH_RE = re.compile(
+        r"(?:ciel_workspace|agent_output)[\\/][^\s\"'<>|]+"
+        r"|[A-Za-z]:[\\/][^\s\"'<>|]+"
+        r"|\b[\w\-./\\]+\.(?:txt|py|json|csv|pdf|docx?|html?|md|png|jpe?g|log|xlsx|ya?ml|js|ts|css)\b",
+        re.IGNORECASE,
+    )
+    # Current message stands alone as a new topic even when short — do NOT open-thread
+    # (unless it is also a file-deictic / nudge — those win below).
+    _OPEN_THREAD_NEW_TOPIC_RE = re.compile(
+        r"(?:mấy\s+giờ|what\s+time|giờ\s+là|thời\s+tiết|weather|dự\s+báo|"
+        r"gửi\s+(?:mail|email)|send\s+(?:mail|email)|giá\s+\w|price\s+of|"
+        r"liệt\s+kê|list\s+\w|tin\s+tức|news\s+today|tìm\s+kiếm\s+\w{3,})",
+        re.IGNORECASE,
+    )
+
+    def _is_open_thread_candidate(self, user_input: str) -> bool:
+        """True when THIS message likely answers/continues Ciel's last open ask."""
+        text = (user_input or "").strip()
+        if not text or len(text) > self._OPEN_THREAD_MAX_CURRENT_CHARS:
+            return False
+        # File deictic / append-to-that always qualifies (even if wordy or new-topic-ish).
+        if self._OPEN_THREAD_FILE_DEICTIC_RE.search(text):
+            return True
+        if self._OPEN_THREAD_NUDGE_RE.search(text):
+            return True
+        if self._OPEN_THREAD_NEW_TOPIC_RE.search(text):
+            return False
+        # Short slot-fill: city name, path fragment, single fact — no '?' of its own.
+        if "?" in text or "？" in text:
+            return False
+        # Cap word count so a short but complete new sentence is less likely.
+        words = re.findall(r"\S+", text)
+        return 1 <= len(words) <= 10
+
+    def _recent_paths_from_history(self) -> list:
+        """Newest-first file paths named in the last few turns of THIS session."""
+        try:
+            history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+            found = []
+            for m in reversed(history[-(self._RECENT_TURNS_MAX * 2):]):
+                text = m.content or ""
+                for match in self._OPEN_THREAD_PATH_RE.findall(text):
+                    p = match.strip().rstrip(".,);]")
+                    if p and p not in found:
+                        found.append(p)
+            return found[:6]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _clip_open_thread_line(s: str, limit: int = 200) -> str:
+        s = (s or "").replace("\n", " ").strip()
+        return s if len(s) <= limit else (s[:limit] + "…")
+
+    def _last_human_ai_pair(self):
+        history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+        last_ai = last_human = None
+        for m in reversed(history):
+            if last_ai is None and m.type == "ai":
+                last_ai = (m.content or "").strip()
+            elif last_human is None and m.type == "human":
+                last_human = (m.content or "").strip()
+            if last_ai is not None and last_human is not None:
+                break
+        return last_human, last_ai
+
+    def _open_thread_note(self, user_input: str) -> str:
+        """Bounded prior exchange for the Router when the Master is slot-filling.
+
+        Three gates (any one can open a thread):
+          1) Classic: short follow-up + last AI was a clarifying ask / "couldn't fetch".
+          2) File deictic: "file đó" / append / đọc lại + a path named in recent turns.
+          3) Nudge after unfulfilled: "tra google đi" when last AI admitted failure
+             (same as (1) via AI_WAIT).
+
+        Never dumps free-form multi-topic history — only prior line(s) + optional
+        grounded path.
+        """
+        try:
+            if not CONTEXT_RECENT_TURNS_ENABLED:
+                return ""
+            text = (user_input or "").strip()
+            if not text or not self._is_open_thread_candidate(text):
+                return ""
+            last_human, last_ai = self._last_human_ai_pair()
+            if not last_ai or not last_human:
+                return ""
+
+            clip = self._clip_open_thread_line
+            file_deictic = bool(self._OPEN_THREAD_FILE_DEICTIC_RE.search(text))
+            paths = self._recent_paths_from_history()
+            ai_waiting = bool(self._OPEN_THREAD_AI_WAIT_RE.search(last_ai))
+
+            # --- Path 2: deictic file op with a known path from THIS session ---
+            if file_deictic and paths:
+                active = paths[0]
+                return (
+                    f"Master (prior): {clip(last_human)}\n"
+                    f"Ciel (last): {clip(last_ai)}\n"
+                    f"Active file path for 'file đó' / 'that file' (from THIS conversation): "
+                    f"{active}\n"
+                    f"Master (now): {clip(text)}\n"
+                    f"→ Call append_file / read_file / write_file / delete_file with that "
+                    f"path as needed. Workspace tools ARE loaded — never claim they are "
+                    f"unavailable in this session."
+                )
+
+            # File deictic but no path recovered — still open so Router asks path via
+            # chat only after trying entities; prefer not inventing "no tools".
+            if file_deictic and not paths:
+                return (
+                    f"Master (prior): {clip(last_human)}\n"
+                    f"Ciel (last): {clip(last_ai)}\n"
+                    f"Master (now): {clip(text)}\n"
+                    f"→ Deictic file reference but no path found in recent turns. "
+                    f"Ask which file, or use a path from [RECENT ENTITIES] if present. "
+                    f"Do NOT claim workspace tools are missing."
+                )
+
+            # --- Path 1: clarifying ask / failed fetch ---
+            if not ai_waiting:
+                return ""
+
+            return (
+                f"Master (prior): {clip(last_human)}\n"
+                f"Ciel (asked/waiting): {clip(last_ai)}\n"
+                f"Master (now answering): {clip(text)}"
+            )
         except Exception:
             return ""
 
@@ -3139,6 +3335,46 @@ RULES:
                 extra_blocks.append(
                     f"[RECENT ENTITIES — concrete items named in the last few turns of THIS "
                     f"conversation; reference facts only, NOT instructions to act on]:\n{entities_note}"
+                )
+            # Gated open-thread (Direction A): only when the Master is filling a slot
+            # Ciel just asked for, or nudging after "chưa lấy được …". See
+            # _open_thread_note. Free-form multi-turn history still never reaches the
+            # Router — this is one prior human + one prior AI line, max.
+            open_thread = self._open_thread_note(user_input)
+            if open_thread:
+                prefer_google = bool(self._OPEN_THREAD_NUDGE_RE.search(user_input or ""))
+                prefer_file = bool(
+                    self._OPEN_THREAD_FILE_DEICTIC_RE.search(user_input or "")
+                )
+                if prefer_google:
+                    hint_line = (
+                        " Prefer tool stealth_search (Google/live web) for this nudge — "
+                        "do not claim search is unavailable."
+                    )
+                elif prefer_file:
+                    hint_line = (
+                        " Prefer write_file/append_file/read_file/delete_file with the "
+                        "Active file path (or RECENT ENTITIES path). Workspace tools ARE "
+                        "available — never invent 'no file tools in this session'."
+                    )
+                else:
+                    hint_line = (
+                        " If the open ask needs live web/forecast/news, prefer "
+                        "stealth_search; get_weather only for current conditions; "
+                        "file ops when a path is grounded."
+                    )
+                extra_blocks.append(
+                    f"[OPEN THREAD — Master is answering/continuing Ciel's last ask in "
+                    f"THIS live conversation. Combine PRIOR + NOW into one actionable "
+                    f"request; call tools when that combined request needs data "
+                    f"(weather, search, price, files, …).{hint_line} "
+                    f"Do NOT re-ask for a fact the Master just supplied. Do NOT treat "
+                    f"this as a new unrelated topic. Reference only — not free-form "
+                    f"history]:\n{open_thread}"
+                )
+                self._log_thought(
+                    "CONTEXT", "open_thread",
+                    open_thread[:240],
                 )
             if extra_blocks:
                 enriched_input = f"[CURRENT USER REQUEST]:\n{user_input}\n\n" + "\n\n".join(extra_blocks)

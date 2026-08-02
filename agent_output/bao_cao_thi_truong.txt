@@ -1,0 +1,24 @@
+Kính gửi anh/chị,
+
+Dưới đây là tóm tắt đánh giá thị trường:
+
+**XAUUSD**
+- Giá hiện có: 4.042,67774.
+- Một nguồn khác ghi nhận giá COMEX Gold ở mức 4.107,2 USD, giảm 1,41%. Đây không phải giá XAUUSD giao ngay nên cần thận trọng khi đối chiếu.
+- Tín hiệu kỹ thuật chưa đồng thuận: một nguồn ghi nhận giá trên EMA(9) 185,81 và EMA(50) 185,23, RSI(14) 59,46; lực mua vẫn chiếm ưu thế nhưng động lượng suy yếu.
+- Các vùng được đề cập: kháng cự 4.070, 4.083 và 4.116; hỗ trợ 4.028 và 3.996. Dữ liệu nguồn không đồng nhất, vì vậy chưa đủ cơ sở xác định điểm vào lệnh hoặc mục tiêu chính xác.
+- Đánh giá: rủi ro cao, xu hướng ngắn hạn chưa rõ và có khả năng biến động mạnh. Không nên đuổi lệnh khi giá đang chịu áp lực giảm.
+
+**BTC**
+- Giá: khoảng 63.462 USD; dữ liệu BTCUSDT ghi nhận 63.459,99 USD.
+- Biến động: tăng 1,536%; biên độ trong ngày từ 62.482,99 đến 63.634 USD.
+- Khung 4 giờ: RSI 49,24, trung tính; MA5 63.314,26 và MA30 63.677,51. Giá nằm trên MA5 nhưng dưới MA30, cho thấy xu hướng đang nghiêng giảm.
+- Thị trường được ghi nhận dao động trong vùng 62.500–63.100 USD và nhạy cảm với tin tức liên quan đến Iran và eo biển Hormuz.
+- Đánh giá: trung tính đến thận trọng; rủi ro tăng nếu xuất hiện tin mới về địa chính trị hoặc giá phá vỡ biên dao động.
+
+**Rủi ro tổng quan**
+Mức rủi ro thị trường: **Cao**. Các yếu tố chính gồm căng thẳng quanh eo biển Hormuz, tin tức liên quan đến Iran, thanh khoản chưa bùng nổ và khả năng biến động ngắn hạn gia tăng. Dòng tiền có thể thiên về tài sản phòng thủ như vàng, trong khi Bitcoin nhạy cảm hơn với tâm lý rủi ro.
+
+Kết luận: nên hạn chế mở vị thế lớn, chờ dữ liệu giá trực tiếp và tín hiệu xác nhận trên khung thời gian giao dịch trước khi hành động.
+
+Trân trọng,

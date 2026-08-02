@@ -1,5 +1,4 @@
-"""_sandbox.py — shared test-isolation helper for backtest/run_test_samples.py and
-backtest/live_conversation_test.py.
+"""_sandbox.py — shared test-isolation helper for backtest/live_conversation_test.py.
 
 Bug found live (2026-07-27): a "fresh" CielCore() per test conversation is NOT
 isolated — pending_action.json, memory_bank.json, tasks.json, deferred.json,
