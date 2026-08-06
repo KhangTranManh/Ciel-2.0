@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
+  <a href="improve.md">Roadmap (Level B)</a> ·
+  <a href="instructionAI/SKILL.md">AI hand-off</a> ·
   <a href="architect.md">Architecture</a> ·
   <a href="note.md">Live Status</a> ·
-  <a href="PROMPT_INVENTORY.md">Prompts</a> ·
-  <a href="ui/README.md">UI</a> ·
-  <a href="autonomous_pipeline/architect.md">MLOps Pipeline</a>
+  <a href="ui/README.md">UI</a>
 </p>
 
 <p align="center">
@@ -27,8 +27,10 @@
 ## Table of Contents
 
 - [What this is](#what-this-is)
+- [Status (Level B)](#status-level-b)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Testing](#testing)
 - [Feature Overview](#feature-overview)
 - [How It Works](#how-it-works)
 - [Voice I/O](#voice-io)
@@ -114,6 +116,26 @@ Every box above is a real module — `core/router.py`, `agent_system/models/work
 `core/middleware.py`, `core/recovery_manager.py`. See
 [instructionAI/architecture.md](instructionAI/architecture.md) for the file-by-file
 breakdown.
+
+---
+
+## Status (Level B)
+
+As of **2026-08-06**, the personal-agent pass bar is **Level B (Core Green)** — see
+[`improve.md`](improve.md) for the living checklist and journal.
+
+| Area | State |
+|------|--------|
+| **Level A** (daily CLI) | PASS — boot, unit suites, ~10 daily tools, unattended DEFER |
+| **Level B** (core green) | PASS — live `run_all --skip-exploratory`, real email quality, follow-up context |
+| **P0 foundation** | PASS |
+| **P1.1** honest tool failures / **P1.4** outbound sanitize | PASS |
+| **Telegram** files + plain text + **HTML document** attach | Working |
+| **Level C** portable / **P1.2–P1.3** formal / **P2–P3** | Open (roadmap) |
+
+**For AI assistants upgrading Ciel:** start at
+[`instructionAI/SKILL.md`](instructionAI/SKILL.md) then [`improve.md`](improve.md) —
+do not re-open finished P0 items unless something regressed.
 
 ---
 
@@ -252,7 +274,25 @@ Click the 🔇 → 🔊 button beside the input box to have Ciel read replies al
 neural voice as the CLI). For the wrapped desktop app instead of the browser tab:
 `cd ui && npm run tauri dev` — see [ui/README.md](ui/README.md).
 
-### 5. (Optional) Run as a Telegram bot
+### 5. Regression tests
+
+From the project root with `myenv` active:
+
+```bash
+# Fast unit path (no/minimal live LLM for pure suites; quality_guards inits core once)
+python -m backtest.run_all --unit-only
+
+# Unit + live integration suites (needs API keys; costs tokens)
+python -m backtest.run_all --skip-exploratory
+
+# Single unit pack (sanitize, write-intent, HTML builder, TG upload protect)
+python -m backtest.test_quality_guards
+```
+
+Maintained suites live under `backtest/test_*.py` and `backtest/run_all.py`.  
+Ephemeral `_smoke_*.py` one-offs were removed — do not reintroduce them for every feature.
+
+### 6. (Optional) Run as a Telegram bot
 
 A third front-end, independent of the CLI/UI — same core underneath. Requires
 `TELEGRAM_BOT_TOKEN` and a real numeric `TELEGRAM_CHAT_ID` in `.env` (message
@@ -395,7 +435,12 @@ not to run both at once yet: [docker/README.md](docker/README.md).
   hold secrets, never injected) vs. `user_model.json` (injected, refuses secrets).
 - **Email Send Pipeline** — market/asset reports, research digests, and document
   summaries gather real tool data first, then compose; anti-fabrication rules block
-  invented prices and hollow "attached" shells.
+  invented prices and hollow "attached" shells. Internal paths are stripped from
+  outbound bodies; real tool numbers are kept (P1.4).
+- **File → analysis HTML** — `build_analysis_report_html` fills
+  `email_template/analysis_report.html` (prefer `agent_output/*.html`), then
+  `send_telegram_document` or Gmail HTML. Inbound Telegram files are never
+  overwritten by default.
 
 ### Voice I/O
 - **Speech-to-Text (CLI)** — `core/voice_input.py` captures the mic and transcribes,
@@ -416,9 +461,10 @@ not to run both at once yet: [docker/README.md](docker/README.md).
   chat workbench (right) with a stop button, safety-gate dialog, and live vitals.
 - **Telegram bot** (`main_telegram.py`) — a third front-end onto the same core, chat_id
   allow-listed, with an inline-keyboard safety confirmation dialog and `/cancel`. Accepts
-  photos/documents too — downloaded into the sandbox and handed to Ciel as a normal
-  message, routed like anything else (`read_document` for a file, `describe_image_file`
-  for a photo — never a forced/hardcoded tool call).
+  photos/documents — downloaded into `ciel_workspace/telegram_uploads/` and handed to
+  Ciel as a normal message (`read_file` / `read_document` / `describe_image_file` — never
+  a forced tool call). Outbound: plain `send_telegram` and `send_telegram_document`
+  (HTML reports as **file attachments**). Uploads are not overwritten by default.
 - **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction
   when no API/tool exists for a task, plus `describe_image_file` for looking at an
   existing image FILE (not the live screen) — e.g. one just uploaded via Telegram.
@@ -715,24 +761,22 @@ Ciel 2.0/
 │   └── utils/usage.py           # Provider token extraction for cost tracking
 │
 ├── skills/                     # Tool packs — the extension surface
-│   ├── internal/                # filesystem, OS/shell, productivity, vision, memory vault
-│   └── external/                # Gmail, trading, Telegram, GitHub, web search, documents
+│   ├── internal/                # filesystem, OS/shell, productivity, report_ops, vision, memory
+│   └── external/                # Gmail, trading, Telegram (text+document), GitHub, web search
 │
 ├── ui/                         # React + Tauri v2 frontend (optional) — see ui/README.md
 ├── autonomous_pipeline/        # Self-running MLOps daemon (optional)
-│   ├── orchestrator.py          # Background scheduler
-│   ├── task_generator.py        # Simulated Master
-│   ├── data_pipeline.py         # Judge audit + dataset builder
-│   └── chaos_injector.py        # Adversarial edge-case injection
 │
-├── backtest/                   # test_context · test_outbound · test_proactive · test_user_model ·
-│                               #   test_conversation_bugs (369 assertions, no LLM — run these first)
-├── scripts/                    # format_thoughts_log.py, prompt_harness.py, cost_report.py,
-│                                #   health_check.py + daily_digest.py (daily CI jobs, see Docker Deployment)
-├── email_template/             # Structured templates for outbound email bodies
-├── instructionAI/              # AI-assistant instruction files (start with SKILL.md)
-├── ciel_workspace/              # Sandbox for user files, logs, screenshots
-└── agent_output/                # Default output location for AI-generated code
+├── backtest/                   # run_all.py + test_*.py (unit + live)
+│                               #   unit: context · user_model · proactive · outbound ·
+│                               #         conversation_bugs · quality_guards
+│                               #   live: integration · hard_special · brain_worker · rag_memory
+├── scripts/                    # format_thoughts_log, cost_report, health_check, daily_digest
+├── email_template/             # market_report · analysis_report · health_report
+├── instructionAI/              # AI hand-off — start with SKILL.md
+├── improve.md                  # Upgrade roadmap (Level A/B/C, P0–P3) — Level B as of 2026-08-06
+├── ciel_workspace/             # Sandbox (+ telegram_uploads/ for inbound bot files)
+└── agent_output/               # Generated code + analysis HTML reports
 ```
 
 ---
@@ -744,6 +788,8 @@ Ciel 2.0/
 | Change Ciel's persona / tone | `persona/official_ciel_personality.txt` |
 | Find which prompt to edit for any behavior | [`PROMPT_INVENTORY.md`](PROMPT_INVENTORY.md) |
 | Add a new tool/capability | New file under `skills/internal/` or `skills/external/` exposing a `get_*_tools()` factory |
+| Continue upgrades (AI or human) | [`improve.md`](improve.md) + [`instructionAI/SKILL.md`](instructionAI/SKILL.md) |
+| Run unit regression | `python -m backtest.run_all --unit-only` |
 | Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name |
 | Add/remove a high-risk tool from the safety gate | `core/llm_connector.py` — `_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS` |
 | Tune what counts as "dangerous code" | `core/llm_connector.py` — `_find_dangerous_code_patterns()` |

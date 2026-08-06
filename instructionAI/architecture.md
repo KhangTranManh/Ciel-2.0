@@ -79,6 +79,8 @@ Ciel-2.0/
 │   │   ├── system_ops.py            # Workspace file CRUD + Python runner + PDF/DOCX reader
 │   │   ├── os_ops.py                # Shell, screenshot, app launcher
 │   │   ├── productivity_ops.py      # Todos, time, weather, calculate, grep_in_workspace
+│   │   ├── report_ops.py            # build_analysis_report_html → email_template/analysis_report.html
+│   │   │                              (prefer output_path=agent_output/*.html; never telegram_uploads/)
 │   │   └── vision_ops.py            # Gemini Vision + PyAutoGUI grid overlay, PLUS describe_image_file
 │   │                                  (looks at an existing image FILE, e.g. one Telegram-uploaded —
 │   │                                  not the live screen; shares _call_vision_llm as an implementation
@@ -88,11 +90,11 @@ Ciel-2.0/
 │   │                                  describe_image_file itself needs no display, but is bundled with
 │   │                                  the two that do.
 │   └── external/
-│       ├── gmail_ops.py             # Gmail toolkit + custom ops (send/html/reply/draft/trash/search)
-│       ├── trading_ops.py           # Crypto, Forex, Metals price + TA + build_market_report_html
-│       ├── telegram_ops.py          # Telegram Bot API notifications (also the Tier-6 fallback channel)
+│       ├── gmail_ops.py             # Gmail toolkit + custom ops; search_gmail formatted with message_id
+│       ├── trading_ops.py           # Crypto (Binance-first for BTC/USDT), Forex/Metals, build_market_report_html
+│       ├── telegram_ops.py          # send_telegram (plain text) + send_telegram_document (HTML/PDF file)
 │       ├── github_ops.py            # Git status, diff, commit, push
-│       └── web_agent_ops.py         # stealth_search (Google News RSS → ddgs fallback) + smart_scrape
+│       └── web_agent_ops.py         # stealth_search (SerpApi Google → RSS → ddgs) + smart_scrape
 │
 ├── persona/
 │   └── official_ciel_personality.txt   # The only persona file loaded at startup
@@ -110,41 +112,39 @@ Ciel-2.0/
 │   ├── data_pipeline.py             # Judge audit + dataset builder
 │   └── chaos_injector.py            # Adversarial edge-case injection
 │
-├── backtest/                       # Test suites, script-based (not pytest) — see conventions.md
-│   ├── test_context.py              # T4 — 33 assertions, no LLM
-│   ├── test_outbound.py             # duplicate-send guard + stale-status strip — 36 assertions, tool layer stubbed
-│   ├── test_proactive.py            # T6 — 148 assertions, no LLM, no network, simulated clock
-│   ├── test_user_model.py           # T7 — 108 assertions, no LLM
-│   ├── test_conversation_bugs.py    # scope veto, recent-turns, router-task-hijack — 55 assertions,
-│   │                                  no LLM (Worker stubbed) — but NOT log/state-sandboxed: it
-│   │                                  constructs real CielCore() instances, so every run appends its
-│   │                                  fixture conversations (verbatim past real incidents) straight
-│   │                                  into the REAL ciel_data/logs/thoughts.log. Confirmed live: 6
-│   │                                  runs in one session left 12 duplicate blocks that read like a
-│   │                                  live repeating bug on casual inspection. Sandboxing this (like
-│   │                                  backtest/_sandbox.py already does for run_test_samples.py) is a
-│   │                                  known, not-yet-done improvement — check thoughts.log's mtime/
-│   │                                  content against "did a test suite just run" before diagnosing
-│   │                                  a "repeating" symptom from it.
-│   ├── test_integration.py          # Full pipeline validation (real LLM calls)
-│   ├── test_brain_worker.py         # Multi-step workflow tests (real LLM calls)
-│   ├── test_rag_memory.py           # Amnesia stress test (real LLM calls)
-│   └── test_hard_special.py         # Hard/special cases + bug dashboard (real LLM calls)
+├── backtest/                       # Test suites via `python -m backtest.run_all` (not pytest)
+│   ├── run_all.py                   # Unified runner: --unit-only | --skip-exploratory | full
+│   ├── test_context.py              # T4 — context budget/priority
+│   ├── test_outbound.py             # duplicate-send guard + stale-status strip (stub tools)
+│   ├── test_proactive.py            # T6 — notifier + triggers (simulated clock)
+│   ├── test_user_model.py           # T7 — profile authority/decay/secrets
+│   ├── test_conversation_bugs.py    # scope veto, recent-turns, referential email, open thread
+│   │                                  (constructs real CielCore — may append to thoughts.log)
+│   ├── test_quality_guards.py       # P1 guards: sanitize, write-intent, gmail digest, HTML
+│   │                                  builder, telegram_uploads write-block (maintained unit)
+│   ├── test_integration.py          # Full pipeline (live LLM)
+│   ├── test_brain_worker.py         # Multi-step workflow (live LLM)
+│   ├── test_rag_memory.py           # RAG amnesia stress (live LLM)
+│   ├── test_hard_special.py         # Hard/special + market/email (live LLM)
+│   └── live_conversation_test.py    # Exploratory multi-turn sim (expensive; --skip-exploratory)
 │
 ├── scripts/                        # format_thoughts_log.py, prompt_harness.py, cost_report.py,
 │                                    # health_check.py (CI liveness probe), daily_digest.py (CI
 │                                    # email+news → Telegram, see "Docker Deployment" below)
-├── email_template/                 # Structured templates for outbound email bodies
+├── email_template/                 # market_report.html · analysis_report.html · health_report.html
 ├── instructionAI/                  # AI-assistant instruction files (start with SKILL.md)
-├── ciel_workspace/                 # Sandbox for user files, logs, screenshots (quarantined)
-└── agent_output/                   # Default output location for AI-generated code
+├── improve.md                      # Upgrade roadmap Level A/B/C + P0–P3 (Level B as of 2026-08-06)
+├── ciel_workspace/                 # Sandbox (+ telegram_uploads/ for inbound bot files)
+└── agent_output/                   # Generated code + analysis HTML reports
 ```
 
-The 369 assertions in the five no-LLM suites (`test_context`, `test_outbound`,
-`test_proactive`, `test_user_model`, `test_conversation_bugs`) are the fast path — run
-them first on any change to `core/`. They cost nothing (no LLM, no network) and every
-time-dependent one takes `now` as a parameter instead of reading the clock, so a whole
-day of behaviour simulates in milliseconds.
+**Unit suites** (`run_all --unit-only`): context, user_model, proactive, outbound,
+conversation_bugs, **quality_guards**. Prefer these first on any change to `core/` or
+outbound/Telegram paths. Live suites need API keys and cost real tokens.
+
+**Telegram inbound path (runtime):** download → `ciel_workspace/telegram_uploads/` →
+inbox note with path → Brain routes `read_file` / `read_document` / `describe_image_file`
+→ optional `build_analysis_report_html` + `send_telegram_document`.
 
 ## Internal Dependency Graph
 

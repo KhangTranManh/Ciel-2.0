@@ -1,26 +1,24 @@
-## Báo cáo rủi ro thị trường — XAUUSD và BTC
-
-**Thời điểm:** 03/08/2026, 02:46 giờ Việt Nam
+## Báo cáo rủi ro thị trường — XAUUSD và BTCUSD
 
 ### XAUUSD
 
-- **Giá hiện tại:** 4.042,69082 USD.
-- **Kỹ thuật:** Thiên về **thận trọng đến giảm** trong ngắn hạn. Dữ liệu tìm kiếm cho thấy giá đã phá xuống cấu trúc tam giác tăng; đồng USD mạnh và quan điểm Fed cứng rắn gây áp lực. Một nguồn ghi nhận RSI tháng ở mức **85**, cho thấy trạng thái quá mua, nhưng dữ liệu giá đi kèm bị xem là bất thường nên không dùng để xác nhận tín hiệu.
-- **Tin tức và động lực:** Vàng vẫn được hỗ trợ bởi bất ổn địa chính trị, nhu cầu trú ẩn và xu hướng mua vàng của ngân hàng trung ương. PBOC được cho là đã tăng dự trữ vàng tháng thứ bảy liên tiếp, lên **73,83 triệu ounce** vào tháng 5; **76%** ngân hàng trung ương được khảo sát dự kiến tăng phân bổ vàng trong 5 năm tới.
-- **Rủi ro:** **Cao**. Các yếu tố hỗ trợ và gây áp lực đang giằng co mạnh; dữ liệu kỹ thuật từ nguồn tin còn thiếu nhất quán.
+- **Giá hiện tại:** 4.037,1417 USD.
+- **Kỹ thuật:** Thiên về **thận trọng đến giảm** trong ngắn hạn. Giá được báo cáo đang tích lũy quanh vùng hỗ trợ 4.070; vùng 3.945 là hỗ trợ rộng hơn, còn 4.172 là kháng cự. Phá dưới 3.945 sẽ củng cố xu hướng giảm; vượt 4.172 sẽ cải thiện triển vọng tăng. Các mức 3.440–3.450 mâu thuẫn với những dữ liệu khác nên không được xác nhận.
+- **Tin tức:** Vàng được hỗ trợ bởi bất ổn địa chính trị, nhu cầu trú ẩn và mua vào của ngân hàng trung ương. Áp lực giảm đến từ lợi suất trái phiếu, lạm phát và lập trường cứng rắn của Fed.
+- **Rủi ro:** **Cao**, do dữ liệu kỹ thuật thiếu nhất quán và biến động lớn.
 
-### BTC/USD
+### BTCUSD
 
-- **Giá hiện tại:** 63.442,91 USD.
-- **Biến động phiên:** Tăng **1,516%**; biên độ **62.482,99–63.634 USD**.
-- **Kỹ thuật:** **Thiên về giảm**. RSI ở mức **47,11**, trung tính nhưng dưới ngưỡng 50; giá nằm dưới MA5 và MA30. Vùng kháng cự quan trọng được nêu là **70.600 USD**. Xu hướng chỉ cải thiện đáng kể nếu BTC lấy lại và duy trì trên vùng này.
-- **Tin tức và động lực:** Áp lực đến từ bán ra của tổ chức, thanh lý vị thế long, thanh khoản và mức tham gia yếu, cùng bất định về lạm phát, quy định và kinh tế vĩ mô. Dự luật Clarity Act được báo cáo là đang đình trệ, tạo thêm rủi ro pháp lý.
-- **Rủi ro:** **Cao**, do động lượng yếu và độ nhạy lớn với tin vĩ mô, dòng tiền tổ chức và quy định.
+- **Giá hiện tại:** 63.856,12 USD.
+- **Biến động:** Tăng 0,794%; biên độ 62.300–64.059,75 USD.
+- **Kỹ thuật:** **Thiên về giảm**. RSI 49,03 ở trạng thái trung tính; giá nằm trên MA5 nhưng dưới MA30, cho thấy nhịp hồi ngắn hạn chưa đủ xác nhận đảo chiều.
+- **Tin tức:** BTC chịu áp lực từ tâm lý né rủi ro trên nhóm công nghệ, bán ra của tổ chức, thanh lý vị thế long, thanh khoản yếu và bất định về kinh tế vĩ mô, quy định. BTC từng giảm dưới 63.000 USD trong các báo cáo ngày 01–03/08/2026.
+- **Rủi ro:** **Cao**, do động lượng yếu, biến động và rủi ro thanh lý.
 
-### Đánh giá tổng thể
+### Kết luận
 
-- **XAUUSD:** Thận trọng đến giảm; ưu tiên chờ xác nhận xu hướng trước khi tăng vị thế.
-- **BTC:** Giảm; chưa có tín hiệu đảo chiều rõ ràng.
-- **Rủi ro danh mục:** **Cao**. Cả hai tài sản đều chịu ảnh hưởng mạnh từ USD, chính sách Fed và địa chính trị; BTC có thêm rủi ro thanh lý và pháp lý.
+- **XAUUSD:** Thận trọng đến giảm; chờ phá vỡ rõ ràng các vùng 3.945 hoặc 4.172.
+- **BTCUSD:** Giảm/ yếu; chưa có tín hiệu đảo chiều đáng tin cậy.
+- **Rủi ro tổng thể:** **Cao**. Cả hai tài sản đều nhạy cảm với USD, Fed và địa chính trị; BTC có thêm rủi ro thanh lý, dòng tiền tổ chức và pháp lý.
 
-Không thể xác nhận báo cáo đã được ghi và đọc lại: thao tác tệp không khả dụng, và lần đọc trả về lỗi không tìm thấy báo cáo.
+Không thể xác nhận báo cáo đã được ghi và đọc lại thành công: công cụ tệp báo thao tác ghi không khả dụng và lần đọc trả về lỗi không tìm thấy báo cáo.

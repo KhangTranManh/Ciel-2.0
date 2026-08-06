@@ -16,20 +16,25 @@ description: >
 If the Master (or a new session) only points you at **`instructionAI/`**, do this:
 
 1. **Read this file** (`SKILL.md`) end-to-end for rules and the file index.
-2. **Open `../improve.md`** — living upgrade roadmap: P0–P3 checklists, Level A/B/C pass bars, test commands, journal. **Continue from the first unchecked item** unless the Master says otherwise.
+2. **Open `../improve.md`** — living upgrade roadmap: P0–P3, Level A/B/C, journal.  
+   **As of 2026-08-06:** **Level A + Level B** and **P0 (foundation)** are **PASS**.  
+   **P1.1** (honest tools) and **P1.4** (middleware/sanitize) are **DONE**.  
+   Continue from the **first unchecked** item (typically **P1.2** proactive formal day, **P1.3** user_model formal, **Level C** portable, or **P2/P3**) unless the Master says otherwise.
 3. Open topic files in this folder as needed (`architecture.md`, `conventions.md`, `safety_and_risk.md`, `data_pipeline.md`, `voice_and_interface.md`).
 4. Implement **one** roadmap item → run the tests named there → tick Pass only when criteria match → add a journal row in `improve.md`.
 
-**Product scope:** personal multi-tool agent (machine, mail, tools, proactive).  
+**Product scope:** personal multi-tool agent (machine, mail, tools, proactive, Telegram files).  
 **Not in scope:** cloning Claude Code / OpenHands as an IDE coding product. Large agents are **structure references only**.
 
 **Suggested cold-start prompt the Master can paste:**
 
 ```text
 Read instructionAI/SKILL.md and improve.md.
-Continue Ciel personal-agent upgrades from the first unchecked P0 item.
+Ciel is Level B (Core Green) as of 2026-08-06 — P0 done; P1.1/P1.4 done.
+Continue from the first unchecked improve.md item (P1.2 / P1.3 / Level C / P2 / P3).
 Keep Python decisions / LLM compose. Do not turn this into a coding-IDE product.
-Run the tests listed for that item and only tick Pass when criteria match.
+Run: python -m backtest.run_all --unit-only  (includes quality_guards)
+Then the item-specific tests; only tick Pass when criteria match.
 ```
 
 ## What this project is
@@ -70,10 +75,11 @@ see *Three Entry Points* in `architecture.md`. Container images for the first tw
 
 | File | Purpose |
 |------|---------|
-| `../improve.md` | **Upgrade roadmap** — P0–P3 checklists, Level A/B/C pass criteria, `run_all` commands, journal. Update checkboxes when work lands. |
+| `../improve.md` | **Upgrade roadmap** — P0–P3, Level A/B/C, journal. **Level B reached 2026-08-06.** Update checkboxes when work lands. |
 | `../architect.md` | Full project map + changelog (heavier; optional after SKILL + architecture) |
 | `../note.md` | Dated live status / provider notes (diary; not stable rules) |
-| `../backtest/run_all.py` | Unified regression runner (`python -m backtest.run_all`) |
+| `../backtest/run_all.py` | Unified regression runner (`python -m backtest.run_all [--unit-only\|--skip-exploratory]`) |
+| `../backtest/test_quality_guards.py` | Unit guards (sanitize, write-intent, gmail digest, HTML builder, TG upload protect) — no ephemeral `_smoke_*` scripts |
 
 For the dated changelog and current live status, see `../architect.md` and `../note.md`
 — **stable rules stay in `instructionAI/`**; **what to improve next stays in `../improve.md`**.
@@ -227,12 +233,12 @@ model.
 
 20. **One delivery per recipient per turn.** `execute_tool` suppresses a second
     outbound send (`send_gmail_message`, `send_gmail_html_message`, `reply_to_email`,
-    `send_telegram`) to the same recipient within one request. Exists because two
-    independent mechanisms — the workflow safeguard and the Tier-1 loop's re-plan — can
-    both complete a plan missing its send step, delivering the same report twice with
-    different subjects. Key on the RECIPIENT, never a full argument signature (the
-    duplicates differ in subject/body by construction); record only on SUCCESS. Any new
-    path that can send must go through `execute_tool`.
+    `send_telegram`, `send_telegram_document`) to the same recipient/channel within one
+    request. Exists because two independent mechanisms — the workflow safeguard and the
+    Tier-1 loop's re-plan — can both complete a plan missing its send step, delivering
+    the same report twice with different subjects. Key on the RECIPIENT (or tool name
+    for single-destination Telegram), never a full argument signature; record only on
+    SUCCESS. Any new path that can send must go through `execute_tool`.
 
 21. **The router's `task` field, for `action == "chat"`, is a HINT — never the final
     reply.** `process()`'s chat branch always passes the Master's real `user_input` to
@@ -297,15 +303,20 @@ model.
     `message.photo`/`message.document` into `ciel_workspace/telegram_uploads/` and
     enqueues a plain note (`"[Ảnh/File Master vừa gửi... đã lưu tại: ..."] + caption`)
     exactly like any text message — Brain routes it like anything else (usually to
-    `read_document` for a file, or the new `describe_image_file` for an image), never
-    a hardcoded path. `describe_image_file` (`skills/internal/vision_ops.py`) is
-    deliberately NOT the same tool as `vision_act`/`vision_describe` in intent even
-    though it shares the file — those two see the LIVE screen (`_capture_screen()`),
-    this one opens an existing FILE (`Image.open()`), and both share `_call_vision_llm`
-    only as an implementation detail. It lives in `vision_ops.py` (bundled with
-    `vision_act`/`vision_describe`), so `DISABLED_SKILL_MODULES=vision_ops` turns it
-    off too even though it needs no display/mouse — a known trade-off, not a bug,
-    unless a future deployment wants image-file viewing without screen control.
+    `read_document` / `read_file` for a file, or `describe_image_file` for an image),
+    never a hardcoded path. **Do not treat "đã lưu tại" as write intent** — that phrase
+    is delivery metadata; `_has_write_intent` strips it so the multi_tool write
+    safeguard cannot append `write_file` onto the upload and clobber it. **Never
+    `write_file`/`append_file` into `telegram_uploads/`** unless the Master explicitly
+    asks to overwrite an upload (`execute_tool` blocks it). Reports go to
+    `agent_output/`. Outbound: `send_telegram` (plain text; no Markdown-by-default —
+    underscores break parse_mode) and `send_telegram_document` (HTML/PDF attachments —
+    Telegram does not render full report HTML in the chat bubble). Analysis HTML:
+    `build_analysis_report_html` in `skills/internal/report_ops.py` + template
+    `email_template/analysis_report.html` — prefer `output_path=agent_output/….html`
+    then `send_telegram_document`. `describe_image_file` is NOT the live-screen tools
+    (`vision_act`/`vision_describe`); it opens an existing FILE. Bundled in
+    `vision_ops.py`, so `DISABLED_SKILL_MODULES=vision_ops` turns it off too.
 
 26. **A Gmail query needs `category:primary` even when combining operators, and
     `category:primary` alone is not a promotions filter.** Found live: a digest query
@@ -360,3 +371,31 @@ model.
     without** the key — a negative control is what turns "I added the var" into "the
     behaviour actually changed". Whenever a capability can silently no-op, add the
     variable in **both** places and prove the difference, don't infer it.
+
+30. **Regression is `run_all` + maintained `test_*.py` — not a pile of `_smoke_*.py`.**
+    Ephemeral live smokes were cleaned (2026-08-06). Durable checks live in
+    `backtest/test_quality_guards.py` (sanitize, write-intent, gmail digest, HTML
+    builder, telegram_uploads write-block) and the existing unit/live suites wired
+    into `python -m backtest.run_all`. Do not reintroduce one-off smoke modules for
+    every feature; fold pure guards into unit tests and keep live coverage in
+    integration / hard_special when needed.
+
+31. **Honest tool failures (P1.1) and outbound sanitize (P1.4) are product rules, not
+    optional polish.** Partial/failed tools must surface error/empty honestly — never
+    invent prices or file bodies. Outbound email bodies must strip `agent_output/` /
+    `ciel_workspace/` path tokens while keeping real tool numbers; Middleware is
+    fail-open and must not blank live tool values as "implausible".
+
+## Current pass bar (snapshot — detail in `../improve.md`)
+
+| Level / item | Status (2026-08-06) |
+|--------------|---------------------|
+| Level A (Daily OK) | **PASS** |
+| Level B (Core Green) | **PASS** |
+| P0 foundation | **PASS** |
+| P1.1 honest tools / P1.4 middleware | **PASS** |
+| P1.2 proactive day / P1.3 user_model formal | open |
+| Level C portable | open |
+| P2 coworker / P3 models | open |
+
+**Default target after Level B:** next unchecked item in `improve.md` (not reopening P0).

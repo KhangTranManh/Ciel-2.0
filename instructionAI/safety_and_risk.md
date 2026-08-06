@@ -105,8 +105,8 @@ path does; it is a second, narrower enforcement point specific to the one channe
 ## Outbound Idempotence — one delivery per recipient per turn
 
 `execute_tool` suppresses a second outbound send (`send_gmail_message`,
-`send_gmail_html_message`, `reply_to_email`, `send_telegram`) to the same recipient
-within one request.
+`send_gmail_html_message`, `reply_to_email`, `send_telegram`,
+`send_telegram_document`) to the same recipient/channel within one request.
 
 This exists because **two independent mechanisms** can complete a plan missing its
 send step — the workflow safeguard in `execute_multi_tool` (which appends one) and the
@@ -133,7 +133,7 @@ Every outbound email/report body passes, in order:
 1. **Deterministic sanitizer** (`_sanitize_outbound_email()`) — strips `[COGNITION]`
    lines, persona tag prefixes, signature placeholders, "email sent/Message Id"
    scaffolding, redundant Subject lines, and (email only, not file reports) internal
-   paths.
+   paths (`agent_output/…`, `ciel_workspace/…`). Live tool numbers must survive.
 2. **Middleware review** (optional, `MIDDLEWARE_ENABLED`, email/report bodies only) —
    an LLM-based semantic check for relevance/consistency/grounding a sanitizer can't
    catch (e.g. "claims Bearish but the price is above both moving averages"). A

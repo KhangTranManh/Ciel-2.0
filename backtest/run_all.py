@@ -76,6 +76,12 @@ SUITES: list[Suite] = [
         "Continuation, recent turns, email recipient, open thread, RAG self-match",
     ),
     Suite(
+        "quality_guards",
+        "backtest.test_quality_guards",
+        "unit",
+        "P1 guards: sanitize, write-intent, gmail digest, HTML builder, TG upload protect",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",

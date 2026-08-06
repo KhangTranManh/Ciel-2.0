@@ -181,9 +181,16 @@ def search_similar(query: str, top_k: int = DEFAULT_TOP_K) -> str:
         if _collection.count() == 0:
             return ""
 
+        # Fetch MORE than top_k, then filter. Bug found live (test_rag_memory amnesia):
+        # after the same recall question failed a few times, those failed turns became
+        # the top-3 nearest neighbors BY CONSTRUCTION (identical Human: text). Self-match
+        # filtering dropped all three, and search_similar returned "" even though the
+        # plant fact ("Midnight Falcon / Python and Rust") sat at rank 4–5 with sim>0.70.
+        # Over-fetch, drop self-matches + low scores, then keep up to top_k survivors.
+        n_fetch = min(max(top_k * 4, 12), _collection.count())
         results = _collection.query(
             query_texts=[query],
-            n_results=min(top_k, _collection.count()),
+            n_results=n_fetch,
             include=["documents", "distances", "metadatas"],
         )
 
@@ -218,6 +225,8 @@ def search_similar(query: str, top_k: int = DEFAULT_TOP_K) -> str:
                 continue
             date = meta.get("date", "unknown")
             relevant.append(f"[{date}] {doc}")
+            if len(relevant) >= top_k:
+                break
 
         if not relevant:
             return ""

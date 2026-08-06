@@ -1,22 +1,7 @@
-# Đánh giá thị trường vàng và BTC
+Đánh giá thị trường:
 
-## BTC
+- **XAU/USD:** 4.038,45 USD/ounce; dữ liệu tham khảo dao động khoảng 4.036,38–4.058,8 USD/ounce. Xu hướng ngắn hạn nghiêng nhẹ về tăng nhưng biến động rất mạnh và tín hiệu còn phân hóa. Khảo sát ghi nhận 47% kỳ vọng tăng, 30% dự báo giảm, 23% đi ngang.
+- **BTC/USD:** 63.820,01 USD, tăng 0,520%; biên độ trong ngày 62.300–64.059,75 USD. Xu hướng kỹ thuật đang giảm, RSI trung tính; rủi ro chính là giá nằm dưới MA30.
+- **Đánh giá chung:** Vàng có triển vọng tích cực hơn nhưng rủi ro điều chỉnh cao. BTC vẫn chịu áp lực giảm; nên thận trọng với các vị thế mua đuổi.
 
-- Giá: **63.450,44 USD/USDT**
-- Tăng **1,494%**
-- Biên độ: **62.482,99–63.634,00**
-- RSI **47,14**, ở vùng trung tính.
-- Xu hướng kỹ thuật vẫn **giảm**, do giá nằm dưới MA5 và MA30.
-
-**Đánh giá:** BTC đang hồi phục trong ngắn hạn nhưng chưa xác nhận đảo chiều. Rủi ro chính là đà giảm vẫn còn; nên thận trọng với vị thế mua đuổi.
-
-## Vàng
-
-- XAU/USD quanh **4.042,69–4.043,70 USD/oz**.
-- Giá từng giảm xuống **3.995,90 USD/oz** và đạt mức cao **4.119,82 USD/oz**, cho thấy biến động lớn.
-- Vàng SJC được ghi nhận quanh **137–141 triệu đồng/lượng**.
-- Dự báo UBS: **4.400 USD** vào tháng 9/2026, **4.600 USD** vào tháng 12/2026, **5.000 USD** vào tháng 3/2027 và **5.200 USD** sau đó.
-
-**Đánh giá:** Vàng đã phục hồi nhưng chưa có tín hiệu xác nhận tạo đáy. Triển vọng trung hạn tích cực, song nên tránh mua đuổi và ưu tiên quản trị rủi ro chặt.
-
-**Tình trạng tệp:** Chưa tạo được báo cáo vì phiên này không có công cụ ghi tệp.
+Chưa thể xác nhận báo cáo đã được ghi thành công vào tệp yêu cầu.

@@ -26,21 +26,64 @@ Role: You are "Ciel-Sentinel", a Market Intelligence module.
 # RAW FUNCTIONS (importable by scheduler.py)
 # ==========================================
 
+def _looks_like_crypto(symbol: str) -> bool:
+    """Heuristic: pair/base that should prefer public Binance over TwelveData."""
+    s = (symbol or "").upper().replace(" ", "")
+    if not s:
+        return False
+    bases = ("BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "DOT", "LINK", "MATIC", "TON", "SUI")
+    if s in bases:
+        return True
+    compact = s.replace("/", "").replace("-", "")
+    if compact.endswith(("USDT", "USDC")):
+        return True
+    # e.g. BTC/USD — still crypto; TwelveData often lacks USDT pairs Brain requests
+    if any(compact.startswith(b) and compact.endswith("USD") for b in bases):
+        return True
+    return False
+
+
+def _fetch_binance_price(symbol: str) -> str | None:
+    """Return a price string via Binance ticker, or None if unavailable."""
+    try:
+        sym = _to_binance_symbol(symbol)
+        data = requests.get(
+            f"https://api.binance.com/api/v3/ticker/price?symbol={sym}", timeout=10
+        ).json()
+        if "price" in data:
+            return f"Giá {sym}: {data['price']} USDT (via Binance free tier)."
+    except Exception:
+        pass
+    return None
+
+
 def fetch_market_price(symbol: str) -> str:
-    """Get real-time price. Raw function — usable by scheduler directly."""
+    """Get real-time price. Raw function — usable by scheduler directly.
+
+    Crypto (BTC/USDT etc.): always try Binance first. TwelveData often rejects
+    USDT pairs even when TWELVEDATA_API_KEY is set — live smoke 2026-08-04 saw
+    XAU/USD OK + BTC/USDT 'Could not find price' on the same multi_tool call.
+    """
     API_KEY = os.getenv("TWELVEDATA_API_KEY")
-    
-    # If no API key, try to fallback to Binance if it looks like Crypto
+    original = symbol
+
+    # Crypto → Binance first (works without TwelveData; avoids false failures)
+    if _looks_like_crypto(symbol):
+        binance = _fetch_binance_price(symbol)
+        if binance:
+            return binance
+
     if not API_KEY:
-        if "/" not in symbol and symbol.endswith("USDT") or symbol in ["BTC", "ETH", "SOL"]:
-            sym = symbol.replace("/", "").replace("-", "")
-            if not sym.endswith("USDT"): sym += "USDT"
-            try:
-                data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}", timeout=10).json()
-                if "price" in data: return f"Giá {sym}: {data['price']} USDT (via Binance free tier)."
-            except: pass
-        return "Error: Missing TWELVEDATA_API_KEY in .env. Get a free API key at https://twelvedata.com/ (Supports Forex, XAU, Stocks, Crypto)."
-    
+        if _looks_like_crypto(symbol):
+            return (
+                f"Error: Could not fetch crypto price for {original} from Binance. "
+                "Check symbol (e.g. BTC/USDT) or network."
+            )
+        return (
+            "Error: Missing TWELVEDATA_API_KEY in .env. Get a free API key at "
+            "https://twelvedata.com/ (Supports Forex, XAU, Stocks, Crypto)."
+        )
+
     try:
         # Format symbol for TwelveData (e.g. EUR/USD)
         if len(symbol) == 6 and "/" not in symbol:
@@ -57,9 +100,22 @@ def fetch_market_price(symbol: str) -> str:
         # splicing it into the query string.
         url = "https://api.twelvedata.com/price"
         data = requests.get(url, params={"symbol": symbol, "apikey": API_KEY}, timeout=10).json()
-        if "price" in data: return f"Giá {symbol}: {data['price']}"
-        return f"Error: Could not find price for {symbol}. Ensure format is correct (e.g. EUR/USD, XAU/USD, AAPL)."
-    except Exception as e: return f"API Error: {e}"
+        if "price" in data:
+            return f"Giá {symbol}: {data['price']}"
+
+        # TwelveData miss → last-chance Binance for anything that looks crypto-ish
+        binance = _fetch_binance_price(original)
+        if binance:
+            return binance
+        return (
+            f"Error: Could not find price for {original}. "
+            "Ensure format is correct (e.g. EUR/USD, XAU/USD, BTC/USDT, AAPL)."
+        )
+    except Exception as e:
+        binance = _fetch_binance_price(original)
+        if binance:
+            return binance
+        return f"API Error: {e}"
 
 
 def _to_binance_symbol(symbol: str) -> str:

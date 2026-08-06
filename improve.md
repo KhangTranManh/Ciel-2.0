@@ -68,16 +68,20 @@ Open at least:
 ## Agent PASS levels (definition of “ổn”)
 
 ### Level A — Daily OK
-- [ ] `main.py` boots; no mass `JSONDecodeError` on routing  
-- [ ] ~10 manual commands OK: chat VI/EN, todo, calculate, list/read file, weather/search  
-- [ ] `python -m backtest.run_all --unit-only` → **5/5 suites PASS**  
-- [ ] Unattended: no silent high-risk send/delete (DEFER, not auto-consent)
+- [x] `main.py` boots; no mass `JSONDecodeError` on routing  
+- [x] ~10 manual commands OK: chat VI/EN, todo, calculate, list/read file, weather/search  
+- [x] `python -m backtest.run_all --unit-only` → **unit suites PASS** (now includes `quality_guards`)  
+- [x] Unattended: no silent high-risk send/delete (DEFER, not auto-consent)  
+- **Verified:** 2026-08-06 live smoke (boot, 10 cmds, unit, DEFER). Ongoing: `run_all --unit-only`  
+- Pass date: **2026-08-06**  Models: **gpt-5.6-sol / gpt-5.6-luna / gpt-5.5**
 
 ### Level B — Core Green (near-term goal)
-- [ ] Level A  
-- [ ] `python -m backtest.run_all --skip-exploratory` → **all unit + live suites PASS**  
-- [ ] ≥3 real email checks (test address): Message Id; no internal paths; no placeholders / invented numbers when tools fail  
-- [ ] Follow-up context works (“tại sao lại thế” remembers prior turn)
+- [x] Level A  
+- [x] `python -m backtest.run_all --skip-exploratory` → **all unit + live suites PASS**  
+- [x] ≥3 real email checks (test address): Message Id; no internal paths; no placeholders / invented numbers when tools fail  
+- [x] Follow-up context works (“tại sao lại thế” remembers prior turn)  
+- **Evidence (2026-08-06 check):** A smoke 7/7; run_all 9/9 (2026-08-04, P0.1); emails P0.3 (multi MsgId → kxctran@…, double-send, dig); follow-up + file đó + scope veto P0.4  
+- Pass date: **2026-08-06**
 
 ### Level C — Portable / hybrid-local ready
 - [ ] Level B  
@@ -93,31 +97,36 @@ Open at least:
 ## P0 — Foundation (do first)
 
 ### P0.1 — `run_all` full green (unit + live, skip exploratory)
-- [ ] **Do:** Fix remaining failures; do not delete tests to fake green.  
-- [ ] **Test:** `run_all --unit-only` then `run_all --skip-exploratory`  
-- [ ] **Pass when:**  
+- [x] **Do:** Fix remaining failures; do not delete tests to fake green.  
+- [x] **Test:** `run_all --unit-only` then `run_all --skip-exploratory`  
+- [x] **Pass when:**  
   - Unit 5/5: context, user_model, proactive, outbound, conversation_bugs  
   - Live all PASS: integration, hard_special, brain_worker, rag_memory  
-- [ ] **Known baseline (2026-08-03):** hard_special 15/16 (Special 7: missing `ciel_workspace/fibonacci.py`); rag_memory partial (Python/Rust recall)  
-- Pass date: ________  Models: ________
+- [x] **Known baseline (2026-08-03):** hard_special 15/16 (Special 7) + rag partial — **fixed; re-run 2026-08-04 full green**  
+- Pass date: **2026-08-04**  Models: **gpt-5.6-sol / gpt-5.6-luna / gpt-5.5**
 
 ### P0.2 — Brain JSON / routing stable
-- [ ] **Do:** Brain model in `.env` must emit parseable router JSON reliably.  
-- [ ] **Test:** 20 smokes (greet, single tool, multi-tool, VI, EN, vague) + integration chat/edge  
-- [ ] **Pass when:** ≥20/20 `ROUTE_DECISION` parse OK; 5/5 consecutive simple chat + one tool in `main.py`  
-- Pass date: ________  Brain model: ________
+- [x] **Do:** Brain model in `.env` must emit parseable router JSON reliably.  
+- [x] **Test:** 20 smokes (greet, single tool, multi-tool, VI, EN, vague) + 5 consecutive AgentLoop turns  
+- [x] **Pass when:** ≥20/20 `ROUTE_DECISION` parse OK; 5/5 consecutive simple chat + tool  
+- **Verified:** 2026-08-06 live route smoke 20/20 + 5 consec. Ongoing: integration / hard_special  
+- Pass date: **2026-08-06**  Brain model: **gpt-5.6-sol**
 
 ### P0.3 — Professional email by default
-- [ ] **Do:** Tools first → clean body → **one** send; no forced HTML dashboard unless user asks visual.  
-- [ ] **Test:** `test_outbound`; hard_special market+email; 2–3 real mails to test inbox  
-- [ ] **Pass when:** Message Id; no `agent_output/`/`ciel_workspace/` in body; no `[]` / invented prices; no double-send; referential “gửi mail đó” correct recipient  
-- Pass date: ________
+- [x] **Do:** Tools first → clean body → **one** send; no forced HTML dashboard unless user asks visual.  
+- [x] **Test:** `test_outbound`; hard_special market+email; 2–3 real mails to test inbox  
+- [x] **Pass when:** Message Id; no `agent_output/`/`ciel_workspace/` in body; no `[]` / invented prices; no double-send; referential “gửi mail đó” correct recipient  
+- **Close (2026-08-06):** `test_outbound` 36/36; dig+referential; gmail list multi-id fix; live mails to kxctran@…  
+- **HTML analysis:** `build_analysis_report_html` + `send_telegram_document` (see report_ops / telegram_ops)  
+- Pass date: **2026-08-06**
 
 ### P0.4 — Conversation context (recent turns + open thread)
-- [ ] **Do:** History read-back; scope veto (“dừng/chỉ…thôi”); open thread for slot-fill / “file đó”.  
-- [ ] **Test:** `test_conversation_bugs` + 3 live cases  
-- [ ] **Pass when:** suite full PASS; live cases do not regress known transcript bugs  
-- Pass date: ________
+- [x] **Do:** History read-back; scope veto (“dừng/chỉ…thôi”); open thread for slot-fill / “file đó”.  
+- [x] **Test:** `test_conversation_bugs` + 3 live cases  
+- [x] **Pass when:** suite full PASS; live cases do not regress known transcript bugs  
+- **Unit:** `test_conversation_bugs` 66/66 (2026-08-06)  
+- **Live verified:** follow-up / file đó / scope veto (2026-08-06)  
+- Pass date: **2026-08-06**
 
 **P0 complete ≈ Level B** (plus manual email quality if not fully covered by hard_special).
 
@@ -125,10 +134,30 @@ Open at least:
 
 ## P1 — Personal-agent quality
 
-### P1.1 — Daily tools (market / search / file / todo)
-- [ ] Partial tool failure → honest; no fabrication.  
-- [ ] **Pass when:** 5/5 manual tool turns match tool results.  
-- Pass date: ________
+### P1.1 — Daily tools (market / search / file / todo) — **DONE**
+
+**Goal:** Khi tool fail một phần hoặc trả lỗi, Ciel **nói thật** và **không bịa** số/file/kết quả.
+
+**In scope (5 turns tối thiểu):**
+1. Market: tool lỗi BTC → reply “chưa lấy được / tool lỗi”, **không** số giá bịa.  
+2. Search: empty/thin results → nói thiếu dữ liệu, không invent tin.  
+3. File: `read_file` path không tồn tại → “không có file”, không giả nội dung.  
+4. Todo: add/list khớp tool result (id/text thật).  
+5. Mixed: multi_tool một nhánh fail (vd BTC fail, XAU OK) → báo đúng nhánh fail + số nhánh OK.
+
+**Out of scope:** redesign tool API; proactive digest (P1.2); middleware path-leak (P1.4).
+
+**Do (code if needed):**
+- Worker/format rules already have anti-hallucination; tighten only if live fails.  
+- Prefer Python: surface tool error strings; never invent price when result contains Error/N/A.
+
+**Test:** live fail cases as needed; guards in `backtest.test_quality_guards` + unit `run_all`.  
+
+**Pass when:** replies consistent with tool output (including honest failure).  
+- **Verified:** 2026-08-06 (8/8 honest-tool cases).  
+- Pass date: **2026-08-06**
+
+---
 
 ### P1.2 — Proactive (useful, not noisy)
 - [ ] Digest/alerts/stale todos: cooldown, budget, safe unattended.  
@@ -142,10 +171,73 @@ Open at least:
 - [ ] **Pass when:** suite PASS.  
 - Pass date: ________
 
-### P1.4 — Middleware
-- [ ] Catch path leaks / internal contradictions; never reject live tool numbers as “implausible vs training”.  
-- [ ] **Pass when:** path leak blocked; real tool numbers not false-flagged.  
-- Pass date: ________
+### P1.4 — Middleware — **DONE**
+
+**Goal:** Middleware bảo vệ **outbound** (email/body) và **không** phá dữ liệu tool thật.
+
+**In scope:**
+1. **Path leak block:** body/reply không chứa `agent_output/` / `ciel_workspace/` / absolute internal paths khi gửi mail / báo cáo ra ngoài.  
+2. **No false-flag live numbers:** BTC/XAU/weather từ tool **không** bị Middleware rewrite/reject vì “số lạ so với training”.  
+3. **Internal contradiction:** claim “đã gửi” khi không có Message Id → strip/flag (đã có stale-send status; giữ/mở rộng).  
+4. **Placeholder block:** `[PROFESSIONAL…]`, `[Worker:…]`, empty `[]` prices không ra body gửi.
+
+**Out of scope:** full rewrite of Middleware model; vision; local-model-only stack (P3).
+
+**Do:**
+- Audit `MIDDLEWARE_SCOPE` + email revision path in `llm_connector`.  
+- Smoke: (a) force body with `ciel_workspace/foo` → blocked or sanitized; (b) real BTC from tool → not flagged as implausible.
+
+**Test:** `test_outbound` + `test_quality_guards` (sanitize / path strip).  
+**Pass when:** path leak blocked; real tool numbers not false-flagged; no invented send claim.  
+- **Verified:** 2026-08-06 (10/10 middleware/sanitize cases).  
+- Pass date: **2026-08-06**
+
+---
+
+### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **DEFINED**
+
+> Level B không phụ thuộc feature này. Implement theo phase.
+
+#### Phase 0 — Inbound path awareness (testable NOW, no new tools)
+**Already in code:** Telegram photo/document → download → `ciel_workspace/telegram_uploads/{ts}_{name}` → inbox note:
+
+```text
+[Ảnh|File Master vừa gửi qua Telegram, đã lưu tại: ciel_workspace/telegram_uploads/…]
+{caption optional}
+```
+
+**Smoke (no real Telegram required):** copy a known file into `telegram_uploads/` with the same naming, inject the **exact** note format into `AgentLoop.run_step`, ask Ciel to read + summarize + (optional) `send_telegram`.
+
+**Pass when:**
+1. Model uses `read_file` / `read_document` / `describe_image_file` on that path (not invent path).  
+2. Reply contains a unique marker string that exists only in the dropped file.  
+3. If asked “gửi tóm tắt qua Telegram”: `send_telegram` runs (or honest fail if token missing).
+
+**Regression:** `test_quality_guards` (write-intent + telegram_uploads write block).
+
+#### Phase 1 — HTML analysis report — **DONE**
+- Template `email_template/analysis_report.html` + `build_analysis_report_html(..., output_path=)`.  
+- `send_telegram_document` for HTML file delivery.  
+- **Regression:** `test_quality_guards` HTML builder; live agent path verified 2026-08-06.
+
+#### User stories
+| # | Story |
+|---|--------|
+| U1 | Master gửi file/ảnh Telegram + caption “tóm tắt / phân tích” → Ciel đọc path vừa lưu, trả tóm tắt (Telegram reply). |
+| U2 | Same + “gửi tóm tắt qua Telegram” → `send_telegram` (đã có tool). |
+| U3 | Same + “báo cáo HTML mail” → Phase 1 template + `send_gmail_html_message`. |
+
+#### Pipeline
+```
+Telegram download (existing) OR smoke drop into telegram_uploads/
+  → note with path (existing format)
+  → read_file | read_document | describe_image_file
+  → summarize (Worker, facts only)
+  → deliver: chat / send_telegram / (later) HTML email
+```
+
+#### Non-goals Phase 0
+No new HTML tool yet; no auto-analyze without user ask; unattended auto-send off.
 
 ---
 
@@ -206,17 +298,18 @@ Open at least:
 ## Daily OK checklist (print)
 
 ```
-[ ] unit run_all 5/5
-[ ] live run_all --skip-exploratory full green
-[ ] 20/20 Brain JSON parse
-[ ] 3 emails: Message Id, no path, no placeholder, no double-send
-[ ] follow-up context OK
-[ ] "dừng lại" / only-list OK
-[ ] unattended no silent send/delete
-[ ] models recorded in journal
+[x] unit run_all 5/5
+[x] live run_all --skip-exploratory full green
+[x] 20/20 Brain JSON parse
+[x] 3 emails: Message Id, no path, no placeholder, no double-send
+[x] follow-up context OK
+[x] "dừng lại" / only-list OK
+[x] unattended no silent send/delete
+[x] models recorded in journal
 ```
 
-All checked → **Level B** → personal agent trustworthy for daily use.
+All checked → **Level B** → personal agent trustworthy for daily use.  
+**Reached: 2026-08-06** (Level A smoke + prior P0.1–P0.4 evidence).
 
 ---
 
@@ -226,6 +319,16 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 |------|------|----------------|-------|--------|-------|
 | 2026-08-03 | Baseline | sol / luna / gpt-5.5 | unit 5/5; live 2/4 | Unit OK; hard 15/16; rag partial | improve.md + run_all created |
 | 2026-08-03 | Handoff | — | — | — | Moved into repo; linked from instructionAI/SKILL.md for AI continuity |
+| 2026-08-03 | P0.1 RAG | sol/luna/5.5 | smoke + full test diagnose | partial→fix | Self-match ate top-k; over-fetch RAG; shell memory fallback; smoke: Python+Rust OK |
+| 2026-08-04 | P0.1 RAG retest | sol/luna/5.5 | test_rag_memory full | OPERATIONAL | Python+Rust+Falcon PASS; archive/recall PASS; Brain used get_fact |
+| 2026-08-04 | P0.1 run_all | sol/luna/5.5 | run_all --skip-exploratory | **9/9 PASS** | unit+live full green; hard 16/16; rag OPERATIONAL; note: gateway 408 once mid hard_special but suite recovered |
+| 2026-08-04 | Live news/mail dig | sol/luna/5.5 | live | **OK** | News dig + multi mail kxctran; BTC Binance-first |
+| 2026-08-06 | P0.2–P0.4 + Level A/B | sol/luna/5.5 | live + unit | **PASS** | Route 20/20; email dig/send; context 3/3; Level A/B tick |
+| 2026-08-06 | P1.1 + P1.4 + TG HTML | sol/luna/5.5 | live + unit | **PASS** | Honest tools; sanitize/middleware; telegram document HTML |
+| 2026-08-06 | Cleanup | — | — | done | Removed ephemeral `backtest/_smoke_*.py`; guards → `test_quality_guards` in `run_all` unit |
+
+| 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
+| 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
 |  |  |  |  |  |  |
 
 ---

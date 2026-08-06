@@ -1,96 +1,102 @@
-Không thể ghi báo cáo vào tệp trong phiên này vì không có quyền ghi tệp. Nội dung phân tích:
+# BTC and XAU Market Analysis
 
-# Báo cáo phân tích BTC và XAU/USD
+**Reference date:** 2026-08-04  
+**System time:** 2026-08-04 01:41:28 SE Asia Standard Time  
+**UTC:** 2026-08-03 18:41:28 UTC
 
-## 1. Thời điểm và phạm vi dữ liệu
+## Executive Summary
 
-- Ngày phân tích: 03/08/2026.
-- Thời gian hệ thống: 2026-08-03 02:50:53, múi giờ SE Asia Standard Time.
-- UTC: 2026-08-02 19:50:53.
-- Dữ liệu BTC gồm giá hiện tại, biến động, biên độ trong ngày và chỉ báo kỹ thuật 1 ngày.
-- Dữ liệu XAU/USD gồm giá hiện tại từ nguồn thị trường và các vùng hỗ trợ/kháng cự từ kết quả tìm kiếm.
-- Không có dữ liệu đáng tin cậy về phần trăm thay đổi trong ngày, RSI, đường trung bình, MACD, khối lượng hoặc vị thế thị trường của XAU/USD.
+BTC data indicates a neutral-to-bearish short-term structure. The market is trading above its short-term MA5 but below its MA30, while RSI remains neutral. The daily trend is classified as bearish, although the latest session showed a modest positive change.
 
-## 2. BTC/USD
+XAU/USD data is incomplete and inconsistently timestamped. The retrieved figures include a value of **4037.95679** without a timestamp and a separate reference price of **4056.58** dated **07/29/26**. Because no confirmed current timestamp, technical indicators, support, resistance, or reliable trend reading were provided, a directional XAU/USD conclusion cannot be established without inventing data.
 
-### Dữ liệu thị trường
+## BTC/USD
 
-- Ký hiệu: BTC/USD.
-- Giá: **63479.84**.
-- Nguồn: `get_market_price`.
-- BTCUSDT từ `get_crypto_stats`:
-  - Giá: **63479.84000000**
-  - Thay đổi: **1.503%**
-  - Cao nhất: **63634.00000000**
-  - Thấp nhất: **62482.99000000**
+### Retrieved Market Data
 
-Giá tăng **1.503%**, nhưng vẫn đang giao dịch dưới các đường trung bình quan trọng trong khung 1 ngày.
+- BTC/USD price: **63818.13**
+- BTCUSDT price from crypto statistics: **63818.13000000**
+- Daily change: **0.540%**
+- High: **64059.75000000**
+- Low: **62300.00000000**
+- Technical-analysis price: **63812.96**
+- RSI: **48.82**
+- MA5: **63574.90**
+- MA30: **64142.00**
+- Technical trend classification: **bearish**
 
-### Kỹ thuật khung 1 ngày
+The retrieved BTC prices are slightly different across outputs: **63818.13** from the market-price and crypto-statistics results, and **63812.96** from the technical-analysis result. No timestamp was included for these BTC figures.
 
-- RSI: **47.29**, trạng thái trung tính.
-- MA(5): **63591.13**.
-- MA(30): **64116.69**.
-- Xu hướng được hệ thống đánh giá: **bearish**.
-- Giá hiện tại **63479.84** thấp hơn cả MA(5) **63591.13** và MA(30) **64116.69**.
+### Technical Interpretation
 
-### Đánh giá
+BTC is positioned above MA5 at **63574.90**, showing that price remains above its short-term moving-average reference. However, it is below MA30 at **64142.00**, which indicates weaker positioning against the broader moving-average reference.
 
-Động lượng ngắn hạn chưa cho thấy trạng thái quá bán, vì RSI **47.29** vẫn ở vùng trung tính. Tuy nhiên, cấu trúc kỹ thuật vẫn yếu: giá nằm dưới MA(5) và MA(30), đồng thời xu hướng 1 ngày được xác định là bearish.
+RSI at **48.82** is neutral. It does not indicate an overbought or oversold condition, so the indicator alone does not provide a strong directional signal.
 
-Mốc gần nhất cần theo dõi là MA(5) **63591.13**. Việc giá vượt và duy trì trên mức này sẽ giúp cải thiện động lượng ngắn hạn. MA(30) **64116.69** là vùng xác nhận quan trọng hơn đối với khả năng đảo chiều tích cực. Nếu tiếp tục nằm dưới hai đường trung bình này, nhịp tăng **1.503%** có thể chỉ là một đợt hồi trong xu hướng yếu.
+The combination of neutral RSI, price above MA5, and price below MA30 supports a mixed market structure with a bearish bias on the daily timeframe. The reported daily change of **0.540%** shows positive movement in the latest data, but this has not yet overturned the broader technical classification of bearish.
 
-Biên độ được ghi nhận trong dữ liệu:
+### BTC Levels and Market Structure
 
-- Đỉnh: **63634.00000000**
-- Đáy: **62482.99000000**
+The retrieved session range was:
 
-Dữ liệu được cung cấp không có mức hỗ trợ/kháng cự kỹ thuật được xác nhận riêng cho BTC ngoài biên độ cao nhất và thấp nhất nói trên.
+- High: **64059.75000000**
+- Low: **62300.00000000**
 
-## 3. XAU/USD
+These are reported trading-range figures rather than independently confirmed support and resistance levels. The current price is close to the reported high relative to the session range, but the price remains below MA30 at **64142.00**. A sustained move above that moving average would be needed to improve the technical structure; the available data does not confirm such a move.
 
-### Dữ liệu thị trường
+### BTC Bias
 
-- Ký hiệu: XAU/USD.
-- Giá: **4042.69082**.
-- Nguồn: `get_market_price`.
+**Short-term bias: neutral-to-bearish.**
 
-Một kết quả TradingView ghi nhận giá hiện tại ở mức xấp xỉ **4,045**. Đây là giá gần đúng từ một nguồn phân tích khác và không nên gộp trực tiếp với giá chính xác **4042.69082** từ nguồn thị trường.
+The positive daily change is constructive, but the bearish daily trend classification and position below MA30 remain the dominant signals. RSI at **48.82** leaves room for movement in either direction and does not confirm a reversal.
 
-### Hỗ trợ và kháng cự
+## XAU/USD
 
-Theo TradingView:
+### Retrieved Market Data
 
-- Điều kiện bearish được nêu: giá đóng cửa ngày dưới **4,000**.
-- Hỗ trợ: **4,000–4,020**.
-- Kháng cự 1: **4,100–4,140**.
-- Kháng cự 2: **4,180–4,220**.
+- Retrieved XAU/USD value: **4037.95679**
+- Timestamp: **not provided**
+- Separate XAU/USD reference price: **4056.58**
+- Date associated with the **4056.58** reference: **07/29/26**
 
-Theo FOREX.com:
+The value **4056.58** was described as the Gold USD price from PrimeXBT as of **07/29/26**. It is not confirmed as the current price for **2026-08-04**.
 
-- Support 1: **4005.71**.
-- Resistance 3: **4186.81**.
+The TradingView search result included an example value of approximately **1,612,660.000 USD** for a Good Delivery gold bar weighing approximately **27.4 pounds**, or approximately **12.4 kg**. This is a bar-value example and is not an XAU/USD spot price.
 
-Các mức của FOREX.com và TradingView được giữ riêng vì khác nguồn và khác cách phân loại cấp độ.
+### Technical Data Availability
 
-### Đánh giá
+No confirmed XAU/USD values were provided for:
 
-Giá XAU/USD chính xác được cung cấp là **4042.69082**, nằm trên vùng hỗ trợ TradingView **4,000–4,020**. Mốc **4,000** là điều kiện quan trọng: một phiên đóng cửa ngày dưới mức này sẽ củng cố kịch bản bearish theo nhận định được trả về.
+- RSI
+- Moving averages
+- Support
+- Resistance
+- Trading range
+- Volume
+- Current directional momentum
+- Current confirmed trend
 
-Phía trên, vùng **4,100–4,140** là kháng cự đầu tiên; vùng **4,180–4,220** là kháng cự kế tiếp. Mức **4186.81** của FOREX.com nằm trong vùng kháng cự thứ hai của TradingView, nhưng vẫn cần xem là một mức độc lập do khác nguồn.
+The retrieved Investing.com result referenced moving averages, buy-or-sell signals, and common chart indicators, but did not provide the actual indicator values. The FXStreet result described XAU/USD as the number of US dollars required to purchase one troy ounce of gold and noted that the pair can move because of a wide range of factors, but it did not provide a current price or technical forecast.
 
-Các kết quả tìm kiếm không cung cấp:
+### XAU/USD Bias
 
-- Phần trăm thay đổi trong ngày.
-- RSI, MACD hoặc đường trung bình.
-- Khối lượng và biến động.
-- Giá mở cửa, giá cao nhất hoặc thấp nhất trong ngày.
-- Dữ liệu định vị thị trường cụ thể.
+**Directional bias: undetermined.**
 
-Vì vậy, chưa thể kết luận chắc chắn về động lượng ngắn hạn của XAU/USD chỉ dựa trên các chỉ báo kỹ thuật.
+The available XAU/USD figures are not sufficiently aligned in time to support a reliable current analysis. The value **4037.95679** has no timestamp, while **4056.58** belongs to **07/29/26**. Treating either figure as the confirmed current price for **2026-08-04** would be unsupported.
 
-## 4. Kết luận
+## Comparative View
 
-- **BTC/USD:** Giá **63479.84**, tăng **1.503%**, nhưng xu hướng 1 ngày vẫn bearish. RSI **47.29** trung tính; giá dưới MA(5) **63591.13** và MA(30) **64116.69**. Cần vượt trước **63591.13**, sau đó là **64116.69**, để cải thiện cấu trúc.
-- **XAU/USD:** Giá **4042.69082**, nằm trên vùng hỗ trợ **4,000–4,020**. Mốc **4,000** là ranh giới bearish theo dữ liệu TradingView. Kháng cự chính tại **4,100–4,140** và **4,180–4,220**; FOREX.com cung cấp thêm S1 **4005.71** và R3 **4186.81**.
-- Không nên mở rộng kết luận về XAU/USD ngoài các mức trên vì dữ liệu chỉ báo và biến động trong ngày không được cung cấp.
+BTC has usable technical readings, although the source outputs contain a small price discrepancy and no timestamp. Its structure is currently mixed but leans bearish because price is below MA30 and the daily trend is classified as bearish.
+
+XAU/USD has a larger data-quality limitation. There is no complete, timestamped technical dataset, so comparison with BTC should be limited to data availability rather than directional performance.
+
+## Data Integrity and Limitations
+
+- BTC statistics were available, but no timestamp was provided.
+- BTC technical analysis reported **63812.96**, while other retrieved outputs reported **63818.13** and **63818.13000000**.
+- XAU/USD technical data was unavailable.
+- The XAU/USD value **4037.95679** was not timestamped.
+- The XAU/USD reference price **4056.58** was associated with **07/29/26**, not confirmed for **2026-08-04**.
+- The **1,612,660.000 USD** figure represents an example Good Delivery gold-bar value, not the XAU/USD spot price.
+- The report was not confirmed saved because file-writing access was unavailable in the session.
+- No market figure has been added beyond the retrieved source data.

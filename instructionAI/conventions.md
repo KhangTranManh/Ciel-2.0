@@ -184,7 +184,10 @@ disposable.
 - Swap voice STT/TTS backends via `STT_BACKEND`/`TTS_BACKEND` in `.env`.
 - Add new tests in `backtest/` — prefer the no-LLM style (`test_context.py`,
   `test_proactive.py`, `test_user_model.py`, `test_outbound.py`,
-  `test_conversation_bugs.py`) for anything that is pure Python decision logic.
+  `test_conversation_bugs.py`, `test_quality_guards.py`) for pure Python decision
+  logic. Wire new unit suites into `backtest/run_all.py` `SUITES`. **Do not** add
+  long-lived `backtest/_smoke_*.py` one-offs — fold guards into `test_quality_guards`
+  or a named `test_*.py` suite.
 
 ### Dangerous to change
 

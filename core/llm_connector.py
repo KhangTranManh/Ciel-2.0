@@ -159,6 +159,18 @@ _WRITE_VERB_RE = re.compile(
     r"\b(viết|ghi|write|save|lưu|tạo|create|make|generate|note|tao file|tạo file)\b", re.IGNORECASE)
 
 
+def _has_telegram_send_intent(text: str) -> bool:
+    """True when Master asked to deliver a result via Telegram (not mere mention)."""
+    return bool(re.search(
+        r"(?:gửi|send|báo|notify|thông\s*báo).{0,50}telegram"
+        r"|qua\s+telegram"
+        r"|telegram\s+(?:cho|to\s+me|cho\s+t)"
+        r"|send_telegram",
+        text or "",
+        re.IGNORECASE,
+    ))
+
+
 def _has_write_intent(text: str):
     """Returns the matched target path if the text names one AND uses a save/
     write verb, else None. A path alone (e.g. just mentioning a file that
@@ -167,10 +179,41 @@ def _has_write_intent(text: str):
     When TWO filenames appear ("mở cv_new.txt ra, ... rồi lưu thành
     cv_updated.txt"), the LAST one is taken — a source-then-destination shape
     is how this is phrased in practice, and the first match alone would have
-    picked the file being read FROM, not saved TO, as the write target."""
-    matches = list(_WRITE_TARGET_PATH_RE.finditer(text or ""))
-    if matches and _WRITE_VERB_RE.search(text or ""):
-        return matches[-1].group(1)
+    picked the file being read FROM, not saved TO, as the write target.
+
+    Live false positive (2026-08-06 Telegram smoke): the inbound note
+    "[File Master vừa gửi … đã lưu tại: ciel_workspace/telegram_uploads/X.txt]"
+    matches both a path AND the write-verb `lưu` inside "đã lưu tại", so the
+    multi_tool write safeguard *appended write_file to the upload* and clobbered
+    the inbound file with a summary. Strip delivery phrasing / never auto-write
+    into telegram_uploads.
+    """
+    raw = text or ""
+    cleaned = re.sub(
+        r"\[(?:File|Ảnh)\s+Master\s+vừa\s+gửi[^\]]*\]",
+        " ",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"đã\s+lưu\s+tại\s*:[^\n\]]*",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?:saved|stored)\s+at\s*:[^\n\]]*",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    matches = list(_WRITE_TARGET_PATH_RE.finditer(cleaned))
+    if matches and _WRITE_VERB_RE.search(cleaned):
+        path = matches[-1].group(1)
+        norm = path.replace("\\", "/").lower()
+        if "telegram_uploads/" in norm or norm.startswith("telegram_uploads"):
+            return None
+        return path
     return None
 
 
@@ -864,6 +907,10 @@ class CielCore:
                     sym = match.upper()
                     if sym not in found:
                         found.append(sym)
+                for match in self._RECENT_ENTITY_GMAIL_ID_RE.findall(text):
+                    tag = f"gmail_message_id:{match}"
+                    if tag not in found:
+                        found.append(tag)
             return ", ".join(found[:8])
         except Exception:
             return ""
@@ -945,6 +992,24 @@ class CielCore:
         r"ghi\s+(?:tiếp|đè)\s+(?:vào\s+)?(?:file\s+)?(?:đó|này)?)",
         re.IGNORECASE,
     )
+    # Dig / open a listed Gmail message ("email đó", "đào sâu", "get_gmail_message").
+    # Live failure 2026-08-06: list returned message_id, dig follow-up CHAT-routed and
+    # Worker invented "no permission for get_gmail_message" — tools were loaded.
+    _OPEN_THREAD_EMAIL_DEICTIC_RE = re.compile(
+        r"(?:email\s+(?:đó|này|đấy)|thư\s+(?:đó|này|đấy)|mail\s+(?:đó|này|đấy)|"
+        r"đào\s+sâu|đọc\s+k[yỹ]|đọc\s+chi\s+tiết|dig\s+(?:into|deep)|"
+        r"get_gmail_message|get_gmail_thread|"
+        r"quan\s+trọng\s+nhất\s+vừa|vừa\s+liệt\s+kê|"
+        r"that\s+email|this\s+email|the\s+(?:same\s+)?email|"
+        r"read\s+(?:that|the|this)\s+(?:email|message|mail))",
+        re.IGNORECASE,
+    )
+    # Gmail API ids as shown after list formatting / Worker summaries.
+    # Allow markdown noise between label and id: **message_id:** `19fd…`
+    _RECENT_ENTITY_GMAIL_ID_RE = re.compile(
+        r"(?:message[_\s-]?id|messageId)[^\na-fA-F0-9]{0,24}([a-f0-9]{10,24})",
+        re.IGNORECASE,
+    )
     # Paths mentioned in tool results / user text (broader than extension-only list).
     _OPEN_THREAD_PATH_RE = re.compile(
         r"(?:ciel_workspace|agent_output)[\\/][^\s\"'<>|]+"
@@ -964,11 +1029,15 @@ class CielCore:
     def _is_open_thread_candidate(self, user_input: str) -> bool:
         """True when THIS message likely answers/continues Ciel's last open ask."""
         text = (user_input or "").strip()
-        if not text or len(text) > self._OPEN_THREAD_MAX_CURRENT_CHARS:
+        if not text:
             return False
-        # File deictic / append-to-that always qualifies (even if wordy or new-topic-ish).
+        # File / email dig deictic always qualify (even if wordy or over char cap).
         if self._OPEN_THREAD_FILE_DEICTIC_RE.search(text):
             return True
+        if self._OPEN_THREAD_EMAIL_DEICTIC_RE.search(text):
+            return True
+        if len(text) > self._OPEN_THREAD_MAX_CURRENT_CHARS:
+            return False
         if self._OPEN_THREAD_NUDGE_RE.search(text):
             return True
         if self._OPEN_THREAD_NEW_TOPIC_RE.search(text):
@@ -991,6 +1060,20 @@ class CielCore:
                     p = match.strip().rstrip(".,);]")
                     if p and p not in found:
                         found.append(p)
+            return found[:6]
+        except Exception:
+            return []
+
+    def _recent_gmail_ids_from_history(self) -> list:
+        """Newest-first Gmail message ids from list/dig summaries in THIS session."""
+        try:
+            history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+            found = []
+            for m in reversed(history[-(self._RECENT_TURNS_MAX * 2):]):
+                text = m.content or ""
+                for match in self._RECENT_ENTITY_GMAIL_ID_RE.findall(text):
+                    if match not in found:
+                        found.append(match)
             return found[:6]
         except Exception:
             return []
@@ -1036,8 +1119,35 @@ class CielCore:
 
             clip = self._clip_open_thread_line
             file_deictic = bool(self._OPEN_THREAD_FILE_DEICTIC_RE.search(text))
+            email_deictic = bool(self._OPEN_THREAD_EMAIL_DEICTIC_RE.search(text))
             paths = self._recent_paths_from_history()
+            gmail_ids = self._recent_gmail_ids_from_history()
             ai_waiting = bool(self._OPEN_THREAD_AI_WAIT_RE.search(last_ai))
+
+            # --- Path 2b: dig / open email with a known message_id from THIS session ---
+            if email_deictic and gmail_ids:
+                active = gmail_ids[0]
+                return (
+                    f"Master (prior): {clip(last_human)}\n"
+                    f"Ciel (last): {clip(last_ai)}\n"
+                    f"Active Gmail message_id for dig / 'email đó' (from THIS conversation): "
+                    f"{active}\n"
+                    f"Master (now): {clip(text)}\n"
+                    f"→ Call get_gmail_message(message_id=\"{active}\") now (or "
+                    f"get_gmail_thread if a thread_id is known). Gmail tools ARE loaded — "
+                    f"NEVER claim no permission / no get_gmail_message. Do NOT ask Master "
+                    f"for the id again. Do NOT use stealth_search as a substitute for Gmail."
+                )
+
+            if email_deictic and not gmail_ids:
+                return (
+                    f"Master (prior): {clip(last_human)}\n"
+                    f"Ciel (last): {clip(last_ai)}\n"
+                    f"Master (now): {clip(text)}\n"
+                    f"→ Dig email but no message_id in recent turns. Re-run search_gmail "
+                    f"(subject/from from context or category:primary), then "
+                    f"get_gmail_message on the top match. Never invent 'no Gmail tools'."
+                )
 
             # --- Path 2: deictic file op with a known path from THIS session ---
             if file_deictic and paths:
@@ -1202,6 +1312,7 @@ class CielCore:
         "send_gmail_html_message": "to",
         "reply_to_email": "message_id",
         "send_telegram": None,          # single destination; the tool itself is the key
+        "send_telegram_document": None,  # same inbox; one file send per turn unless new turn
     }
 
     def _outbound_key(self, tool_name: str, tool_args: dict):
@@ -1276,6 +1387,31 @@ class CielCore:
                                   f"stale year in search query bumped to {cur_year}: {tool_args['query']!r} -> {new_q!r}")
                 tool_args = dict(tool_args)
                 tool_args["query"] = new_q
+
+        # TELEGRAM INBOUND PROTECT: never write/append into telegram_uploads unless the
+        # Master explicitly asks to overwrite that upload. Found live: write-safeguard
+        # + "đã lưu tại" false positive clobbered the just-downloaded file with a summary.
+        if tool_name in ("write_file", "append_file") and isinstance(tool_args.get("filename"), str):
+            _fn_norm = tool_args["filename"].replace("\\", "/").lower()
+            if "telegram_uploads/" in _fn_norm or _fn_norm.startswith("telegram_uploads"):
+                explicit = bool(re.search(
+                    r"ghi\s*đè\s*(?:file\s*)?(?:upload|telegram)|overwrite\s+(?:the\s+)?upload|"
+                    r"sửa\s+(?:file\s+)?(?:trong\s+)?telegram_uploads",
+                    user_input or "",
+                    re.IGNORECASE,
+                ))
+                if not explicit:
+                    self._log_thought(
+                        "SAFETY", "telegram_upload_write_blocked",
+                        f"{tool_name} to {_fn_norm} blocked — inbound uploads are read-only "
+                        "unless Master explicitly asks to overwrite.",
+                    )
+                    return (
+                        f"[SKIPPED] Không ghi đè file inbound Telegram "
+                        f"(`{tool_args['filename']}`). Đọc bằng read_file/read_document/"
+                        f"describe_image_file; nếu cần lưu báo cáo, ghi ra agent_output/ "
+                        f"hoặc path Master chỉ định (không phải telegram_uploads/)."
+                    )
 
         # NO-OVERWRITE REQUEST: write_file's own contract is "create or completely
         # overwrite" — it has no refuse-if-exists mode, so honoring "đừng ghi đè, tạo
@@ -1552,7 +1688,10 @@ class CielCore:
         # on GDP, inflation and risks"). Those tools get a completeness rule instead;
         # every other tool keeps the terse formatting (also keeps latency down, since
         # generation time scales with output length).
-        _RETRIEVAL_TOOLS = {"stealth_search", "smart_scrape", "read_document"}
+        _RETRIEVAL_TOOLS = {
+            "stealth_search", "smart_scrape", "read_document",
+            "search_gmail", "get_gmail_message", "get_gmail_thread",
+        }
         if tool_name in _RETRIEVAL_TOOLS:
             lead_line = ("Turn this tool output into a clear, information-dense answer.\n")
             rule_one = (
@@ -1637,11 +1776,18 @@ class CielCore:
     _EMAIL_BODY_CAP_DIGEST = 150
 
     def _compact_email_result(self, text: str) -> str:
-        """Parse email JSON, strip HTML bodies, truncate each to fit the result size."""
+        """Parse email JSON or formatted search_gmail blocks; keep ALL hits visible.
+
+        After gmail_ops wraps search as prose with `message_id:` lines, the old
+        JSON-only path fell through to text[:2000] and silently dropped emails 2–N
+        (live P0.3: list max_results=5 but Worker only saw Render).
+        """
+        if not text:
+            return text
         try:
             emails = json.loads(text)
             if not isinstance(emails, list):
-                return self._strip_html(text)[:2000]
+                return self._strip_html(text)[:8000]
 
             per_body_cap = self._EMAIL_BODY_CAP_SINGLE if len(emails) <= 1 else self._EMAIL_BODY_CAP_DIGEST
             compact = []
@@ -1649,13 +1795,44 @@ class CielCore:
                 body_raw = em.get("body", "")
                 body_clean = self._strip_html(body_raw)[:per_body_cap]
                 compact.append({
-                    "sender": em.get("sender", ""),
+                    "id": em.get("id") or em.get("message_id") or "",
+                    "sender": em.get("sender") or em.get("from") or "",
                     "subject": em.get("subject", ""),
                     "body": body_clean,
                 })
             return json.dumps(compact, ensure_ascii=False, indent=1)
         except (json.JSONDecodeError, TypeError):
-            return self._strip_html(text)[:2000]
+            pass
+
+        # Formatted multi-block from skills.external.gmail_ops._format_gmail_search_results
+        if re.search(r"\[\d+\]\s*message_id:", text):
+            parts = re.split(r"\n(?=\[\d+\]\s*message_id:)", text.strip())
+            n = len(parts)
+            per_cap = self._EMAIL_BODY_CAP_SINGLE if n <= 1 else max(self._EMAIL_BODY_CAP_DIGEST, 220)
+            out = []
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                # Soft-cap body line only; keep header lines (id/from/subject)
+                lines = p.splitlines()
+                kept = []
+                body_budget = per_cap
+                for ln in lines:
+                    if re.match(r"\s*body\s*:", ln, re.I):
+                        prefix, _, rest = ln.partition(":")
+                        rest = rest.strip()
+                        if len(rest) > body_budget:
+                            rest = rest[:body_budget] + "…"
+                        kept.append(f"{prefix}: {rest}")
+                    else:
+                        kept.append(ln)
+                out.append("\n".join(kept))
+            joined = "\n\n".join(out)
+            # Hard ceiling so Worker still sees many short items
+            return joined[:10000] if len(joined) > 10000 else joined
+
+        return self._strip_html(text)[:8000]
 
     def _format_fact_result(self, tool_name: str, result_text: str, user_input: str = "") -> str:
         """Convert memory vault tool output into clean user-facing text.
@@ -2221,16 +2398,21 @@ class CielCore:
         """
         # Separate the send step if present (usually the last step for email requests).
         # Supports plain send_gmail_message and rich send_gmail_html_message.
+        # Also separate send_telegram (same "synthesize then deliver" shape — live
+        # 2026-08-06: Brain planned only read_file while user asked "gửi … qua Telegram").
         # Also separate a DEFERRED WRITE step: a write_file/append_file whose content
         # is a synthesis marker — it must run AFTER the report is synthesized so the
         # file receives the real report, not the placeholder.
         send_tool = None
+        telegram_tool = None
         deferred_write = None
         other_tools = []
         for t in tools:
             name = t.get("tool_name")
             if name in ("send_gmail_message", "send_gmail_html_message"):
                 send_tool = t
+            elif name == "send_telegram":
+                telegram_tool = t
             elif name in ("write_file", "append_file") and _has_unsynthesized_placeholder(str(t.get("tool_args", {}).get("content", ""))):
                 deferred_write = t
             else:
@@ -2378,6 +2560,25 @@ RULES:
             else:
                 formatted = formatted.rstrip() + "\n\n[EMAIL] Report prepared but NOT confirmed sent (no Message Id returned)."
 
+        # Telegram: same synthesize-then-send as email (plain text, capped length).
+        if telegram_tool:
+            tg_args = dict(telegram_tool.get("tool_args") or {})
+            # Prefer short body for chat app; keep MARKER/facts from synthesis
+            body = (report_body or "").strip()
+            if len(body) > 3500:
+                body = body[:3490] + "…"
+            tg_args["message"] = body or tg_args.get("message") or "(empty report)"
+            log.tool("Re-executing send_telegram with synthesized content")
+            tg_res = self.execute_tool(
+                "send_telegram", tg_args, response_hint=response_hint, user_input=user_input
+            )
+            self._log_thought("TOOL", "result_send_telegram", tg_res)
+            results.append(f"--- Output from send_telegram ---\n{tg_res}")
+            if "successfully" in (tg_res or "").lower() or "message_id=" in (tg_res or "").lower():
+                formatted = formatted.rstrip() + "\n\n[TELEGRAM] Sent successfully."
+            else:
+                formatted = formatted.rstrip() + f"\n\n[TELEGRAM] Not confirmed: {tg_res}"
+
         return formatted
 
     # A claim that the mail has NOT gone out. Matched by INTENT (a negation next to a
@@ -2513,11 +2714,18 @@ RULES:
 
         return result
 
-    # Inspection tools eligible for the memory-fallback below. All are also in
-    # _SKIP_SELF_CORRECTION, which is precisely why they need this cheaper net:
-    # their results come back verbatim with no "did this actually answer the
-    # question?" evaluation at all.
-    _MEMORY_FALLBACK_TOOLS = {"list_workspace", "read_file", "get_file_info"}
+    # Inspection tools eligible for the memory-fallback below. list_workspace /
+    # read_file / get_file_info sit in _SKIP_SELF_CORRECTION (raw results, no eval).
+    # execute_shell_command + git_* are NOT skip-listed, but the Brain still often
+    # routes "what languages for my secret project?" to git ls-files / shell — a
+    # verify-first instinct that returns a repo dump unrelated to the personal fact
+    # sitting in RAG (reproduced by test_rag_memory + smoke after flood). Those tools
+    # need the same net after self-correction: if the dump shares no content words
+    # with the question and recalled memory does, answer from RAG (labeled unverified).
+    _MEMORY_FALLBACK_TOOLS = {
+        "list_workspace", "read_file", "get_file_info",
+        "execute_shell_command", "git_status", "git_diff", "git_list_repos",
+    }
 
     _QUESTION_MARKERS = (
         "?", "what ", "which ", "who ", "when ", "where ", "why ", "how ",
@@ -2936,6 +3144,12 @@ RULES:
         r"\blast\s+(time|week|month|year)\b", r"\byesterday\b", r"\bpreviously\b",
         r"\bearlier\s+(you|we|i)\b", r"\byou\s+mentioned\b", r"\bwe\s+(discussed|talked\s+about)\b",
         r"\bin\s+(our\s+)?(the\s+)?previous\s+conversation\b",
+        # Personal / project memory (test_rag_memory amnesia question and similar):
+        # "What languages are we using for my secret project?" is not "yesterday"
+        # wording but clearly refers to something stated earlier in the relationship.
+        r"\bsecret\s+project\b", r"\bmy\s+secret\b", r"\bour\s+secret\b",
+        r"\blanguages?\s+(are\s+we|we\s+are|for\s+(my|our|the))\b",
+        r"d[uự]\s*[aá]n\s+b[ií] mật", r"project\s+b[ií] mật",
     )
 
     @staticmethod
@@ -3346,7 +3560,17 @@ RULES:
                 prefer_file = bool(
                     self._OPEN_THREAD_FILE_DEICTIC_RE.search(user_input or "")
                 )
-                if prefer_google:
+                prefer_email = bool(
+                    self._OPEN_THREAD_EMAIL_DEICTIC_RE.search(user_input or "")
+                )
+                if prefer_email:
+                    hint_line = (
+                        " Prefer get_gmail_message (or get_gmail_thread) with the Active "
+                        "Gmail message_id / RECENT ENTITIES gmail_message_id. Gmail tools "
+                        "ARE available — never invent 'no permission' or use stealth_search "
+                        "instead of reading the mailbox."
+                    )
+                elif prefer_google:
                     hint_line = (
                         " Prefer tool stealth_search (Google/live web) for this nudge — "
                         "do not claim search is unavailable."
@@ -3537,6 +3761,24 @@ RULES:
                         f"write step — promoted to multi_tool so the write-step safeguard can append it.",
                     )
 
+            # Telegram deliver: "đọc file … rồi gửi tóm tắt qua Telegram" was planned as
+            # lone read_file (SKIP_SELF_CORRECTION) — Master never got the TG message.
+            # Promote so multi_tool can append send_telegram after data tools.
+            if action == "tool":
+                _tn = decision.get("tool_name", "")
+                if _tn != "send_telegram" and _has_telegram_send_intent(user_input):
+                    decision = dict(decision)
+                    decision["action"] = "multi_tool"
+                    decision["tools"] = [{
+                        "tool_name": _tn,
+                        "tool_args": decision.get("tool_args", {}),
+                    }]
+                    action = "multi_tool"
+                    self._log_thought(
+                        "BRAIN", "tool_promoted_for_telegram",
+                        f"Single-tool plan ({_tn}) had Telegram-send intent — promoted to multi_tool.",
+                    )
+
             # TIER-1 LOOP REACHABILITY: a result-dependent request ("check X, and if
             # it's clean, commit") is exactly the shape a flat plan cannot express, so
             # the Brain typically under-scopes it to the first step alone — a single
@@ -3600,13 +3842,11 @@ RULES:
                 # Skip for trivially-correct tools to save Brain API calls
                 if tool_name not in self._SKIP_SELF_CORRECTION:
                     response = self._self_correct(user_input, tool_name, tool_args, response)
-                else:
-                    # Skip-listed inspection tools get no evaluation pass at all, so a
-                    # memory question routed to e.g. list_workspace used to return the
-                    # raw listing as the "answer". Cheap deterministic net (Worker-only,
-                    # no Brain call) — see _memory_fallback_for_inspection.
-                    response = self._memory_fallback_for_inspection(
-                        user_input, recalled, tool_name, response)
+                # Memory fallback after tool (+ optional self-correct). Covers both
+                # skip-listed inspection tools and shell/git misroutes that return a
+                # dump unrelated to a personal/memory question while RAG has the fact.
+                response = self._memory_fallback_for_inspection(
+                    user_input, recalled, tool_name, response)
 
             elif action == "code":
                 task = decision.get("task", user_input)
@@ -3662,6 +3902,19 @@ RULES:
                     }]
                     self._log_thought("BRAIN", "multi_tool_write_step_added",
                                       f"Plan was missing a write step despite explicit target path — appended write_file to {_write_path}.")
+
+                has_tg_step = any(t.get("tool_name") == "send_telegram" for t in tools)
+                if not has_tg_step and _has_telegram_send_intent(user_input):
+                    tools = list(tools) + [{
+                        "tool_name": "send_telegram",
+                        "tool_args": {
+                            "message": "[REPORT_CONTENT_TO_BE_SYNTHESIZED]",
+                        },
+                    }]
+                    self._log_thought(
+                        "BRAIN", "multi_tool_telegram_step_added",
+                        "Plan was missing send_telegram despite Telegram intent — appended it.",
+                    )
 
                 response = self.execute_multi_tool(tools, hint, user_input,
                                                    model_requested=bool(decision.get("needs_followup")))
