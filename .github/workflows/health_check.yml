@@ -138,6 +138,7 @@ jobs:
             -e SAFETY_OPEN=true \
             -e VILAO_SAFETY_BYPASS=true \
             -e DISABLE_SAFETY_GATE=false \
+            -e AGENT_PARALLEL_ENABLED=false \
             -e DISABLED_SKILL_MODULES=vision_ops \
             -e TELEGRAM_BOT_TOKEN \
             -e TELEGRAM_CHAT_ID \
