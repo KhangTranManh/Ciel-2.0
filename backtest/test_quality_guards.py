@@ -11,6 +11,13 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+# This module is a no-network unit suite. CielCore normally auto-loads every
+# skill, and external integrations may contact OAuth/provider services during
+# that load. These guards test only core/internal behavior, so exclude external
+# packs before agent_system.config is first imported below.
+_disabled_skills = {s.strip() for s in os.environ.get("DISABLED_SKILL_MODULES", "").split(",") if s.strip()}
+_disabled_skills.update({"github_ops", "gmail_ops", "telegram_ops", "trading_ops", "web_agent_ops"})
+os.environ["DISABLED_SKILL_MODULES"] = ",".join(sorted(_disabled_skills))
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

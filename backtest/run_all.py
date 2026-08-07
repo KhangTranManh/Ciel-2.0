@@ -14,6 +14,7 @@ Exit code 0 only if every suite that was run reported success.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -21,6 +22,12 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = Path(__file__).resolve().parent / "logs"
@@ -141,6 +148,24 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
     print(f"       $ {' '.join(cmd)}")
     print("=" * 72)
     try:
+        child_env = os.environ.copy()
+        if suite.tier == "unit":
+            # Unit suites stub their tool calls and must stay offline. Loading an
+            # external pack can otherwise contact OAuth/provider services before
+            # a test has installed its stub, turning a deterministic guard into a
+            # network timeout. Live suites intentionally retain the real catalog.
+            disabled = {
+                item.strip()
+                for item in child_env.get("DISABLED_SKILL_MODULES", "").split(",")
+                if item.strip()
+            }
+            disabled.update({"github_ops", "gmail_ops", "telegram_ops", "trading_ops", "web_agent_ops"})
+            child_env["DISABLED_SKILL_MODULES"] = ",".join(sorted(disabled))
+            # RAG tests may exercise the lazy sentence-transformer loader. Unit
+            # regression must use an already cached model or the graceful fallback,
+            # never spend minutes retrying a Hugging Face download.
+            child_env["HF_HUB_OFFLINE"] = "1"
+            child_env["TRANSFORMERS_OFFLINE"] = "1"
         proc = subprocess.run(
             cmd,
             cwd=str(ROOT),
@@ -149,6 +174,7 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=child_env,
         )
         out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         # Stream a short tail so the user sees progress without drowning

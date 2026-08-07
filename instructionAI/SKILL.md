@@ -385,7 +385,9 @@ model.
     builder, telegram_uploads write-block) and the existing unit/live suites wired
     into `python -m backtest.run_all`. Do not reintroduce one-off smoke modules for
     every feature; fold pure guards into unit tests and keep live coverage in
-    integration / hard_special when needed.
+    integration / hard_special when needed. `live_conversation_test.py` is the
+    exploratory adaptive harness; its goal generator reads ToolManager's live
+    auto-discovered catalog, not the removed fixed-sample module.
 
 31. **Honest tool failures (P1.1) and outbound sanitize (P1.4) are product rules, not
     optional polish.** Partial/failed tools must surface error/empty honestly — never

@@ -76,10 +76,27 @@ from langchain_openai import ChatOpenAI  # noqa: E402
 from core.llm_connector import CielCore  # noqa: E402
 from core.tool_manager import ToolManager  # noqa: E402
 from backtest._sandbox import isolate, new_sandbox  # noqa: E402
-from backtest.generate_test_samples import get_tool_catalog  # noqa: E402
 
 DEFAULT_REPORT_DIR = ROOT / "backtest" / "logs"
 THOUGHTS_LOG = ROOT / "ciel_data" / "logs" / "thoughts.log"
+
+
+def get_tool_catalog() -> list[dict[str, str]]:
+    """Return the live tool manifest for goal generation.
+
+    The former generate_test_samples module was deliberately removed because
+    fixed samples are not maintained regression coverage. This harness still
+    needs current tool names/descriptions, so it reads ToolManager's
+    auto-discovered catalog only when a live run actually starts.
+    """
+    manager = ToolManager()
+    return [
+        {
+            "name": str(getattr(tool, "name", "")),
+            "description": str(getattr(tool, "description", "")),
+        }
+        for tool in manager.get_tools()
+    ]
 
 
 def _build_teacher_call() -> Callable[[str, str], str]:

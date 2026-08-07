@@ -33,6 +33,7 @@ from .task_state import TaskStore
 from .user_model import UserModel, assess_preference, learn_from_turn, estimate_tokens
 from .context import (ContextAssembler, P_REQUEST, P_CRITICAL, P_IMPORTANT, P_HELPFUL)
 from .permissions import PermissionPolicy, Decision, DeferredStore
+from .outbound import OUTBOUND_KEYS, delivery_key, plaintext_to_html, recipients_lowered
 from . import rag_manager
 
 import sys
@@ -1351,23 +1352,11 @@ class CielCore:
     # real person, not a retry. Keyed by RECIPIENT, not by the full argument signature:
     # the whole problem is that two mechanisms compose *different* subjects and bodies
     # for the same intended message, so a signature over all args would never match.
-    _OUTBOUND_KEYS = {
-        "send_gmail_message": "to",
-        "send_gmail_html_message": "to",
-        "reply_to_email": "message_id",
-        "send_telegram": None,          # single destination; the tool itself is the key
-        "send_telegram_document": None,  # same inbox; one file send per turn unless new turn
-    }
+    _OUTBOUND_KEYS = OUTBOUND_KEYS
 
     def _outbound_key(self, tool_name: str, tool_args: dict):
         """Identity of the message this call would deliver, or None if not outbound."""
-        if tool_name not in self._OUTBOUND_KEYS:
-            return None
-        arg = self._OUTBOUND_KEYS[tool_name]
-        if arg is None:
-            return tool_name
-        target = str((tool_args or {}).get(arg) or "").strip().lower()
-        return f"{tool_name}:{target}" if target else None
+        return delivery_key(tool_name, tool_args)
 
     def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "",
                      _raw_out: list = None) -> str:
@@ -3250,9 +3239,7 @@ RULES:
         Normalize to a lowercase list so membership checks don't compare an address
         string against a Python list's str() representation (always False, which
         silently made the guard think ANY list-valued `to` needed overriding)."""
-        if isinstance(to_val, list):
-            return [str(x).strip().lower() for x in to_val if str(x).strip()]
-        return [str(to_val).strip().lower()] if str(to_val or "").strip() else []
+        return recipients_lowered(to_val)
 
     def _resolve_referential_recipient(self, tool_name: str, tool_args: dict,
                                        user_input: str) -> dict:
@@ -3449,25 +3436,7 @@ RULES:
     def _plaintext_to_html(text: str) -> str:
         """Render a clean plain-text/markdown email body into simple HTML so line
         breaks and paragraphs survive (send_gmail_message transmits as text/html)."""
-        import html as _html
-        if not text:
-            return text
-        # Already HTML? leave it (e.g. a dashboard body).
-        if re.search(r"<(?:p|br|div|table|h[1-6]|ul|ol)\b", text, re.IGNORECASE):
-            return text
-        esc = _html.escape(text)
-        esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)  # markdown bold
-        blocks = re.split(r"\n\s*\n", esc.strip())
-        paras = []
-        for b in blocks:
-            b = b.strip().replace("\n", "<br>")
-            if b:
-                paras.append(f'<p style="margin:0 0 12px">{b}</p>')
-        inner = "\n".join(paras)
-        return (
-            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
-            f'line-height:1.55;color:#222">{inner}</div>'
-        )
+        return plaintext_to_html(text)
 
     def process(self, user_input: str) -> str:
         """Full pipeline: recall → route → execute → respond."""

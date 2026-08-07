@@ -1,7 +1,0 @@
-Đánh giá thị trường:
-
-- **XAU/USD:** 4.038,45 USD/ounce; dữ liệu tham khảo dao động khoảng 4.036,38–4.058,8 USD/ounce. Xu hướng ngắn hạn nghiêng nhẹ về tăng nhưng biến động rất mạnh và tín hiệu còn phân hóa. Khảo sát ghi nhận 47% kỳ vọng tăng, 30% dự báo giảm, 23% đi ngang.
-- **BTC/USD:** 63.820,01 USD, tăng 0,520%; biên độ trong ngày 62.300–64.059,75 USD. Xu hướng kỹ thuật đang giảm, RSI trung tính; rủi ro chính là giá nằm dưới MA30.
-- **Đánh giá chung:** Vàng có triển vọng tích cực hơn nhưng rủi ro điều chỉnh cao. BTC vẫn chịu áp lực giảm; nên thận trọng với các vị thế mua đuổi.
-
-Chưa thể xác nhận báo cáo đã được ghi thành công vào tệp yêu cầu.

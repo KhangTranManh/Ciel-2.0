@@ -22,6 +22,12 @@ import sys
 from pathlib import Path
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
+# The unified unit runner disables external packs. This suite needs Gmail tool
+# *names* to reach CielCore's outbound guard, but never a real Gmail client.
+# Re-enable the module before config loads, then replace its factory below.
+_disabled_skills = {s.strip() for s in os.environ.get("DISABLED_SKILL_MODULES", "").split(",") if s.strip()}
+_disabled_skills.discard("gmail_ops")
+os.environ["DISABLED_SKILL_MODULES"] = ",".join(sorted(_disabled_skills))
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -31,6 +37,26 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.llm_connector import CielCore     # noqa: E402
+from langchain_core.tools import StructuredTool  # noqa: E402
+from skills.external import gmail_ops  # noqa: E402
+
+
+def _stub_gmail_tool():
+    """Placeholder only; make_core replaces ToolManager.execute_tool before use."""
+    return "Message Id: STUB-1"
+
+
+def _stub_gmail_factory():
+    return {
+        "tools": [
+            StructuredTool.from_function(_stub_gmail_tool, name=name, description="Unit-test Gmail stub")
+            for name in ("send_gmail_message", "send_gmail_html_message", "reply_to_email")
+        ],
+        "prompt": "",
+    }
+
+
+gmail_ops.get_gmail_tools = _stub_gmail_factory
 
 _passed, _failed = 0, []
 

@@ -29,6 +29,8 @@ Ciel-2.0/
 ├── core/                          # Main orchestration layer — every request goes through this
 │   ├── agent_loop.py              # Thin wrapper → CielCore.process()
 │   ├── llm_connector.py           # CielCore: central pipeline orchestrator
+│   ├── outbound.py                # Pure outbound delivery identity, recipient normalization,
+│   │                                # and text-to-HTML helpers; no LLM/tool/persistence dependency
 │   ├── router.py                  # Brain-based intent classification (4 actions)
 │   ├── middleware.py              # Middleware tier hookup (agent_system/models/middleware.py does the work)
 │   ├── recovery_manager.py        # Multi-attempt self-healing (code fix + param fix + skip-list)
