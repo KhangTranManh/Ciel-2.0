@@ -104,6 +104,15 @@ path does; it is a second, narrower enforcement point specific to the one channe
 
 ## Outbound Idempotence — one delivery per recipient per turn
 
+For an HTML report, `send_telegram_document` is the terminal Telegram delivery. The
+workflow safeguard must not append `send_telegram`, and `core/telegram_interface.py`
+must not relay the full synthesized response after a successful attachment. This avoids
+an attachment followed by duplicate report text.
+
+Telegram's inbound upload note (`[File/Ảnh Master vừa gửi qua Telegram, ...]`) is
+transport metadata, not a request to send a reply through Telegram. Intent detection
+strips it before deciding whether to append an outbound delivery step.
+
 `execute_tool` suppresses a second outbound send (`send_gmail_message`,
 `send_gmail_html_message`, `reply_to_email`, `send_telegram`,
 `send_telegram_document`) to the same recipient/channel within one request.

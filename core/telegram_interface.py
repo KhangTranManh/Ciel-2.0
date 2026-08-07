@@ -227,6 +227,10 @@ class TelegramInterface:
                 response = self.ciel.run_step(text)
             except Exception as e:
                 response = f"[Ciel Fatal] {e}"
+            # The attachment and its caption are already visible in this chat. Do not
+            # repost the synthesized report as a second message below it.
+            if getattr(self.ciel.core, "_telegram_delivery_sent_this_turn", False):
+                continue
             self._send_message(response)
 
     def start(self):

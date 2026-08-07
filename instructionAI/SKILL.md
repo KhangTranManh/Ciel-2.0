@@ -232,6 +232,10 @@ model.
 ### Two fixes found by reading real transcripts, not test output
 
 20. **One delivery per recipient per turn.** `execute_tool` suppresses a second
+
+    An HTML `send_telegram_document` is the terminal Telegram delivery: the plain-text
+    safeguard must not append `send_telegram`, and the Telegram interface must not repost
+    the full summary under the attachment.
     outbound send (`send_gmail_message`, `send_gmail_html_message`, `reply_to_email`,
     `send_telegram`, `send_telegram_document`) to the same recipient/channel within one
     request. Exists because two independent mechanisms — the workflow safeguard and the
@@ -314,7 +318,10 @@ model.
     Telegram does not render full report HTML in the chat bubble). Analysis HTML:
     `build_analysis_report_html` in `skills/internal/report_ops.py` + template
     `email_template/analysis_report.html` — prefer `output_path=agent_output/….html`
-    then `send_telegram_document`. `describe_image_file` is NOT the live-screen tools
+    (when omitted, the tool derives `agent_output/<source>_summary.html`) then
+    `send_telegram_document`. A short reply such as "cứ gửi qua đây" after a path
+    clarification confirms this attachment workflow; it is not a new ambiguous chat turn.
+    `describe_image_file` is NOT the live-screen tools
     (`vision_act`/`vision_describe`); it opens an existing FILE. Bundled in
     `vision_ops.py`, so `DISABLED_SKILL_MODULES=vision_ops` turns it off too.
 

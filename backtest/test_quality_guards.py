@@ -48,10 +48,44 @@ def test_write_intent_telegram_note():
         == "agent_output/report.txt",
     )
     check("telegram send intent detected", _has_telegram_send_intent(note))
+    metadata_only = (
+        "[Ảnh Master vừa gửi qua Telegram, đã lưu tại: "
+        "ciel_workspace/telegram_uploads/20260806_x.jpg]\n"
+        "Phân tích ảnh này dùm t."
+    )
+    check(
+        "inbound Telegram metadata alone is not send intent",
+        not _has_telegram_send_intent(metadata_only),
+    )
     check(
         "plain chat is not telegram-send intent",
         not _has_telegram_send_intent("xin chào Ciel"),
     )
+    from core.llm_connector import _has_telegram_delivery_step
+    check(
+        "HTML document counts as an existing Telegram delivery",
+        _has_telegram_delivery_step([{"tool_name": "send_telegram_document", "tool_args": {}}]),
+    )
+    check(
+        "ordinary tools do not count as Telegram delivery",
+        not _has_telegram_delivery_step([{"tool_name": "read_document", "tool_args": {}}]),
+    )
+
+
+def test_scrape_url_extraction():
+    print("\n[1b] Smart scrape URL extraction")
+    from skills.external.web_agent_ops import _article_url_from_scrape_input
+
+    search_block = (
+        "Search Results for 'news':\n"
+        "1. Title: First\nURL: https://example.com/first-story\n"
+        "2. Title: Second\nURL: https://example.com/second-story"
+    )
+    check("extracts first URL from a search block",
+          _article_url_from_scrape_input(search_block) == "https://example.com/first-story")
+    check("keeps a direct article URL",
+          _article_url_from_scrape_input("https://example.com/a") == "https://example.com/a")
+    check("rejects non-URL scrape input", _article_url_from_scrape_input("Search Results only") == "")
 
 
 def test_sanitize_outbound():
@@ -121,6 +155,15 @@ def test_analysis_html_builder():
     check("writes file", path.exists(), str(path))
     html = path.read_text(encoding="utf-8") if path.exists() else ""
     check("filled template no {{ leftover", "{{" not in html and "Quality guard" in html)
+    default_msg = build_analysis_report_html(
+        title="Default path",
+        source_path="ciel_workspace/telegram_uploads/Tran_Manh_Khang_dev_CV.pdf",
+        source_type="pdf",
+        summary="Summary line",
+        key_points="- a",
+    )
+    default_path = root / "agent_output" / "Tran_Manh_Khang_dev_CV_summary.html"
+    check("missing output_path uses agent_output default", default_path.exists(), default_msg)
     refuse = build_analysis_report_html(
         title="x",
         source_path="a",
@@ -132,6 +175,8 @@ def test_analysis_html_builder():
     check("refuses telegram_uploads output", "refuse" in refuse.lower() or "Error" in refuse)
     if path.exists():
         path.unlink()
+    if default_path.exists():
+        default_path.unlink()
 
 
 def test_telegram_upload_write_block():
@@ -156,6 +201,7 @@ def main():
     print("QUALITY GUARDS (unit — former smoke coverage)")
     print("=" * 72)
     test_write_intent_telegram_note()
+    test_scrape_url_extraction()
     test_sanitize_outbound()
     test_gmail_format_digest()
     test_analysis_html_builder()

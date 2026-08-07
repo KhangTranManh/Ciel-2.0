@@ -159,16 +159,38 @@ _WRITE_VERB_RE = re.compile(
     r"\b(viết|ghi|write|save|lưu|tạo|create|make|generate|note|tao file|tạo file)\b", re.IGNORECASE)
 
 
+def _strip_telegram_inbound_metadata(text: str) -> str:
+    """Remove the transport note prepended to a Telegram file/photo message."""
+    return re.sub(
+        r"\[(?:File|Ảnh)\s+Master\s+vừa\s+gửi[^\]]*\]",
+        " ",
+        text or "",
+        flags=re.IGNORECASE,
+    )
+
+
 def _has_telegram_send_intent(text: str) -> bool:
     """True when Master asked to deliver a result via Telegram (not mere mention)."""
+    # The inbound transport note literally says "gửi qua Telegram". It describes how
+    # the file arrived; it is never an instruction to send the result again.
+    cleaned = _strip_telegram_inbound_metadata(text)
     return bool(re.search(
         r"(?:gửi|send|báo|notify|thông\s*báo).{0,50}telegram"
         r"|qua\s+telegram"
         r"|telegram\s+(?:cho|to\s+me|cho\s+t)"
         r"|send_telegram",
-        text or "",
+        cleaned,
         re.IGNORECASE,
     ))
+
+
+def _has_telegram_delivery_step(tools: list) -> bool:
+    """True when a plan already delivers a message or attachment to Telegram."""
+    return any(
+        isinstance(step, dict)
+        and step.get("tool_name") in ("send_telegram", "send_telegram_document")
+        for step in (tools or [])
+    )
 
 
 def _has_write_intent(text: str):
@@ -189,12 +211,7 @@ def _has_write_intent(text: str):
     into telegram_uploads.
     """
     raw = text or ""
-    cleaned = re.sub(
-        r"\[(?:File|Ảnh)\s+Master\s+vừa\s+gửi[^\]]*\]",
-        " ",
-        raw,
-        flags=re.IGNORECASE,
-    )
+    cleaned = _strip_telegram_inbound_metadata(raw)
     cleaned = re.sub(
         r"đã\s+lưu\s+tại\s*:[^\n\]]*",
         " ",
@@ -431,6 +448,7 @@ class CielCore:
         # a duplicate when one request produces two deliveries. Guarded by _log_lock,
         # which parallel step workers already share.
         self._sent_this_turn = set()
+        self._telegram_delivery_sent_this_turn = False
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
         # where preferences actually change the output. It renders to "" while empty, so
@@ -973,7 +991,8 @@ class CielCore:
         r"|which\s+city|where\s+(?:do|should|is)|what\s+(?:city|location)"
         r"|muốn\s+(?:xem|tra|làm)\s+gì|Master\s+muốn|file\s*nào|which\s+file"
         r"|chưa\s+(?:lấy|tra|đọc|có)\s+được"
-        r"|could\s+not|couldn't|unable\s+to\s+(?:fetch|get|retrieve)",
+        r"|đường\s*dẫn|lưu\s+(?:file|báo\s*cáo)|output[_\s-]?path|"
+        r"could\s+not|couldn't|unable\s+to\s+(?:fetch|get|retrieve)",
         re.IGNORECASE,
     )
     # Current message is a nudge / slot fill, not a self-contained new request.
@@ -1002,6 +1021,13 @@ class CielCore:
         r"quan\s+trọng\s+nhất\s+vừa|vừa\s+liệt\s+kê|"
         r"that\s+email|this\s+email|the\s+(?:same\s+)?email|"
         r"read\s+(?:that|the|this)\s+(?:email|message|mail))",
+        re.IGNORECASE,
+    )
+    # A short acknowledgement of a just-requested report delivery.  It is intentionally
+    # narrower than generic "gửi" so an unrelated message never inherits an old task.
+    _OPEN_THREAD_REPORT_DELIVERY_RE = re.compile(
+        r"(?:cứ\s+)?(?:gửi|send)(?:\s+\S+){0,4}\s+(?:qua\s+(?:đây|telegram)|lại)"
+        r"|(?:cứ\s+)?(?:gửi|send)\s+(?:đi|nó|file\s+(?:đó|này))",
         re.IGNORECASE,
     )
     # Gmail API ids as shown after list formatting / Worker summaries.
@@ -1123,6 +1149,24 @@ class CielCore:
             paths = self._recent_paths_from_history()
             gmail_ids = self._recent_gmail_ids_from_history()
             ai_waiting = bool(self._OPEN_THREAD_AI_WAIT_RE.search(last_ai))
+            report_delivery = bool(self._OPEN_THREAD_REPORT_DELIVERY_RE.search(text))
+
+            # The prior exchange already names the source and asks for an HTML report;
+            # "cứ gửi qua đây" accepts delivery, it is not a new ambiguous request.
+            # Ground the router in the source path and the safe output convention.
+            if report_delivery and "html" in (last_human + " " + last_ai).lower() and paths:
+                active = paths[0]
+                return (
+                    f"Master (prior): {clip(last_human)}\n"
+                    f"Ciel (last): {clip(last_ai)}\n"
+                    f"Active source file for the HTML report (from THIS conversation): {active}\n"
+                    f"Master (now): {clip(text)}\n"
+                    "→ This confirms delivery of the requested HTML report. Do NOT ask for "
+                    "an output path. Read the source if its facts are not in this turn; build the "
+                    "report at agent_output/<source>_summary.html (or omit output_path for the "
+                    "safe default), then send it with send_telegram_document. Never write into "
+                    "telegram_uploads/ and do not substitute plain send_telegram for the attachment."
+                )
 
             # --- Path 2b: dig / open email with a known message_id from THIS session ---
             if email_deictic and gmail_ids:
@@ -1646,6 +1690,8 @@ class CielCore:
         if out_key:
             with self._log_lock:
                 self._sent_this_turn.add(out_key)
+        if tool_name in ("send_telegram", "send_telegram_document"):
+            self._telegram_delivery_sent_this_turn = True
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
@@ -3433,6 +3479,7 @@ RULES:
         # A new request may legitimately mail the same person again.
         with self._log_lock:
             self._sent_this_turn = set()
+            self._telegram_delivery_sent_this_turn = False
 
         # TIER 7b — learn a durable preference from this turn, if there is one. Placed
         # at the TOP rather than at the end because `process()` has many return points
@@ -3903,7 +3950,7 @@ RULES:
                     self._log_thought("BRAIN", "multi_tool_write_step_added",
                                       f"Plan was missing a write step despite explicit target path — appended write_file to {_write_path}.")
 
-                has_tg_step = any(t.get("tool_name") == "send_telegram" for t in tools)
+                has_tg_step = _has_telegram_delivery_step(tools)
                 if not has_tg_step and _has_telegram_send_intent(user_input):
                     tools = list(tools) + [{
                         "tool_name": "send_telegram",

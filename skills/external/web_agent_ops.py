@@ -351,6 +351,15 @@ RULES OF ENGAGEMENT:
 5. Provide URLs as citations if requested.
 """
 
+
+def _article_url_from_scrape_input(value: str) -> str:
+    """Return one concrete article URL from a direct URL or a search-result block."""
+    raw = (value or "").strip()
+    urls = re.findall(r"https?://[^\s<>\"']+", raw)
+    candidate = (urls[0] if urls else raw).rstrip(".,;:)]}")
+    parsed = urlparse(candidate)
+    return candidate if parsed.scheme in ("http", "https") and parsed.netloc else ""
+
 def get_web_tools() -> dict:
     try:
         tools = []
@@ -576,8 +585,12 @@ def get_web_tools() -> dict:
         def smart_scrape(url: str) -> str:
             """Extract clean Markdown content from any website URL."""
             try:
+                article_url = _article_url_from_scrape_input(url)
+                if not article_url:
+                    return "Scrape Error: smart_scrape needs one concrete http(s) article URL."
+                extracted = article_url != (url or "").strip()
                 # Use Jina Reader API to bypass bot protections and get clean markdown
-                jina_url = f"https://r.jina.ai/{url}"
+                jina_url = f"https://r.jina.ai/{article_url}"
                 headers = {
                     "X-Return-Format": "markdown",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -586,7 +599,8 @@ def get_web_tools() -> dict:
                 
                 if response.status_code == 200:
                     text = response.text
-                    return text[:30000] + ("\n...[Truncated for length]" if len(text) > 30000 else "")
+                    prefix = f"[SMART_SCRAPE] Extracted article URL: {article_url}\n\n" if extracted else ""
+                    return prefix + text[:30000] + ("\n...[Truncated for length]" if len(text) > 30000 else "")
                 else:
                     return f"Failed to scrape URL. Status code: {response.status_code}. The site might have advanced bot protection."
             except Exception as e:
@@ -595,7 +609,8 @@ def get_web_tools() -> dict:
         scrape_tool = StructuredTool.from_function(
             func=smart_scrape,
             name="smart_scrape",
-            description="Read the full content of a webpage. Pass the exact URL returned by stealth_search to read the full article."
+            description="Read the full content of a webpage. Pass one exact article URL from stealth_search. "
+                        "If a planner supplies a search-result block, its first concrete URL is extracted safely."
         )
 
         tools.extend([search_tool, scrape_tool])

@@ -43,7 +43,6 @@ jobs:
             fi
           else
             echo "Gmail credentials not configured on this repo — skipping (expected unless you added GOOGLE_CREDENTIALS_B64)."
-            touch credentials.json   # empty file, never mounted unless it exists (see run step)
           fi
 
       - name: Run health check inside the container
@@ -64,6 +63,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          GMAIL_CREDENTIALS_VOLUME=""
+          if [ -f credentials.json ]; then
+            GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
+          fi
           docker run --rm \
             --name ciel-health-check \
             -e BRAIN_PROVIDER=custom \
@@ -83,7 +86,7 @@ jobs:
             -e TELEGRAM_BOT_TOKEN \
             -e TELEGRAM_CHAT_ID \
             -v "$PWD/ciel_data:/app/ciel_data" \
-            -v "$PWD/credentials.json:/app/credentials.json:ro" \
+            $GMAIL_CREDENTIALS_VOLUME \
             ciel-health-check \
             python -m scripts.health_check
 
@@ -98,6 +101,8 @@ jobs:
       # Runs only if the health check step above succeeded (default GitHub Actions
       # behavior — no explicit `if:` needed). Reuses the exact same image; no rebuild.
       - name: Daily digest (email + news) via Telegram
+        # A Telegram/provider outage must not reclassify a healthy core as unhealthy.
+        continue-on-error: true
         env:
           BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
           CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
@@ -115,6 +120,10 @@ jobs:
           SEARCH_API_KEY: ${{ secrets.SEARCH_API_KEY }}
           API_ENDPOINT: ${{ vars.API_ENDPOINT || 'https://serpapi.com/search?engine=google' }}
         run: |
+          GMAIL_CREDENTIALS_VOLUME=""
+          if [ -f credentials.json ]; then
+            GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
+          fi
           docker run --rm \
             --name ciel-daily-digest \
             -e BRAIN_PROVIDER=custom \
@@ -135,6 +144,6 @@ jobs:
             -e SEARCH_API_KEY \
             -e API_ENDPOINT \
             -v "$PWD/ciel_data:/app/ciel_data" \
-            -v "$PWD/credentials.json:/app/credentials.json:ro" \
+            $GMAIL_CREDENTIALS_VOLUME \
             ciel-health-check \
             python -m scripts.daily_digest

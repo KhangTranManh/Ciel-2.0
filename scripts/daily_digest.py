@@ -94,14 +94,17 @@ def build_digest_request(now: datetime | None = None) -> str:
         f"Ưu tiên bài có Snippet + Published = {today} hoặc {yesterday} từ báo thật.\n"
         f"2) smart_scrape ÍT NHẤT 2 URL bài viết cụ thể (không scrape trang chủ / trang mục). "
         f"Ưu tiên VnExpress, Tuổi Trẻ, Thanh Niên, Reuters, BBC, AP, Nikkei khi có trong kết quả.\n"
-        f"3) Mỗi tin trong bản tin: 1–2 câu nội dung + nguồn + ngày. CẤM liệt kê chỉ title không body.\n"
+        f"3) Mỗi tin trong bản tin: 1 câu nội dung + nguồn + ngày + Link: URL bài báo thật. "
+        f"CẤM liệt kê chỉ title không body.\n"
         f"4) BỎ qua hit kiểu 'Tin thế giới nổi bật trong ngày 15/5' nếu ngày trong title "
         f"không phải {today_vn} hoặc {yesterday_vn} — shell tổng hợp cũ, không phải tin hôm nay.\n"
         f"5) Nếu sau search+scrape vẫn không có nội dung dùng được: viết một dòng "
         f"'Chưa lấy được nội dung tin ngày {today}.' — KHÔNG dump danh sách title rỗng.\n"
         f"\n"
-        f"Trình bày súc tích, có heading ## 1 / ## 2 rõ ràng. "
-        f"Ghi dòng ngày bản tin: {today_vn}."
+        f"FORMAT BẮT BUỘC: plain text gọn, KHÔNG Markdown (`*`, `**`, `#`, bảng, block quote). "
+        f"Dùng tối đa 5 mục email cần chú ý và 4 tin tức; mỗi mục 1–2 dòng. "
+        f"Mỗi tin tức phải có dòng `Link: https://...` lấy đúng từ tool output. "
+        f"Ghi dòng đầu: `Bản tin {today_vn}`."
     )
 
 
@@ -122,7 +125,7 @@ def main() -> int:
         print(digest)
 
         today_vn = _now_master().strftime("%d/%m/%Y")
-        sent = send_telegram_message(f"📰 *Bản tin {today_vn}*\n\n{digest}")
+        sent = send_telegram_message(digest)
         if not sent:
             print("[daily_digest] Telegram not configured or send failed — "
                   "see console output above for the result.")

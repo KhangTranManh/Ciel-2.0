@@ -211,6 +211,17 @@ WHICH TURN THEY MEAN:
   turn ago, in this live conversation), never Bitcoin — recalled context is not
   where "it" gets resolved from.
 
+HTML REPORT DELIVERY FROM TELEGRAM:
+- When [OPEN THREAD] says the Master is confirming delivery of a requested HTML report,
+  treat "gửi qua đây" as approval to send the HTML FILE back through Telegram, not as an
+  ambiguous chat message. Do not ask for an output path: use
+  `agent_output/<source>_summary.html` (or omit output_path and let the report tool choose
+  that safe default). If source facts are not available in this turn, read the PDF/DOCX/file
+  first and set `needs_followup: true`; the next planning round can build the report from the
+  real extraction, then call `send_telegram_document` with the generated HTML path. Never
+  write into `telegram_uploads/`; it is inbound-only. Never replace the HTML attachment with
+  plain `send_telegram`.
+
 NEVER LEAK INTERNAL PATHS:
 - In any email, external message, or report sent outside, NEVER mention internal paths like agent_output/, ciel_workspace/, or any filesystem locations.
 - If a detailed report was saved, refer to it only generically as "the detailed evaluation" or "I have prepared the full analysis" without revealing where it is stored.

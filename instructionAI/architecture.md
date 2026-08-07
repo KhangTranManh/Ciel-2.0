@@ -144,7 +144,11 @@ outbound/Telegram paths. Live suites need API keys and cost real tokens.
 
 **Telegram inbound path (runtime):** download → `ciel_workspace/telegram_uploads/` →
 inbox note with path → Brain routes `read_file` / `read_document` / `describe_image_file`
-→ optional `build_analysis_report_html` + `send_telegram_document`.
+→ optional `build_analysis_report_html` + `send_telegram_document`. The inbound folder
+is read-only for generated reports: when no report destination is named, the builder derives
+`agent_output/<source>_summary.html`. A short delivery acknowledgement such as “cứ gửi qua
+đây” is an open-thread continuation of an HTML-report request, grounded to the active source,
+not a new chat request.
 
 ## Internal Dependency Graph
 

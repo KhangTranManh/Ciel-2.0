@@ -465,6 +465,21 @@ def test_open_thread_for_router():
     check("append-to-that-file opens a thread", bool(note5), note5)
     check("thread grounds the active path",
           "persona_test_note.txt" in (note5 or ""), note5)
+
+    # HTML-report delivery follow-up: an acknowledgement must retain the uploaded
+    # source and route to the HTML attachment workflow, rather than asking for a path.
+    core6 = CielCore()
+    core6.chat_history = ChatMessageHistory()
+    core6.chat_history.add_user_message(
+        "telegram_uploads/Tran_Manh_Khang_dev_CV.pdf, tạo HTML tóm tắt file này")
+    core6.chat_history.add_ai_message("Vui lòng chỉ định đường dẫn lưu file HTML, Master.")
+    core6.chat_history.add_user_message("cứ gửi t qua đây là được")
+    note6 = core6._open_thread_note("cứ gửi t qua đây là được")
+    check("HTML delivery acknowledgement opens a thread", bool(note6), note6)
+    check("HTML delivery grounds source and attachment workflow",
+          "Tran_Manh_Khang_dev_CV.pdf" in note6
+          and "send_telegram_document" in note6
+          and "Do NOT ask for an output path" in note6, note6)
     check("thread forbids claiming tools are missing",
           "ARE loaded" in (note5 or "") or "never claim" in (note5 or "").lower(), note5)
     seen5 = []

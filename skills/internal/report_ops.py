@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html as html_lib
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -81,25 +82,30 @@ def build_analysis_report_html(
         html = html.replace("{{" + k + "}}", v)
 
     out = (output_path or "").strip().replace("\\", "/")
-    if out:
-        if "telegram_uploads" in out.lower():
-            return (
-                "Error: refuse to write analysis HTML into telegram_uploads/. "
-                "Use agent_output/your_report.html"
-            )
-        if not out.startswith("agent_output/") and not out.startswith("ciel_workspace/"):
-            out = f"agent_output/{os.path.basename(out)}"
-        if not out.endswith(".html"):
-            out = out + ".html"
-        dest = BASE_DIR / out
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(html, encoding="utf-8")
+    # A report is an output artifact, not an edit to the inbound source.  Requiring a
+    # model to invent a destination caused it to stop after reading a Telegram upload;
+    # derive a deterministic, sandboxed destination instead.
+    if not out:
+        stem = Path(label).stem or "analysis"
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "analysis"
+        out = f"agent_output/{slug}_summary.html"
+    if "telegram_uploads" in out.lower():
         return (
-            f"HTML report written to {out} ({len(html)} chars). "
-            f"Next: send_telegram_document(filepath=\"{out}\") "
-            f"or send_gmail_html_message with this file's content."
+            "Error: refuse to write analysis HTML into telegram_uploads/. "
+            "Use agent_output/your_report.html"
         )
-    return html
+    if not out.startswith("agent_output/") and not out.startswith("ciel_workspace/"):
+        out = f"agent_output/{os.path.basename(out)}"
+    if not out.endswith(".html"):
+        out = out + ".html"
+    dest = BASE_DIR / out
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(html, encoding="utf-8")
+    return (
+        f"HTML report written to {out} ({len(html)} chars). "
+        f"Next: send_telegram_document(filepath=\"{out}\") "
+        f"or send_gmail_html_message with this file's content."
+    )
 
 
 def get_report_tools() -> dict:
@@ -110,7 +116,7 @@ def get_report_tools() -> dict:
             "Build a dark-card HTML analysis report (email_template/analysis_report.html). "
             "Args: title, source_path, source_type (text|pdf|image|docx), summary, key_points, "
             "risks, actions, quotes — fill ONLY from read_file/read_document/describe_image_file. "
-            "ALWAYS pass output_path='agent_output/<name>.html' so the file is written. "
+            "If output_path is omitted, the tool safely writes agent_output/<source>_summary.html. "
             "Then call send_telegram_document(filepath=that path) or email the HTML. "
             "Never use telegram_uploads/ as output_path."
         ),

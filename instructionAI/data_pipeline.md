@@ -141,6 +141,12 @@ describes a real person, so it must be readable, editable, and deletable by hand
 
 ## Proactive Scheduler & Condition Triggers (Tier 6, full detail in `architecture.md`)
 
+The CI daily digest in `scripts/daily_digest.py` searches current news and reads article
+content through `smart_scrape`. If a planner passes a whole `stealth_search` result instead
+of one URL, `skills/external/web_agent_ops.py` extracts its first concrete article URL before
+fetching. The digest is plain text: each reported news item includes its source, date, and an
+exact `Link:` URL from tool output; Markdown decoration is not used in Telegram delivery.
+
 - **Module**: `core/scheduler.py` (legacy clock tasks) + `core/triggers.py` +
   `core/notifier.py` (condition-based, Tier 6).
 - **Design principle**: Zero-Token Standby — Python watches the clock/conditions, the
