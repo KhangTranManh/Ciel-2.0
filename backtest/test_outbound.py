@@ -19,6 +19,9 @@ Run from the Ciel 2.0 directory:
 """
 import os
 import sys
+import tempfile
+import time
+from uuid import uuid4
 from pathlib import Path
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -74,6 +77,9 @@ def check(name, cond, detail=""):
 def make_core():
     """A core whose tool layer is stubbed: nothing leaves the machine."""
     core = CielCore()
+    # Tests must never read, clear, or overwrite a real user's pending action.
+    core._pending_state_path = Path(tempfile.gettempdir()) / f"ciel_outbound_{uuid4().hex}.json"
+    core._pending_action = None
     core.sent = []          # what the tool layer was actually asked to deliver
     core.asked = []         # what the safety gate prompted about
     core.fail_next = False
@@ -142,6 +148,31 @@ def test_duplicate_suppressed():
 
     check("suppression happens BEFORE the safety gate — no pointless prompt",
           c.asked == ["send_gmail_message"], str(c.asked))
+
+
+def test_direct_success_clears_matching_pending_action():
+    """Self-correction can complete a preview follow-up without a bare 'yes'."""
+    c = make_core()
+    c._pending_action = {
+        "tool": "send_gmail_message",
+        "args": dict(MAIL),
+        "ts": time.time(),
+        "from": "preview_tool",
+    }
+    c.execute_tool("send_gmail_message", dict(MAIL), user_input="continue")
+    check("direct successful follow-up clears its stale pending action",
+          c._pending_action is None, repr(c._pending_action))
+
+    c = make_core()
+    c._pending_action = {
+        "tool": "send_gmail_message",
+        "args": dict(MAIL, subject="different"),
+        "ts": time.time(),
+        "from": "preview_tool",
+    }
+    c.execute_tool("send_gmail_message", dict(MAIL), user_input="continue")
+    check("a different pending action is never cleared accidentally",
+          c._pending_action is not None, repr(c._pending_action))
 
 
 def test_scope():
@@ -244,7 +275,8 @@ def main():
     print("=" * 72)
     print("OUTBOUND IDEMPOTENCE SUITE (tool layer stubbed — nothing is sent)")
     print("=" * 72)
-    for fn in (test_key_shapes, test_duplicate_suppressed, test_scope,
+    for fn in (test_key_shapes, test_duplicate_suppressed,
+               test_direct_success_clears_matching_pending_action, test_scope,
                test_failure_is_retryable, test_html_and_reply, test_stale_send_status):
         fn()
 

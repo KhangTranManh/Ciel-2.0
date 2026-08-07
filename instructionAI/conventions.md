@@ -184,7 +184,7 @@ disposable.
 - Swap voice STT/TTS backends via `STT_BACKEND`/`TTS_BACKEND` in `.env`.
 - Add new tests in `backtest/` — prefer the no-LLM style (`test_context.py`,
   `test_proactive.py`, `test_user_model.py`, `test_outbound.py`,
-  `test_conversation_bugs.py`, `test_quality_guards.py`) for pure Python decision
+  `test_conversation_bugs.py`, `test_quality_guards.py`, `test_plan_validation.py`) for pure Python decision
   logic. Wire new unit suites into `backtest/run_all.py` `SUITES`. **Do not** add
   long-lived `backtest/_smoke_*.py` one-offs — fold guards into `test_quality_guards`
   or a named `test_*.py` suite.
@@ -252,9 +252,14 @@ disposable.
    spaces.
 4. `thoughts.log` is 100% CRLF on Windows (text-mode writes). A binary/raw tail read
    must normalise newlines itself or every check silently reports "nothing found".
+5. PowerShell's legacy pipeline encoding can replace Vietnamese/Unicode characters with
+   `?` before Python receives them. Before `@' … '@ | python -`, set
+   `[Console]::InputEncoding`, `[Console]::OutputEncoding`, `$OutputEncoding`, and
+   `PYTHONUTF8` to UTF-8. Do not diagnose a malformed subject as a Gmail problem when
+   the same `?` is already visible in the `execute_tool` log.
 
 **Integration quirks**
-5. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
+6. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
    text must be doubled (`{{`/`}}`) or the app crashes with `Single '}' in format
    string`.
 6. `langchain_google_community` has a known typo (`client_sercret_file` vs

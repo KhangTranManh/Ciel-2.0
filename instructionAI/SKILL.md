@@ -18,7 +18,8 @@ If the Master (or a new session) only points you at **`instructionAI/`**, do thi
 1. **Read this file** (`SKILL.md`) end-to-end for rules and the file index.
 2. **Open `../improve.md`** — living upgrade roadmap: P0–P3, Level A/B/C, journal.  
    **As of 2026-08-06:** **Level A + Level B** and **P0 (foundation)** are **PASS**.  
-   **P1.1** (honest tools) and **P1.4** (middleware/sanitize) are **DONE**.  
+   **P1.1** (honest tools), **P1.4** (middleware/sanitize), and **P1.5**
+   (deterministic plan validation) are **DONE**.
    Continue from the **first unchecked** item (typically **P1.2** proactive formal day, **P1.3** user_model formal, **Level C** portable, or **P2/P3**) unless the Master says otherwise.
 3. Open topic files in this folder as needed (`architecture.md`, `conventions.md`, `safety_and_risk.md`, `data_pipeline.md`, `voice_and_interface.md`).
 4. Implement **one** roadmap item → run the tests named there → tick Pass only when criteria match → add a journal row in `improve.md`.
@@ -395,14 +396,31 @@ model.
     `ciel_workspace/` path tokens while keeping real tool numbers; Middleware is
     fail-open and must not blank live tool values as "implausible".
 
+32. **Every multi-tool plan is validated before any step runs**
+    (`core/plan_validation.py`). The validator accepts only currently loaded tools,
+    object-shaped arguments accepted by the tool's own schema, and `{prev}` /
+    `{step_N}` references to earlier steps. It can remove a duplicate delivery only
+    when doing so cannot renumber a later dependency; otherwise the entire plan stops.
+    Permission review follows validation, and Tier-1 continuation plans go through the
+    same two checks. Keep this module pure; `execute_tool()` remains the final
+    per-turn delivery guard.
+
+33. **Windows PowerShell can corrupt Unicode before Ciel receives it.** Piping a
+    Vietnamese script through `@' … '@ | python -` with a legacy console encoding can
+    replace subject characters with `?`. This is not a Gmail encoding failure — the
+    subject is already damaged when it reaches `execute_tool`. Set console input/output
+    encoding, `$OutputEncoding`, and `PYTHONUTF8=1` to UTF-8 before such a pipeline;
+    normal API/WebSocket/Telegram input is UTF-8 already.
+
 ## Current pass bar (snapshot — detail in `../improve.md`)
 
-| Level / item | Status (2026-08-06) |
+| Level / item | Status (2026-08-08) |
 |--------------|---------------------|
 | Level A (Daily OK) | **PASS** |
 | Level B (Core Green) | **PASS** |
 | P0 foundation | **PASS** |
 | P1.1 honest tools / P1.4 middleware | **PASS** |
+| P1.5 deterministic plan validation | **PASS** |
 | P1.2 proactive day / P1.3 user_model formal | open |
 | Level C portable | open |
 | P2 coworker / P3 models | open |

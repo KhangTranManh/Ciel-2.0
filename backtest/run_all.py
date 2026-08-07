@@ -89,6 +89,12 @@ SUITES: list[Suite] = [
         "P1 guards: sanitize, write-intent, gmail digest, HTML builder, TG upload protect",
     ),
     Suite(
+        "plan_validation",
+        "backtest.test_plan_validation",
+        "unit",
+        "Deterministic multi-tool structure, dependency, schema, and duplicate-delivery checks",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",
@@ -183,17 +189,21 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
             print(tail)
         passed, total = _parse_pass_total(out, suite)
         elapsed = time.time() - started
-        # Prefer parsed result when available; else exit code
-        if passed is not None and total is not None:
+        # A suite can print a partial RESULT line and then crash.  Its process exit
+        # status is authoritative in that case; otherwise a regression runner can
+        # report green while a test never reached its assertions.
+        if proc.returncode != 0:
+            ok = False
+            status = "FAIL"
+        # Prefer parsed result when available; else exit code.
+        elif passed is not None and total is not None:
             ok = passed >= total and total > 0
             # integration treats TRANSIENT as soft-pass in its own summary;
             # if pattern matched Total: x/y we trust that.
             status = "PASS" if ok else "FAIL"
         else:
-            ok = proc.returncode == 0
+            ok = True
             status = "PASS" if ok else "FAIL"
-            if not ok and proc.returncode != 0:
-                status = "FAIL"
         return {
             "name": suite.name,
             "tier": suite.tier,

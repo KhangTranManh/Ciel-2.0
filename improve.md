@@ -192,6 +192,25 @@ Open at least:
 - **Verified:** 2026-08-06 (10/10 middleware/sanitize cases).  
 - Pass date: **2026-08-06**
 
+### P1.5 — Deterministic multi-tool plan validation — **DONE**
+
+**Goal:** The Brain may propose a plan, but Python decides whether it is executable
+before any tool runs.
+
+**Scope:** `core/plan_validation.py` validates loaded tool names, object-shaped and
+schema-valid arguments, prior-only `{prev}` / `{step_N}` references, and duplicate
+outbound deliveries. It removes a duplicate only when no later reference would be
+renumbered; otherwise it rejects the whole plan. Initial and continuation plans are both
+validated, then pass through the existing plan-level permission review.
+
+**Test:** `backtest.test_plan_validation` + `python -m backtest.run_all --unit-only`.
+
+**Pass when:** Invalid plans execute zero steps; dependency-safe duplicate deliveries
+collapse once; continuation plans cannot bypass validation or permission review.
+- **Verified:** 2026-08-08 (plan_validation 10/10; unit 7/7 PASS; live search →
+  synthesize → one Gmail delivery returned a real Message Id).
+- Pass date: **2026-08-08**
+
 ---
 
 ### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **DEFINED**
@@ -326,6 +345,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-08-06 | P0.2–P0.4 + Level A/B | sol/luna/5.5 | live + unit | **PASS** | Route 20/20; email dig/send; context 3/3; Level A/B tick |
 | 2026-08-06 | P1.1 + P1.4 + TG HTML | sol/luna/5.5 | live + unit | **PASS** | Honest tools; sanitize/middleware; telegram document HTML |
 | 2026-08-06 | Cleanup | — | — | done | Removed ephemeral `backtest/_smoke_*.py`; guards → `test_quality_guards` in `run_all` unit |
+| 2026-08-08 | P1.5 plan validation | sol/luna/5.5 | unit 7/7; plan 10/10; live search→Gmail | **PASS** | Pure validator before execution; continuation re-validation; duplicate delivery repair only when reference-safe; one real Gmail Message Id |
 
 | 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
 | 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |

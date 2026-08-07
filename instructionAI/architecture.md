@@ -60,6 +60,7 @@ Ciel-2.0/
 │   ├── triggers.py                # T6  the nine condition triggers + polling engine
 │   ├── user_model.py              # T7  the Master's profile — authority, decay, unprompted learning
 │   ├── parallel.py                # (T1-adjacent) independent read-only steps run concurrently
+│   ├── plan_validation.py         # pure multi-tool structural/schema/dependency validator
 │   └── scheduler.py                # background thread: legacy clock tasks + the Tier-6 trigger engine
 │
 ├── agent_system/                  # Brain-Worker-Middleware LLM subsystem
@@ -124,6 +125,7 @@ Ciel-2.0/
 │   │                                  (constructs real CielCore — may append to thoughts.log)
 │   ├── test_quality_guards.py       # P1 guards: sanitize, write-intent, gmail digest, HTML
 │   │                                  builder, telegram_uploads write-block (maintained unit)
+│   ├── test_plan_validation.py      # pure plan structure/reference/schema/delivery-dedup regression
 │   ├── test_integration.py          # Full pipeline (live LLM)
 │   ├── test_brain_worker.py         # Multi-step workflow (live LLM)
 │   ├── test_rag_memory.py           # RAG amnesia stress (live LLM)
@@ -141,7 +143,7 @@ Ciel-2.0/
 ```
 
 **Unit suites** (`run_all --unit-only`): context, user_model, proactive, outbound,
-conversation_bugs, **quality_guards**. Prefer these first on any change to `core/` or
+conversation_bugs, quality_guards, **plan_validation**. Prefer these first on any change to `core/` or
 outbound/Telegram paths. Live suites need API keys and cost real tokens.
 
 **Telegram inbound path (runtime):** download → `ciel_workspace/telegram_uploads/` →
@@ -221,7 +223,8 @@ User input (text or voice transcript) → CielCore.process()
                      recipient → Worker formats non-email results
                      → Self-Correction: Brain evaluates → retries if unsatisfied (max 2)
       "code"       → Worker generates code → dangerous-code gate → buffer_writer → disk
-      "multi_tool" → sequential/parallel tool execution → workflow safeguards auto-append
+      "multi_tool" → deterministic plan validation (schema, known tool, prior-only refs,
+                     duplicate delivery) → sequential/parallel tool execution → workflow safeguards auto-append
                      a missing send/write step → Worker synthesizes a report → TIER-1
                      AGENT LOOP may re-plan with the real results in view → deferred
                      send/write runs ONCE with the synthesized body → duplicate-send
@@ -302,6 +305,18 @@ writes/sends" would silently parallelise a new mutating tool the day one is adde
 def get_my_tools():
     return {"tools": [...], "prompt": "...", "parallel_safe": ["my_search"]}
 ```
+
+### Plan validation (`core/plan_validation.py`)
+
+Before any multi-tool plan reaches permission review or execution, `validate_plan()`
+normalizes tool names and verifies that every step is an object, names a currently loaded
+tool, has object-shaped arguments that satisfy that tool's own Pydantic schema, and only
+references prior outputs through `{prev}` / `{step_N}`. Invalid plans stop before step one.
+
+It removes an identical outbound delivery only when no later reference could be renumbered
+by that removal; otherwise it rejects the plan rather than guessing how to rewrite the
+dependency. `execute_tool()` retains the final per-turn delivery guard because Tier-1 can
+propose another plan later. Follow-up plans are validated and permission-reviewed again.
 
 `_log_thought` takes a lock: it appends to `thoughts.log` **and** accumulates the
 per-tier token/cost dicts, so concurrent callers would otherwise interleave mid-entry

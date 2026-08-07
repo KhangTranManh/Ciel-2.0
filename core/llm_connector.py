@@ -34,6 +34,7 @@ from .user_model import UserModel, assess_preference, learn_from_turn, estimate_
 from .context import (ContextAssembler, P_REQUEST, P_CRITICAL, P_IMPORTANT, P_HELPFUL)
 from .permissions import PermissionPolicy, Decision, DeferredStore
 from .outbound import OUTBOUND_KEYS, delivery_key, plaintext_to_html, recipients_lowered
+from .plan_validation import PlanValidation, validate_plan
 from . import rag_manager
 
 import sys
@@ -1368,6 +1369,10 @@ class CielCore:
         plumbing for `_run_steps`'s {prev}/{step_N} chaining — see its call site.
         """
         log.tool(f"Executing: {tool_name}({tool_args})")
+        # Preserve the caller's action identity before sanitization/rendering may
+        # create a replacement args dict. Pending confirmations are keyed to this
+        # original tool + args contract, not to delivery-only transformations.
+        pending_match_args = dict(tool_args or {})
 
         if tool_name not in self._tool_map:
             log.error(f"Tool not found: {tool_name}")
@@ -1681,6 +1686,21 @@ class CielCore:
                 self._sent_this_turn.add(out_key)
         if tool_name in ("send_telegram", "send_telegram_document"):
             self._telegram_delivery_sent_this_turn = True
+
+        # A preview tool may have staged this exact follow-up action. Usually
+        # process() clears that slot before a bare "yes" executes it, but
+        # self-correction can reach the follow-up directly after judging the
+        # preview incomplete. A successful direct execution is still completion;
+        # leaving the old slot behind blocks the next request and can re-run an
+        # already-completed action (observed with git_confirm_push).
+        pending = self._get_pending_action()
+        if (pending and pending.get("tool") == tool_name
+                and pending.get("args") == pending_match_args):
+            self._clear_pending_action()
+            self._log_thought(
+                "SYSTEM", "pending_action_completed",
+                f"{tool_name} completed through the normal tool path â€” cleared matching pending action.",
+            )
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
@@ -2235,6 +2255,30 @@ class CielCore:
                           f"{len(granted)} exact step(s) approved for this plan only")
         return ""
 
+    def _validate_tool_plan(self, tools, source: str) -> PlanValidation:
+        """Validate an LLM plan before permissions or tool execution.
+
+        The validator is intentionally separate from this orchestrator so its rules
+        can be unit-tested without loading models, tools, or persistent state.  This
+        boundary contributes the live tool catalog and each tool's Pydantic schema.
+        """
+        checked = validate_plan(
+            tools,
+            known_tools=self._tool_map.keys(),
+            validate_args=self.tool_manager.validate_tool_args,
+        )
+        for repair in checked.repairs:
+            self._log_thought(
+                "PLAN", "repair",
+                f"{source}: step {repair.step} {repair.code} — {repair.message}",
+            )
+        for issue in checked.errors:
+            self._log_thought(
+                "PLAN", "rejected",
+                f"{source}: step {issue.step} {issue.code} — {issue.message}",
+            )
+        return checked
+
     def _run_steps(self, steps: list, response_hint: str, user_input: str,
                    results: list, step_outputs: list, records: list, label: str = "") -> bool:
         """Execute `steps` in order, running provably-independent ones concurrently.
@@ -2397,6 +2441,19 @@ class CielCore:
                                   f"{budget.max_steps_per_round} to stay inside the budget.")
                 fresh = fresh[:budget.max_steps_per_round]
 
+            checked = self._validate_tool_plan(fresh, source=f"loop round {budget.rounds_used}")
+            if not checked.ok:
+                self._log_thought("LOOP", "plan_rejected", checked.error_text())
+                return
+            fresh = checked.steps
+
+            # A follow-up is a new plan.  It may contain a risky action that was not
+            # part of the initial approval, so it gets its own deterministic review.
+            blocked = self._review_plan_permissions(fresh)
+            if blocked:
+                self._log_thought("LOOP", "plan_blocked", blocked)
+                return
+
             # Time is checked BEFORE each batch, not only between rounds: a round of
             # slow calls must be able to stop partway instead of overrunning the
             # ceiling wholesale (observed: 566s inside a single round).
@@ -2431,6 +2488,11 @@ class CielCore:
         `model_requested` is the plan's optional `needs_followup` hint, forwarded to the
         Tier-1 loop. It can only ADD a reason to look again — never override a budget.
         """
+        checked = self._validate_tool_plan(tools, source="initial plan")
+        if not checked.ok:
+            return checked.error_text()
+        tools = checked.steps
+
         # Separate the send step if present (usually the last step for email requests).
         # Supports plain send_gmail_message and rich send_gmail_html_message.
         # Also separate send_telegram (same "synthesize then deliver" shape — live

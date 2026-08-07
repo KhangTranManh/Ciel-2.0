@@ -113,7 +113,7 @@ class ToolManager:
             }
         }
 
-    def _validate_tool_args(self, name: str, args: dict):
+    def validate_tool_args(self, name: str, args: dict):
         """Auto-validate tool arguments using the tool's own Pydantic args_schema.
         
         No hardcoded schemas needed — every StructuredTool carries its own
@@ -138,6 +138,11 @@ class ToolManager:
         except Exception as e:
             # Extract a clean error message from Pydantic validation
             return f"Invalid arguments for '{name}': {e}"
+
+    # Compatibility alias for callers written before plan validation needed this as
+    # a public, deterministic boundary. New code uses ``validate_tool_args``.
+    def _validate_tool_args(self, name: str, args: dict):
+        return self.validate_tool_args(name, args)
 
     def format_tool_result(self, result: dict) -> str:
         if not isinstance(result, dict):
@@ -168,7 +173,7 @@ class ToolManager:
             duration_ms = int((time.perf_counter() - start) * 1000)
             return self._make_result(False, tool_name, duration_ms, error_code="TOOL_NOT_FOUND", error_message=f"Tool '{name}' does not exist or was quarantined.")
 
-        validation_error = self._validate_tool_args(tool_name, args)
+        validation_error = self.validate_tool_args(tool_name, args)
         if validation_error:
             duration_ms = int((time.perf_counter() - start) * 1000)
             return self._make_result(False, tool_name, duration_ms, error_code="INVALID_ARGS", error_message=validation_error)

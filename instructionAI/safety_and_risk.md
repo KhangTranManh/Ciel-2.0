@@ -45,6 +45,11 @@ disk via an ordinary `write_file` call.
 (`AUTO`/`ASK`/`DENY`) — see Tier 3 in `architecture.md` for plan-level approval, grant
 scopes, and why a grant is keyed on the exact call signature, not the tool name.
 
+Before that permission review, `core/plan_validation.py` rejects malformed, unknown, or
+forward-dependent multi-tool steps without executing any of them. It may remove only a
+dependency-safe duplicate outbound delivery; `CielCore.execute_tool()` remains the final
+per-turn guard, so later continuation rounds cannot bypass idempotency.
+
 ### How it works
 
 1. `CielCore.execute_tool()` checks if the tool is in `_HIGH_RISK_TOOLS`, OR (for

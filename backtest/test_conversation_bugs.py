@@ -341,6 +341,10 @@ def test_referential_recipient_override():
     core.worker.generate = lambda p, *a, **k: (captured.append(p), "stub body")[1]
     core.tool_manager.execute_tool = lambda n, a: {
         "success": True, "data": {"message": "Message Id: STUB-1"}, "error": None}
+    # Unit runs deliberately disable the Gmail skill to remain offline. This test
+    # stubs its executor, so mirror its otherwise-live catalog entry for the plan
+    # validator without loading OAuth.
+    core._tool_map["send_gmail_message"] = object()
     core.confirm_callback = lambda n, p, a: True
 
     buggy_plan = [{"tool_name": "send_gmail_message",
@@ -360,6 +364,7 @@ def test_referential_recipient_override():
     core2.worker.generate = lambda p, *a, **k: (captured.append(p), "stub")[1]
     core2.tool_manager.execute_tool = lambda n, a: {
         "success": True, "data": {"message": "Message Id: STUB-1"}, "error": None}
+    core2._tool_map["send_gmail_message"] = object()
     core2.confirm_callback = lambda n, p, a: True
     plain_plan = [{"tool_name": "send_gmail_message",
                   "tool_args": {"to": "a@b.com", "subject": "x", "message": "[PROFESSIONAL_EMAIL_BODY_TO_BE_SYNTHESIZED]"}}]

@@ -30,6 +30,7 @@
 - [Status (Level B)](#status-level-b)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Windows UTF-8](#windows-utf-8)
 - [Testing](#testing)
 - [Feature Overview](#feature-overview)
 - [How It Works](#how-it-works)
@@ -121,7 +122,7 @@ breakdown.
 
 ## Status (Level B)
 
-As of **2026-08-06**, the personal-agent pass bar is **Level B (Core Green)** — see
+As of **2026-08-08**, the personal-agent pass bar is **Level B (Core Green)** — see
 [`improve.md`](improve.md) for the living checklist and journal.
 
 | Area | State |
@@ -130,6 +131,7 @@ As of **2026-08-06**, the personal-agent pass bar is **Level B (Core Green)** �
 | **Level B** (core green) | PASS — live `run_all --skip-exploratory`, real email quality, follow-up context |
 | **P0 foundation** | PASS |
 | **P1.1** honest tool failures / **P1.4** outbound sanitize | PASS |
+| **P1.5** deterministic multi-tool plan validation | PASS — unit + live search to Gmail smoke verified |
 | **Telegram** files + plain text + **HTML document** attach | Working |
 | **Level C** portable / **P1.2–P1.3** formal / **P2–P3** | Open (roadmap) |
 
@@ -256,6 +258,22 @@ python main.py --voice --speak     # speak requests, hear replies
 - Test each modality standalone first: `python -m core.voice_input` (mic → text) and
   `python -m core.speech_output "Xin chào Master"` (text → speech).
 
+### Windows UTF-8
+
+The normal CLI, API, and Telegram paths handle Unicode. A Windows PowerShell pipeline
+can still replace Vietnamese characters with `?` before Python receives them. Set UTF-8
+before piping a script such as `@' ... '@ | python -`:
+
+```powershell
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [Console]::OutputEncoding
+$env:PYTHONUTF8 = "1"
+```
+
+If `?` is already visible in Ciel's `execute_tool` log, the shell damaged the input;
+it is not a Gmail subject-encoding failure.
+
 ### 4. (Optional) Run the API server + UI
 
 **Bash / Zsh**
@@ -287,6 +305,9 @@ python -m backtest.run_all --skip-exploratory
 
 # Single unit pack (sanitize, write-intent, HTML builder, TG upload protect)
 python -m backtest.test_quality_guards
+
+# Multi-tool structure, dependency, schema, and duplicate-delivery checks
+python -m backtest.test_plan_validation
 ```
 
 Maintained suites live under `backtest/test_*.py` and `backtest/run_all.py`.  
@@ -360,6 +381,11 @@ not to run both at once yet: [docker/README.md](docker/README.md).
 - **Deterministic Workflow Safeguards** — a plan missing its terminal send/write step
   gets one appended in code, not left to the Brain to remember. Enforces an explicit
   subject and blocks any unsynthesized placeholder from reaching a file or inbox.
+- **Deterministic plan validation** (`core/plan_validation.py`) runs before a multi-tool
+  plan reaches permission review or execution. It checks loaded tool names, schema-valid
+  arguments, and prior-only `{prev}`/`{step_N}` dependencies. A duplicate delivery is
+  removed only when that cannot change a later dependency; otherwise the plan stops
+  before step one. Continuation plans are checked again.
 - **One delivery per recipient per turn** — two independent mechanisms used to
   complete a plan's missing send step and could both fire, delivering the same report
   twice with different subjects. Now deduped by recipient at the single choke point
