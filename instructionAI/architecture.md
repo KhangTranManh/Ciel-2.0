@@ -731,6 +731,10 @@ Two front-ends, one shared image (`docker/Dockerfile`, built from repo root so i
 independently: `docker-compose.api.yml` (`ciel-api` → `main_api.py`, the Vercel-facing
 service) and `docker-compose.telegram.yml` (`ciel-telegram` → `main_telegram.py`).
 
+- **The Telegram compose disables the image's API health check.** `Dockerfile` probes
+  `http://localhost:8000/health`, which is valid only for `main_api.py`; the Telegram
+  entry point long-polls and deliberately opens no HTTP server. Without the override a
+  live bot is falsely reported `unhealthy` and may be restarted by deployment tooling.
 - **`docker/requirements-docker.txt`** drops what a headless container can't use:
   `pyautogui`/`pyperclip` (no display — pair with `.env`'s
   `DISABLED_SKILL_MODULES=vision_ops`) and `sounddevice`/`faster-whisper`/

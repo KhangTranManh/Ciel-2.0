@@ -16,6 +16,11 @@ services:
     container_name: ciel-telegram
     restart: unless-stopped
     command: ["python", "main_telegram.py"]
+    # The base image checks the FastAPI `/health` endpoint on port 8000.  This
+    # service intentionally runs Telegram long-polling only, so that check
+    # would mark a healthy bot as unhealthy.
+    healthcheck:
+      disable: true
     env_file:
       - ../.env
     volumes:
