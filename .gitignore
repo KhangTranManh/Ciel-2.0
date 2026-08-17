@@ -1,5 +1,6 @@
 # Ciel's Privacy Shield - DO NOT REMOVE
 .env
+.env.local
 __pycache__/
 *.pyc
 .ipynb_checkpoints/

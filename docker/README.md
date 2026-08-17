@@ -63,6 +63,11 @@ docker compose -f docker/docker-compose.telegram.yml logs -f
 docker compose -f docker/docker-compose.telegram.yml down
 ```
 
+The Telegram compose deliberately disables the shared image's `GET /health` check:
+that endpoint belongs to the API entry point and a long-polling bot has no listener on
+port 8000. Judge the Telegram deployment from `docker compose ... ps` and the
+`[Telegram] Bot online` log instead.
+
 ## Shared memory, and why not to run both yet
 
 Both files mount the SAME `ciel_data/agent_output/ciel_workspace` on purpose —
