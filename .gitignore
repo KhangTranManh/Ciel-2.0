@@ -20,6 +20,9 @@ credentials.json
 autonomous_pipeline/thoughts.log
 autonomous_pipeline/*.log
 
+# Generated regression reports; source tests remain tracked, their output does not.
+backtest/logs/
+
 # Personal local runbook (machine-specific paths / habits)
 Run.md
 
