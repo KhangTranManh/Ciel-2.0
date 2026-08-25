@@ -1,9 +1,9 @@
 ---
 name: ciel-2.0
 description: >
-  Ciel 2.0 is a modular autonomous AI assistant with a three-tier Brain → Router →
-  Middleware → Worker pipeline, extended by seven agent-capability tiers (an observe/
-  re-plan loop, durable task state, scoped consent, bounded context, interruptible
+  Ciel 2.0 is a modular autonomous AI assistant with a two-model Brain/Router → Worker
+  pipeline and optional Middleware code, extended by seven agent-capability tiers (an
+  observe/re-plan loop, durable task state, scoped consent, bounded context, interruptible
   requests, proactivity, and a model of the user). Every tier decides in deterministic
   Python and only plans with the LLM, so behaviour survives a change of model. Built on
   LangChain with multi-provider support (Vilao, DeepSeek, Gemini, Ollama).
@@ -20,6 +20,8 @@ If the Master (or a new session) only points you at **`instructionAI/`**, do thi
    **Current baseline:** **Level A + Level B** and **P0 (foundation)** are **PASS**.
    **P1.1** (honest tools), **P1.4** (middleware/sanitize), and **P1.5**
    (deterministic plan validation) are **DONE**.
+   The bounded **Active Subject handoff** is also **PASS**: it gives Brain one grounded
+   session topic without exposing raw conversation history.
    Continue from the **first unchecked** item (typically **P1.2** proactive formal day, **P1.3** user_model formal, **Level C** portable, or **P2/P3**) unless the Master says otherwise.
 3. Open topic files in this folder as needed (`architecture.md`, `conventions.md`, `safety_and_risk.md`, `data_pipeline.md`, `voice_and_interface.md`).
 4. Implement **one** roadmap item → run the tests named there → tick Pass only when criteria match → add a journal row in `improve.md`.
@@ -40,11 +42,11 @@ Then the item-specific tests; only tick Pass when criteria match.
 
 ## What this project is
 
-Ciel is an autonomous AI assistant and System Sentinel built on a **Brain → Router →
-Middleware → Worker** pipeline. The **Brain/Router** classifies intent and plans, the
-**Worker** produces text/code, and the optional **Middleware** semantically verifies
-outbound email/report bodies before send. Around that core sit auto-discovered tool
-packs, hybrid long-term memory, a destructive-action safety gate, token-precise cost
+Ciel is an autonomous AI assistant and System Sentinel built on a **Brain/Router →
+Worker** two-model pipeline. The **Brain/Router** classifies intent and plans, the
+**Worker** produces text/code, and the disabled-by-default optional **Middleware**
+semantically verifies outbound email/report bodies before send. Around that core sit
+auto-discovered tool packs, hybrid long-term memory, a destructive-action safety gate, token-precise cost
 tracking, and both CLI and browser/desktop interfaces. Ciel can also listen (STT) and
 talk back (TTS).
 
@@ -152,9 +154,12 @@ approvals) are finished and simply not surfaced in the UI yet.
    `to_speech()` normalizer, not by dumbing down the persona — text, HUD, and email
    keep rich formatting.
 
-10. **`.env` is the single source for credentials + provider config.** Swap providers
-    via `BRAIN_PROVIDER`/`WORKER_PROVIDER`/`MIDDLEWARE_PROVIDER` with no code changes.
-    Gotcha: the Worker model is read from `CODER_MODEL`, not `WORKER_MODEL`.
+10. **`.env` is the single source for credentials + provider config.** The standard
+    topology has exactly two model identities: Brain (`BRAIN_MODEL`) and Worker
+    (`CODER_MODEL`, not `WORKER_MODEL`). `ROUTER_ASSISTANT_ENABLED=false` and
+    `MIDDLEWARE_ENABLED=false`; their configured model IDs mirror Brain and Worker so
+    an intentional re-enable does not silently add a third model. Vision defaults to
+    `BRAIN_MODEL`. Swap providers with no code changes.
 
 11. **Measure a model alias before adopting it — gateways inject hidden prompts.**
     Measured on the same endpoint/key: one alias added ~6,500 unsuppressable tokens per
@@ -427,6 +432,15 @@ model.
     allowing ordinary language such as addressing the Master. A genuine tool action
     must be routed and executed first.
 
+36. **The Brain receives one active subject, never raw conversation history.**
+    `core/active_subject.py` stores a RAM-only topic, evidence-grounded entities, and
+    last completed action. It is injected through `ContextAssembler` before routing,
+    updated once after the final response, and expires after three unrelated turns,
+    15 minutes, or restart. Recipients, paths, URLs, secrets, commands, confirmation
+    state, and destructive arguments are excluded. Keep extraction and expiry in this
+    pure component; do not spread subject heuristics through route branches. Its three
+    connector hooks are fail-open because optional context must never break a turn.
+
 ## Current pass bar (snapshot — detail in `../improve.md`)
 
 | Level / item | Status |
@@ -436,6 +450,7 @@ model.
 | P0 foundation | **PASS** |
 | P1.1 honest tools / P1.4 middleware | **PASS** |
 | P1.5 deterministic plan validation | **PASS** |
+| Active Subject handoff | **PASS** |
 | P1.2 proactive day / P1.3 user_model formal | open |
 | Level C portable | open |
 | P2 coworker / P3 models | open |

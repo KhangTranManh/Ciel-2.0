@@ -4,7 +4,7 @@ Code patterns, naming rules, and gotchas for working on this project. For what e
 the seven agent-capability tiers *does* and *why*, see `architecture.md` — this file is
 about the patterns that keep them safe to extend.
 
-## Brain → Router → Middleware → Worker Separation
+## Brain/Router → Worker Separation
 
 The system strictly separates **routing**, **verification**, and **generation**:
 
@@ -20,9 +20,11 @@ The system strictly separates **routing**, **verification**, and **generation**:
 - **Worker** — generates text/code. Never makes routing decisions. Tenacity retry
   protection.
 
-Each tier is a separate LLM instance, independently configurable (provider + model +
-temperature) via `.env`. Brain runs low-temperature for routing; Worker runs slightly
-higher for natural generation.
+The maintained runtime has two model identities. Brain runs low-temperature for routing
+and evaluation; Worker runs slightly higher for natural generation and formatting.
+Middleware and Router Assistant remain optional code paths but are disabled, with their
+dormant model IDs set equal to Worker and Brain respectively. This keeps rollback easy
+without allowing an unnoticed third model.
 
 ## Tool Pack Registration
 
@@ -121,6 +123,12 @@ deliberate, to avoid conflating an old unresolved request with a new unrelated o
 Cross-turn continuity for the *response* flows through `_recent_turns_block()`
 (Tier 4) and RAG recall instead; the Router only ever sees the current request plus a
 recall block bounded and filtered against self-match.
+
+The deliberate routing exception is not raw history: `core/active_subject.py` hands
+Brain one bounded session record (`topic`, grounded entities, last action). Keep its
+extraction and expiry in that module, not scattered through route branches. Never add
+recipients, paths, URLs, secrets, commands, confirmation state, or destructive
+arguments; explicit current wording always wins.
 
 For `action == "chat"`, `task` is a hint the Router may set — it is never handed to the
 Worker as the request. See the Known Gotchas entry for why.
@@ -243,58 +251,61 @@ disposable.
 **Environment / providers**
 1. `agent_system/config.py` reads the Worker's model from `CODER_MODEL`, not
    `WORKER_MODEL` — a `.env` entry literally named `WORKER_MODEL` has no effect.
-2. Measure a new model alias before adopting it: gateways can inject thousands of
+2. Keep `ROUTER_ASSISTANT_ENABLED=false` and `MIDDLEWARE_ENABLED=false` for the standard
+   two-model topology. Keep their dormant model names equal to `BRAIN_MODEL` and
+   `CODER_MODEL`; `VISION_MODEL` defaults to Brain. Do not delete the optional classes.
+3. Measure a new model alias before adopting it: gateways can inject thousands of
    hidden, unsuppressable tokens per call. See the provider table in `note.md`.
 
 **Windows-specific**
-3. The Router prompt includes WINDOWS SYSTEM ARCHITECT rules enforcing double-quoted
+4. The Router prompt includes WINDOWS SYSTEM ARCHITECT rules enforcing double-quoted
    absolute paths and a `python -m` prefix — without this, tools fail on paths with
    spaces.
-4. `thoughts.log` is 100% CRLF on Windows (text-mode writes). A binary/raw tail read
+5. `thoughts.log` is 100% CRLF on Windows (text-mode writes). A binary/raw tail read
    must normalise newlines itself or every check silently reports "nothing found".
-5. PowerShell's legacy pipeline encoding can replace Vietnamese/Unicode characters with
+6. PowerShell's legacy pipeline encoding can replace Vietnamese/Unicode characters with
    `?` before Python receives them. Before `@' … '@ | python -`, set
    `[Console]::InputEncoding`, `[Console]::OutputEncoding`, `$OutputEncoding`, and
    `PYTHONUTF8` to UTF-8. Do not diagnose a malformed subject as a Gmail problem when
    the same `?` is already visible in the `execute_tool` log.
 
 **Integration quirks**
-6. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
+7. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
    text must be doubled (`{{`/`}}`) or the app crashes with `Single '}' in format
    string`.
-6. `langchain_google_community` has a known typo (`client_sercret_file` vs
+8. `langchain_google_community` has a known typo (`client_sercret_file` vs
    `client_secrets_file`); `gmail_ops.py` and `scheduler.py` handle both via
    `inspect.signature()`.
-7. `edge-tts` (default TTS) hits an unofficial Microsoft endpoint that intermittently
+9. `edge-tts` (default TTS) hits an unofficial Microsoft endpoint that intermittently
    raises `NoAudioReceived` — the fix is `_edge_synth_bytes()`'s backoff retry, not a
    different text/voice.
 
 **Degradation and isolation**
-8. `rag_manager.py` lazy-loads ChromaDB/sentence-transformers; if missing, RAG degrades
+10. `rag_manager.py` lazy-loads ChromaDB/sentence-transformers; if missing, RAG degrades
    gracefully and CielCore keeps working with JSON-only short-term memory.
-9. Self-correction retries (Brain evaluating tool results) are not saved to chat memory
+11. Self-correction retries (Brain evaluating tool results) are not saved to chat memory
    or RAG, to prevent noise accumulation.
-10. Scheduled/legacy clock tasks must never write to `memory_bank.json` or call
+12. Scheduled/legacy clock tasks must never write to `memory_bank.json` or call
     `rag_manager.embed_and_save()` (Ghost Mode).
-11. `_HEALING_SKIP_PATTERNS` in `llm_connector.py` short-circuits error classes no
+13. `_HEALING_SKIP_PATTERNS` in `llm_connector.py` short-circuits error classes no
     retry could ever fix (missing library, network timeout, geo-restriction) — removing
     this is not "more robust", it just burns a guaranteed-to-fail Worker call each time.
 
 **Conversation-memory rules (found live — see Tier 4 in `architecture.md`)**
-12. `chat_history` reaches the model in exactly TWO places, both response-side, never
+14. `chat_history` reaches the model in exactly TWO places, both response-side, never
     routing: `_recent_turns_block()` feeding `execute_chat` and the tool-result format
     path. Do not add it to `router.route()`'s input — `test_conversation_bugs.py`
     asserts the router never sees it.
-13. The router's `task` field, for `action == "chat"`, is a HINT — never the reply. A
+15. The router's `task` field, for `action == "chat"`, is a HINT — never the reply. A
     strong Brain routinely pre-writes the actual final reply into it (once caught
     literally: `"task": "Reply: \"...\""`), which bypasses the persona's
     language-matching rule and any recent-turns context if handed to the Worker as the
     request. `action == "code"`'s `task` is a different, untouched contract (a spec to
     execute, not a pre-written answer).
-14. `ContinuationPolicy.assess()`'s scope veto must stay checked FIRST: an explicit
+16. `ContinuationPolicy.assess()`'s scope veto must stay checked FIRST: an explicit
     "chỉ … thôi" / "đừng …" / "only …" outranks every continuation signal, including
     fan-out.
-15. **"send it to that email" is a RECIPIENT reference, not a content reference** — a
+17. **"send it to that email" is a RECIPIENT reference, not a content reference** — a
     real email once went to the wrong address because only the body-referential guard
     (`_is_referential_send`) existed. `_resolve_referential_recipient()` grounds `to` in
     `chat_history` when the current turn names no address of its own, and must run at
@@ -303,14 +314,14 @@ disposable.
     right one. When the override fires, the synthesis prompt must be told the confirmed
     recipient explicitly (`recipient_override_note`); don't trust the model to have
     reached the same correction on its own.
-16. **A chat response cannot claim that a tool is running.** `action == "chat"` gives
+18. **A chat response cannot claim that a tool is running.** `action == "chat"` gives
     the Worker no tool handle. `_block_unbacked_chat_tool_promise()` rejects a concrete
     search/tool promise such as "running `stealth_search`" or "waiting for the results"
     and returns an honest clarification instead; it does not create a fake pending task.
     The matcher must not treat ordinary language such as "I will call you Master" as a
     tool call. This is a code guard as well as an `execute_chat()` prompt boundary
     because Router and Worker see intentionally different context.
-17. **A successful live lookup may ground one narrow follow-up.** `_active_lookup`
+19. **A successful live lookup may ground one narrow follow-up.** `_active_lookup`
     retains only the query and up to three public URLs in RAM for 15 minutes. It reaches
     the Router when the next request explicitly says to scrape/read/deepen that result,
     or uses a terse read-only imperative such as “làm đi” / “mở đi” while exactly one

@@ -59,6 +59,12 @@ SUITES: list[Suite] = [
         "Context assembler budget/priority (0 LLM)",
     ),
     Suite(
+        "active_subject",
+        "backtest.test_active_subject",
+        "unit",
+        "Bounded Brain subject handoff, expiry, and unsafe-field rejection (0 LLM)",
+    ),
+    Suite(
         "user_model",
         "backtest.test_user_model",
         "unit",

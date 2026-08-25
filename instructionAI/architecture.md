@@ -1,8 +1,9 @@
 # Architecture — Ciel 2.0
 
-Ciel uses a **Brain → Router → Middleware → Worker** core, extended by seven
-agent-capability tiers. One rule runs through every tier: **the decision is
-deterministic Python; the model only plans or composes.** That is what lets each tier
+Ciel uses a **Brain/Router → Worker** two-model core with disabled-by-default optional
+Middleware verification, extended by seven agent-capability tiers. One rule runs
+through every tier: **the decision is deterministic Python; the model only plans or
+composes.** That is what lets each tier
 survive a change — or a downgrade — of model.
 
 ## File Tree
@@ -55,6 +56,7 @@ Ciel-2.0/
 │   ├── task_state.py              # T2  durable job records; interrupted work survives a crash
 │   ├── permissions.py             # T3  AUTO/ASK/DENY(+DEFER), plan-level approval, deferred store
 │   ├── context.py                 # T4  the single prompt assembler + token budget
+│   ├── active_subject.py          # RAM-only structured subject handoff into Brain routing
 │   ├── notifier.py                # T6  routes a proactive message, and decides whether it goes at all
 │   ├── triggers.py                # T6  the nine condition triggers + polling engine
 │   ├── user_model.py              # T7  the Master's profile — authority, decay, unprompted learning
@@ -62,7 +64,7 @@ Ciel-2.0/
 │   ├── plan_validation.py         # pure multi-tool structural/schema/dependency validator
 │   └── scheduler.py                # background thread: legacy clock tasks + the Tier-6 trigger engine
 │
-├── agent_system/                  # Brain-Worker-Middleware LLM subsystem
+├── agent_system/                  # Brain-Worker LLM subsystem + optional Middleware code
 │   ├── config.py                  # Provider/model/retry config, per tier, plus every tier's .env knobs
 │   ├── main.py                    # Standalone LangGraph runner
 │   ├── models/
@@ -117,6 +119,7 @@ Ciel-2.0/
 ├── backtest/                       # Test suites via `python -m backtest.run_all` (not pytest)
 │   ├── run_all.py                   # Unified runner: --unit-only | --skip-exploratory | full
 │   ├── test_context.py              # T4 — context budget/priority
+│   ├── test_active_subject.py       # subject handoff/expiry/unsafe-field regression
 │   ├── test_outbound.py             # duplicate-send guard + stale-status strip (stub tools)
 │   ├── test_proactive.py            # T6 — notifier + triggers (simulated clock)
 │   ├── test_user_model.py           # T7 — profile authority/decay/secrets
@@ -142,9 +145,10 @@ Ciel-2.0/
 └── agent_output/                   # Generated code + analysis HTML reports
 ```
 
-**Unit suites** (`run_all --unit-only`): context, user_model, proactive, outbound,
-conversation_bugs, quality_guards, **plan_validation**. Prefer these first on any change to `core/` or
-outbound/Telegram paths. Live suites need API keys and cost real tokens.
+**Unit suites** (`run_all --unit-only`): context, active_subject, user_model, proactive,
+outbound, conversation_bugs, quality_guards, **plan_validation**. Prefer these first on
+any change to `core/` or outbound/Telegram paths. Live suites need API keys and cost
+real tokens.
 
 **Telegram inbound path (runtime):** download → `ciel_workspace/telegram_uploads/` →
 inbox note with path → Brain routes `read_file` / `read_document` / `describe_image_file`
@@ -166,6 +170,7 @@ CielCore initializes:
   ├── core.router.Router                           (Intent classification)
   ├── core.recovery_manager.RecoveryManager         (Self-healing)
   ├── core.rag_manager                             (Hybrid memory)
+  ├── core.active_subject.ActiveSubject             (bounded turn-to-route subject state)
   ├── core.tool_manager.ToolManager                 (Tool registry)
   │    └── skills.internal.* + skills.external.*   (auto-discovered)
   ├── core.task_state.TaskStore                    (Tier 2)
@@ -197,13 +202,15 @@ skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json dir
 ```
 User input (text or voice transcript) → CielCore.process()
   → clear this turn's cancel flag and outbound-send record (Tier 5 / duplicate-send guard)
+  → ActiveSubject.begin_turn(): render prior grounded topic/entities/last action
   → Tier 7b: assess_preference(text) — free; only durable wording spends one extraction call
   → RAM active-lookup anchor: only an explicit scrape/read/deepen follow-up can receive
     the last successful lookup's query + up to three public URLs (15-minute TTL)
   → RAG recall: search ChromaDB (skipped if query < 15 chars or relevance < 0.65;
     a result whose archived question normalises identically to THIS one is filtered —
     otherwise a repeated question recalls its own prior failure as "context")
-  → ContextAssembler bounds recall, then assembles [request, language, cwd] with a budget
+  → ContextAssembler bounds recall, then assembles
+    [request, active_subject, language, cwd] with a budget
   → Router (Brain LLM) classifies intent → JSON with hidden_thought + action
       action == "chat": the router's `task` is a HINT only — the Worker always gets the
       Master's real words; `task` is appended labelled "for reference ONLY", and Brain's
@@ -234,6 +241,7 @@ User input (text or voice transcript) → CielCore.process()
   → Self-Healing (on error, unless the error is on the unfixable skip-list): fix obvious
     cause → rewrite with an alternative approach → full rewrite, stdlib only
   → chat_history updated; overflow archived into ChromaDB
+  → ActiveSubject.complete_turn(): commit successful read-only evidence once for next turn
   → Tier-2 task record closed: done / failed / blocked (a staged confirmation) / cancelled
   → response returned, optionally spoken aloud (TTS)
 ```
@@ -640,8 +648,11 @@ Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
 
 ## Multi-Provider Support
 
-Each tier (Brain / Worker / Middleware) selects its provider and model independently
-via `.env` — no code changes to switch.
+The maintained topology uses exactly two model identities: Brain for routing,
+planning, and evaluation; Worker for conversation, generation, tool-result formatting,
+recovery, scheduled prose, and RAG compression. Middleware and Router Assistant remain
+optional code paths for rollback/A-B work, but are disabled in the standard deployment
+and their configured model IDs mirror Worker and Brain respectively.
 
 Provider and model choices are deployment-specific and are intentionally not recorded in
 repository documentation. The runtime source of truth is the private `.env` on the host.
@@ -651,7 +662,7 @@ The public contract is the configuration-key mapping below.
 |------|----------|-------|------------|
 | **Brain (Router)** | deployment-selected | `.env` model | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
 | **Worker (Generator)** | deployment-selected | `.env` model (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
-| **Middleware (Verifier, optional)** | deployment-selected | `.env` model | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+| **Middleware (Verifier, optional/off)** | reuses Worker | same ID as `CODER_MODEL` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_MODEL`, `MIDDLEWARE_ENABLED` |
 
 > Provider model names/aliases drift — check the alias is still live (a trivial request,
 > compare reported `input_tokens` against what you actually sent) before suspecting the

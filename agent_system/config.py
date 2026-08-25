@@ -180,6 +180,13 @@ ROUTER_PERSONA_MODE = os.getenv("ROUTER_PERSONA_MODE", "full").strip().lower()
 CONTEXT_RECENT_TURNS_ENABLED = os.getenv("CONTEXT_RECENT_TURNS_ENABLED", "true").lower() in ("true", "1", "yes")
 CONTEXT_RECENT_TURNS_BUDGET = int(os.getenv("CONTEXT_RECENT_TURNS_BUDGET", "500"))
 
+# Compact session subject passed to Brain before routing. This is structured state
+# (topic/entities/last action), not raw history and not durable memory.
+ACTIVE_SUBJECT_ENABLED = os.getenv("ACTIVE_SUBJECT_ENABLED", "true").lower() in ("true", "1", "yes")
+ACTIVE_SUBJECT_TTL_SECONDS = int(os.getenv("ACTIVE_SUBJECT_TTL_SECONDS", "900"))
+ACTIVE_SUBJECT_MAX_IDLE_TURNS = int(os.getenv("ACTIVE_SUBJECT_MAX_IDLE_TURNS", "3"))
+ACTIVE_SUBJECT_MAX_ENTITIES = int(os.getenv("ACTIVE_SUBJECT_MAX_ENTITIES", "5"))
+
 # --- Request timeout (applies to every LLM client: Brain, Worker, Middleware) ---
 # Without this, a provider that stalls (accepts the connection but never replies —
 # different from an outright connection error) hangs the client forever, and the

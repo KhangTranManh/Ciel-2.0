@@ -5,7 +5,8 @@
 <h1 align="center">Ciel 2.0</h1>
 
 <p align="center">
-  An autonomous AI assistant built on a <b>Brain → Router → Middleware → Worker</b> pipeline,
+  An autonomous AI assistant built on a <b>Brain/Router → Worker</b> two-model pipeline
+  with optional Middleware verification,
   extended by seven agent-capability tiers that close the gap between
   <em>executing commands</em> and <em>pursuing goals</em>.
 </p>
@@ -58,7 +59,8 @@ filtering.
 
 Three layers, in order of importance:
 
-- **The core** — the `Brain → Router → Middleware → Worker` loop in `core/`. Every
+- **The core** — the `Brain/Router → Worker` loop in `core/`, with optional Middleware
+  verification. Every
   request goes through it, and it's the part to understand first.
 - **The tool packs** — `skills/`, the extension surface. Adding a capability means
   writing one tool file, not touching routing.
@@ -89,7 +91,9 @@ and fixed this cycle.
 ```mermaid
 flowchart TD
     U[User Input<br/>text or voice] --> RAG[RAG Recall + Compression<br/>self-match filtered]
-    RAG --> ROUTER["Router / Brain<br/>classifies intent"]
+    RAG --> CTX["ContextAssembler<br/>bounded named blocks"]
+    SUBJECT["Active Subject<br/>topic + grounded entities + last action"] --> CTX
+    CTX --> ROUTER["Router / Brain<br/>classifies intent"]
     ROUTER -->|chat| CHAT["Worker: chat response<br/>+ recent-turns context"]
     ROUTER -->|tool| SAFE1{High-risk tool<br/>or dangerous code?}
     ROUTER -->|code| SAFE1
@@ -109,12 +113,14 @@ flowchart TD
     MID -->|no| RESP[Response]
     MW --> RESP
     CHAT --> RESP
-    RESP --> MEM[Memory Update]
+    RESP --> UPDATE["Update Active Subject<br/>for next turn"]
+    UPDATE -.next turn.-> SUBJECT
+    RESP --> MEM[Chat/RAG Memory Update]
     RESP -.optional TTS.-> SPK[Speak reply aloud]
 ```
 
-Every box above is a real module — `core/router.py`, `agent_system/models/worker.py`,
-`core/middleware.py`, `core/recovery_manager.py`. See
+Every box above is a real module — `core/router.py`, `core/active_subject.py`,
+`agent_system/models/worker.py`, `core/middleware.py`, `core/recovery_manager.py`. See
 [instructionAI/architecture.md](instructionAI/architecture.md) for the file-by-file
 breakdown.
 
@@ -148,7 +154,7 @@ do not re-open finished P0 items unless something regressed.
 |---|---|---|
 | **Python 3.12+** | Core backend | `pandas-ta` requires Python >=3.12 with no PyPI distribution for older versions. Use a fresh virtualenv on a new clone. |
 | **pip** | Dependency install | `pip install -r requirements.txt` |
-| **At least one LLM provider API key** | Brain / Worker / Middleware | Any OpenAI-compatible endpoint via `custom` (`API_KEY`+`BASE_URL`), or Gemini/DeepSeek/Vilao directly. Ollama works fully offline. |
+| **At least one LLM provider API key** | Brain / Worker (optional Middleware reuses Worker) | Any OpenAI-compatible endpoint via `custom` (`API_KEY`+`BASE_URL`), or Gemini/DeepSeek/Vilao directly. Ollama works fully offline. |
 | **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip for CLI-only use. |
 | **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
 | **Google OAuth credentials** | Gmail tools | `credentials.json` + token. Missing it disables *only* Gmail tools. |
@@ -196,15 +202,13 @@ beyond providers and safety. Every tier's own knobs are in the
 
 ```dotenv
 # --- Providers ---
-# One custom OpenAI-compatible endpoint powers all three tiers below by default —
-# swapping providers later is a 2-variable edit (API_KEY + BASE_URL) plus whichever
-# *_MODEL names change, no code change needed. See agent_system/config.py's note.
+# One custom OpenAI-compatible endpoint powers the two standard model roles below.
+# Brain owns routing/evaluation; Worker owns generation/formatting. Optional roles are
+# disabled and reuse one of these model IDs if enabled, so they cannot add a third model.
 BRAIN_PROVIDER=custom          # custom | vilao | deepseek | gemini | ollama
 BRAIN_MODEL=<router-model>
 WORKER_PROVIDER=custom
 CODER_MODEL=<worker-model>    # NOT "WORKER_MODEL" — see gotcha below
-MIDDLEWARE_PROVIDER=custom
-MIDDLEWARE_MODEL=<review-model>
 API_KEY=...                    # your OpenAI-compatible endpoint's key
 BASE_URL=https://your-provider.example/v1
 # Only needed if a tier uses one of the OTHER providers instead of "custom":
@@ -218,7 +222,15 @@ VILAO_SAFETY_BYPASS=true
 DISABLE_SAFETY_GATE=false     # keeps the destructive-tool Y/N gate ACTIVE (recommended default)
 
 # --- Optional integrations (each degrades gracefully if left blank) ---
-MIDDLEWARE_ENABLED=true
+# Standard topology is two models. These stay off; if enabled for an experiment,
+# assign Router Assistant=BRAIN_MODEL and Middleware=CODER_MODEL explicitly because
+# python-dotenv does not expand model aliases portably across every deployment.
+ROUTER_ASSISTANT_ENABLED=false
+ROUTER_ASSISTANT_PROVIDER=custom
+ROUTER_ASSISTANT_MODEL=<same-router-model>
+MIDDLEWARE_ENABLED=false
+MIDDLEWARE_PROVIDER=custom
+MIDDLEWARE_MODEL=<same-worker-model>
 TWELVEDATA_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...           # numeric — message @userinfobot to find yours, not another key
@@ -351,9 +363,10 @@ not to run both at once yet: [docker/README.md](docker/README.md).
 ## Feature Overview
 
 ### Routing & Execution
-- **Brain → Router → Middleware → Worker** — intent routing/planning, a scoped
-  fail-open finalizer for email/report bodies, and content/code generation, each an
-  independently configurable LLM tier.
+- **Brain/Router → Worker** — the maintained two-model topology: Brain owns routing,
+  planning, and evaluation; Worker owns conversation, generation, and formatting.
+  Middleware remains an optional, disabled-by-default, fail-open verifier that reuses
+  the Worker model identity.
 - **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or
   `multi_tool`. For `chat`, the router's own draft `task` is treated as a hint only —
   the Worker always sees the Master's real words, so a strong Brain pre-writing the
@@ -379,6 +392,19 @@ not to run both at once yet: [docker/README.md](docker/README.md).
 - **Recent-turn memory for replies** — the last few turns are injected into the
   response path (never routing), fixing a real gap where a follow-up like "tại sao lại
   thế" got answered with no memory of the turn just completed.
+- **Active subject handoff** (`core/active_subject.py`) — one compact RAM-only
+  topic/entities/action record from grounded read-only evidence reaches the next Brain
+  route. It adds no model call, expires after 15 minutes or three unrelated turns, and
+  excludes recipients, paths, URLs, secrets, commands, confirmations, and destructive
+  arguments. Its integration hooks fail open, so subject-state failure cannot break the
+  normal route/tool/response path.
+
+Context is deliberately asymmetric: Brain receives the current request plus bounded
+structured context such as Active Subject; Worker receives recent raw conversation for
+answer continuity. `memory_bank.json` keeps at most 20 messages (about 10 complete
+user/assistant exchanges), while the Worker prompt includes only what fits the separate
+recent-turn token budget. Raw history is not copied into Brain routing because stale
+requests and old action parameters previously contaminated new routes.
 - **Interruptible requests** (Tier 5) — Ctrl+C or the UI's Stop button cancels the
   in-flight request at the next **step boundary**, never mid-tool. The job closes as
   `cancelled`, distinguishable from a crash.
@@ -504,8 +530,9 @@ not to run both at once yet: [docker/README.md](docker/README.md).
   Skippable per-deployment via `.env`'s `DISABLED_SKILL_MODULES=vision_ops` — e.g. a
   headless server has no display for it (this also skips `describe_image_file`, which
   doesn't strictly need one — a known trade-off, not a bug).
-- **Multi-Provider** — Brain, Worker, and Middleware can each run a different provider,
-  swappable via `.env` with no code changes.
+- **Multi-Provider** — Brain and Worker can use different providers, swappable via
+  `.env` with no code changes. Optional Middleware can be deliberately re-enabled but
+  mirrors Worker in the standard deployment.
 
 ### Autonomy
 - **Autonomous MLOps Pipeline** (`autonomous_pipeline/`) — a background daemon that
@@ -526,24 +553,28 @@ not to run both at once yet: [docker/README.md](docker/README.md).
    filters out a result
    that is just the current question recalling its own prior failure, and injects a
    compressed summary — skipped for short/low-relevance queries.
-3. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or
+3. **Context assembly** adds the current request, language, working directory, and one
+   compact **Active Subject** from the prior grounded turn. Brain does not receive raw
+   chat history; Worker retains bounded recent turns for response continuity.
+4. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or
    `multi_tool` and returns a structured plan. For `chat`, its own `task` field is
    never handed to the Worker as the request — only as a labelled hint.
-4. **Workflow safeguards** run before execution: a missing send/write step is appended
+5. **Workflow safeguards** run before execution: a missing send/write step is appended
    deterministically.
-5. **The Safety Gate** intercepts high-risk calls and dangerous-pattern writes,
+6. **The Safety Gate** intercepts high-risk calls and dangerous-pattern writes,
    blocking until approved — or, if nobody is present, deferring rather than assuming
    consent.
-6. **Execution** happens via `ToolManager`. Errors trigger **Self-Healing**, which
+7. **Execution** happens via `ToolManager`. Errors trigger **Self-Healing**, which
    retries with an escalating strategy but skips error classes it knows it can't fix.
    An outbound send is deduped against this turn's earlier sends by recipient.
-7. **The Worker** formats the raw tool result into the final response — with recent
+8. **The Worker** formats the raw tool result into the final response — with recent
    conversation turns in view — always instructed to report only what the tool
    actually returned.
-8. **Middleware** (if enabled) reviews outbound email/report bodies, catching
+9. **Middleware** (if enabled) reviews outbound email/report bodies, catching
    mismatches a regex sanitizer can't, editing in place and failing open on any error.
-9. **The response returns**, optionally spoken aloud, saved to memory with overflow
-   archived into the vector store, and the Tier-2 task record closes.
+10. **The response returns** and successful read-only evidence updates Active Subject
+    once for the next turn. The reply is optionally spoken aloud, saved to memory with
+    overflow archived into the vector store, and the Tier-2 task record closes.
 
 ### What makes this different
 
@@ -792,6 +823,7 @@ Ciel 2.0/
 │   ├── task_state.py            # T2  durable job records; interrupted work survives
 │   ├── permissions.py           # T3  AUTO/ASK/DENY/DEFER, plan approval, deferred store
 │   ├── context.py               # T4  the single prompt assembler + token budget
+│   ├── active_subject.py        # RAM-only topic/entities/action handoff to Brain
 │   ├── notifier.py              # T6  where a proactive message goes, and whether it goes
 │   ├── triggers.py              # T6  the nine condition triggers + engine
 │   ├── user_model.py            # T7  the Master's profile: authority, decay, learning
@@ -800,7 +832,7 @@ Ciel 2.0/
 │   ├── voice_input.py           # CLI speech-to-text (swappable STT backends)
 │   └── speech_output.py         # CLI/UI text-to-speech (normalizer + swappable TTS backends)
 │
-├── agent_system/               # Brain/Worker/Middleware LLM models + LangGraph pipeline
+├── agent_system/               # Brain/Worker models + optional Middleware + LangGraph pipeline
 │   ├── models/                  # brain.py, worker.py, middleware.py
 │   ├── graph/                   # Multi-step structured code-gen pipeline
 │   └── utils/usage.py           # Provider token extraction for cost tracking
@@ -813,8 +845,8 @@ Ciel 2.0/
 ├── autonomous_pipeline/        # Self-running MLOps daemon (optional)
 │
 ├── backtest/                   # run_all.py + test_*.py (unit + live)
-│                               #   unit: context · user_model · proactive · outbound ·
-│                               #         conversation_bugs · quality_guards
+│                               #   unit: context · active_subject · user_model · proactive ·
+│                               #         outbound · conversation_bugs · quality_guards · plan_validation
 │                               #   live: integration · hard_special · brain_worker · rag_memory
 ├── scripts/                    # format_thoughts_log, cost_report, health_check, daily_digest
 ├── email_template/             # market_report · analysis_report · health_report
@@ -857,6 +889,7 @@ Ciel 2.0/
 | Tune the Tier-1 agent loop's rounds/timeout | `.env` — `AGENT_LOOP_ENABLED`, `AGENT_LOOP_MAX_ROUNDS`, `AGENT_LOOP_MAX_SECONDS` |
 | Tune parallel tool execution | `.env` — `AGENT_PARALLEL_ENABLED`, `AGENT_PARALLEL_MAX_WORKERS` |
 | Change Tier-4's context/RAG token budgets | `.env` — `CONTEXT_INPUT_BUDGET`, `CONTEXT_RECALL_BUDGET`, `CONTEXT_RECENT_TURNS_BUDGET` |
+| Tune active-subject lifetime | `.env` — `ACTIVE_SUBJECT_ENABLED`, `ACTIVE_SUBJECT_TTL_SECONDS`, `ACTIVE_SUBJECT_MAX_IDLE_TURNS`, `ACTIVE_SUBJECT_MAX_ENTITIES` |
 | Plan email sends with regex instead of the Brain (provider content-filter workaround) | `.env` — `EMAIL_BYPASS_BRAIN=true` |
 | Deny/auto-approve specific tools outright | `.env` — `CIEL_DENY_TOOLS`, `CIEL_AUTO_TOOLS` (comma-separated tool names) |
 
@@ -886,7 +919,7 @@ failing test.
 failure patterns instead of guessing from a handful of anecdotal bad responses.
 
 **Run the no-LLM suites before anything else.** `backtest/test_context.py`,
-`test_outbound.py`, `test_proactive.py`, `test_user_model.py`, and
+`test_active_subject.py`, `test_outbound.py`, `test_proactive.py`, `test_user_model.py`, and
 `test_conversation_bugs.py`, `test_quality_guards.py`, and `test_plan_validation.py`
 are maintained deterministic regression suites. Run them before spending a real model
 call to diagnose a change.

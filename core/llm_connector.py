@@ -35,6 +35,7 @@ from .context import (ContextAssembler, P_REQUEST, P_CRITICAL, P_IMPORTANT, P_HE
 from .permissions import PermissionPolicy, Decision, DeferredStore
 from .outbound import OUTBOUND_KEYS, delivery_key, plaintext_to_html, recipients_lowered
 from .plan_validation import PlanValidation, validate_plan
+from .active_subject import ActiveSubject
 from . import rag_manager
 
 import sys
@@ -52,6 +53,8 @@ from agent_system.config import (
     USER_MODEL_LEARN_ENABLED, USER_MODEL_LEARN_DAILY_LIMIT,
     CONTEXT_INPUT_BUDGET, CONTEXT_RECALL_BUDGET, ROUTER_PERSONA_MODE,
     CONTEXT_RECENT_TURNS_ENABLED, CONTEXT_RECENT_TURNS_BUDGET,
+    ACTIVE_SUBJECT_ENABLED, ACTIVE_SUBJECT_TTL_SECONDS,
+    ACTIVE_SUBJECT_MAX_IDLE_TURNS, ACTIVE_SUBJECT_MAX_ENTITIES,
 )
 from core.cost import estimate_cost
 
@@ -425,7 +428,8 @@ class CielCore:
             except Exception as e:
                 log.error(f"Middleware failed to initialize, continuing without it: {e}")
 
-        log.system("CielCore initialized with Modular Brain-Middleware-Worker architecture")
+        active_topology = "Brain-Middleware-Worker" if self.middleware else "Brain-Worker"
+        log.system(f"CielCore initialized with Modular {active_topology} architecture")
 
         # SAFETY GATE: confirmation callback for high-risk tools
         # Set by main.py (CLI) or main_api.py (WebSocket) at startup.
@@ -477,6 +481,15 @@ class CielCore:
         # Bounded session-only grounding for a deictic follow-up to a successful web
         # lookup. It is neither durable task state, RAG, nor general chat history.
         self._active_lookup = None
+        # The only response-side state handed back to Brain routing: one bounded,
+        # structured, RAM-only subject. It excludes recipients, paths, secrets and
+        # confirmation/destructive state by construction.
+        self.active_subject = ActiveSubject(
+            enabled=ACTIVE_SUBJECT_ENABLED,
+            ttl_seconds=ACTIVE_SUBJECT_TTL_SECONDS,
+            max_idle_turns=ACTIVE_SUBJECT_MAX_IDLE_TURNS,
+            max_entities=ACTIVE_SUBJECT_MAX_ENTITIES,
+        )
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
         # where preferences actually change the output. It renders to "" while empty, so
@@ -1959,6 +1972,16 @@ class CielCore:
             )
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
+
+        # Collect only successful, read-only evidence. ActiveSubject owns the allow-list
+        # and strips secrets, recipients, paths, URLs and command-like values.
+        try:
+            self.active_subject.observe_tool(tool_name, current_args, result_text)
+        except Exception as subject_err:
+            self._log_thought(
+                "CONTEXT", "active_subject_observe_failed",
+                f"{type(subject_err).__name__}: {str(subject_err)[:160]}",
+            )
 
         # A successful web lookup can ground only its own immediate, explicitly
         # deictic follow-up. Record the source before Worker formatting so the Router
@@ -3773,6 +3796,14 @@ RULES:
             self._sent_this_turn = set()
             self._telegram_delivery_sent_this_turn = False
         self._clear_active_lookup_for_new_turn(user_input)
+        try:
+            active_subject_note = self.active_subject.begin_turn()
+        except Exception as subject_err:
+            active_subject_note = ""
+            self._log_thought(
+                "CONTEXT", "active_subject_begin_failed",
+                f"{type(subject_err).__name__}: {str(subject_err)[:160]}",
+            )
 
         # TIER 7b — learn a durable preference from this turn, if there is one. Placed
         # at the TOP rather than at the end because `process()` has many return points
@@ -3999,6 +4030,9 @@ RULES:
             # can be explained instead of reconstructed by reading the code path.
             ctx = ContextAssembler()
             ctx.add("request", enriched_input, P_REQUEST)
+            # Structured layer-2 handoff: Brain gets the last grounded subject, never
+            # raw history. Explicit words in the current request still override it.
+            ctx.add("active_subject", active_subject_note, P_CRITICAL)
 
             # Which language the request was ORIGINALLY written in. Added AFTER the
             # translate step so it survives it — otherwise the Brain only ever sees
@@ -4332,6 +4366,19 @@ RULES:
 
             self.chat_history.add_ai_message(response)
             self._save_chat_memory()
+            try:
+                updated_subject = self.active_subject.complete_turn(user_input, response, action)
+                if updated_subject:
+                    self._log_thought(
+                        "CONTEXT", "active_subject_updated",
+                        f"topic={updated_subject.topic[:120]!r} "
+                        f"action={updated_subject.last_action!r} idle={updated_subject.idle_turns}",
+                    )
+            except Exception as subject_err:
+                self._log_thought(
+                    "CONTEXT", "active_subject_commit_failed",
+                    f"{type(subject_err).__name__}: {str(subject_err)[:160]}",
+                )
 
             # TIER 2: close the record. A staged confirmation is NOT completion — the
             # job is waiting on the Master, so it stays visible as `blocked` and turns

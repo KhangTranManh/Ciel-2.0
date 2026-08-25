@@ -20,7 +20,9 @@
 
 ### What Ciel is
 - Personal multi-tool agent: files, shell, Gmail, Telegram, trading, web, optional vision/UI.
-- Pipeline: **Brain (route/plan) → optional Middleware (verify outbound) → Worker (compose)** + `ToolManager` skills.
+- Pipeline: **Brain (route/plan/evaluate) → Worker (compose/format)** + `ToolManager`
+  skills. Optional Middleware code is retained but disabled; the maintained deployment
+  uses two model identities.
 - **Seven capability tiers** (loop, task state, permissions, context, cancel, proactive, user model): decisions in **deterministic Python**; LLM only plans/composes. See `instructionAI/architecture.md`.
 - Entry: `main.py` (CLI), `main_api.py` (UI), `main_telegram.py` — all via `AgentLoop` / `CielCore`.
 
@@ -354,6 +356,8 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-08-24 | Conversation follow-up repair | provider-configured | `test_conversation_bugs` 78/78; deployed lookup/guard smoke | **PASS** | Chat cannot claim an unexecuted tool call; successful search/scrape carries a 15-minute, RAM-only query + public-URL anchor only for an explicit follow-up. |
 | 2026-08-25 | Documentation and Telegram ops refresh | — | link/content audit | done | README, hand-off docs, RAG walkthrough, prompt inventory, and deployment instructions now describe the bounded lookup bridge and keep configuration/secrets out of public docs. |
 | 2026-08-25 | Terse lookup continuation | provider-configured | `test_conversation_bugs` 82/82 | **PASS** | Fresh “làm đi” / “mở đi” follows one cached public URL with deterministic `smart_scrape`; several URLs require a selection unless explicitly requested together. |
+| 2026-08-25 | Two-model topology | Brain + Worker | unit 7/7; config + boot smoke | **PASS** | Middleware and Router Assistant disabled; dormant aliases mirror Worker/Brain; optional code retained for rollback. |
+| 2026-08-25 | Active subject handoff | Brain + Worker | unit 8/8 suites; subject 8/8; exact two-turn live smoke | **PASS** | RAM-only grounded topic/entities/action reaches Brain before routing; 15-minute/3-turn expiry; laptop price/used follow-up routed `multi_tool`. |
 
 | 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
 | 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
@@ -379,6 +383,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | Suite | Tier | Module |
 |-------|------|--------|
 | context | unit | `backtest.test_context` |
+| active_subject | unit | `backtest.test_active_subject` |
 | user_model | unit | `backtest.test_user_model` |
 | proactive | unit | `backtest.test_proactive` |
 | outbound | unit | `backtest.test_outbound` |

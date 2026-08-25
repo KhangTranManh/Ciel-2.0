@@ -37,6 +37,11 @@ Provider and model choices are deployment-specific and belong only in `.env`. Th
 supported stack is `custom`, Vilao, DeepSeek, Gemini, or Ollama per tier. The Worker
 model key is **`CODER_MODEL`**, not `WORKER_MODEL`.
 
+The maintained runtime uses two model identities: Brain for route/plan/evaluation and
+Worker for generation/formatting/recovery. Router Assistant and Middleware are disabled;
+their dormant model IDs mirror Brain and Worker so an accidental re-enable does not
+introduce a third model. Vision defaults to the Brain model.
+
 Swap a stack with its provider, endpoint/key, and model fields together. Measure a new
 alias for **gateway-injected tokens** before adopting it (see below). A local model that
 can chat is not automatically router-ready: it must pass the structured-route and live
@@ -88,6 +93,10 @@ Docker: `docker/` (`docker-compose.api.yml`, `docker-compose.telegram.yml`).
   is available only to an explicit scrape/read/deepen follow-up, and clears on a new topic.
 
 ---
+
+- Brain routing now also receives one compact ActiveSubject from the prior grounded
+  turn (topic/entities/last action; no raw history). The exact laptop search to
+  price/used follow-up smoke routed `multi_tool`; unit runner is 8/8 suites.
 
 ## Capability tiers (all built)
 
@@ -146,6 +155,16 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 ---
 
 ## Changelog *(newest first — prune aggressively)*
+
+### 2026-08-25 — Standardized two-model runtime
+
+- The maintained topology is Brain (route/plan/evaluate) + Worker
+  (compose/format/recover). Middleware and Router Assistant stay in code but are
+  disabled; their dormant model IDs mirror Worker and Brain.
+- `core/llm_connector.py` now reports the topology actually instantiated at boot.
+- Verified: two-model config smoke, runtime boot with no Middleware client, and
+  `python -m backtest.run_all --unit-only` — 8/8 suites PASS after the Active Subject
+  regression suite was added.
 
 ### 2026-08-25 — Conversation reliability and Telegram deployment refresh
 

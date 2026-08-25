@@ -20,7 +20,8 @@ Short-Term (JSON)                    Long-Term (ChromaDB)
 
 - **File**: `ciel_data/memory_bank.json` — JSON array of
   `{"type": "human|ai", "content": "..."}`.
-- **Max size**: 20 messages (`self.max_history`). Overflow archives into ChromaDB via
+- **Max size**: 20 messages (`self.max_history`), approximately 10 complete
+  user/assistant exchanges. Overflow archives into ChromaDB via
   `rag_manager.embed_and_save()`.
 - **Load filter**: `_load_chat_memory()` strips toxic/refusal patterns on load.
 - **Reaches the model in exactly two places**, both response-side, via
@@ -51,6 +52,26 @@ user data, or durable task state.
   later deictic request.
 - It is independent of `CONTEXT_RECENT_TURNS_ENABLED`: disabling raw recent-chat context
   must not disable this URL-only, tool-proven continuation channel.
+
+### Active Subject Handoff
+
+`core/active_subject.py::ActiveSubject` is the compact layer between a completed turn
+and the next Brain route. It is session-only structured state, not a third memory store:
+`topic`, up to five grounded `entities`, `last_action`, age, and unrelated-turn count.
+
+- `begin_turn()` renders `[ACTIVE SUBJECT]` before Brain routing through
+  `ContextAssembler`; `complete_turn()` updates it once after the final response.
+- Successful read-only tools report evidence at the shared `execute_tool()` success
+  choke point. This costs no extra LLM call.
+- `begin_turn()`, `observe_tool()`, and `complete_turn()` are wrapped fail-open by
+  `CielCore`; a subject-state error logs under `CONTEXT` and the ordinary turn continues.
+- An entity survives only when it occurs in both Worker output and raw tool evidence.
+- Recipients, paths, URLs, credentials, command-like strings, confirmation state, and
+  destructive arguments are excluded.
+- The Brain prompt explicitly says current wording overrides the record. Three turns
+  without new grounded evidence, 15 minutes, or restart clears it.
+- It resolves omitted subjects such as “check their listed prices”; it does not replace
+  Worker recent turns, active URL lookup, RAG, or durable task state.
 
 ### Long-Term Memory (RAG)
 
@@ -124,6 +145,10 @@ no recall.
 | `self.max_history` | 20 | `llm_connector.py` |
 | `CONTEXT_RECALL_BUDGET` | 600 (default) | `agent_system/config.py` |
 | `CONTEXT_RECENT_TURNS_BUDGET` | 500 (default) | `agent_system/config.py` |
+| `ACTIVE_SUBJECT_ENABLED` | true (default) | `agent_system/config.py` |
+| `ACTIVE_SUBJECT_TTL_SECONDS` | 900 (default) | `agent_system/config.py` |
+| `ACTIVE_SUBJECT_MAX_IDLE_TURNS` | 3 (default) | `agent_system/config.py` |
+| `ACTIVE_SUBJECT_MAX_ENTITIES` | 5 (default) | `agent_system/config.py` |
 
 ## Two Memory Stores — and the Difference Is a Security Boundary
 
