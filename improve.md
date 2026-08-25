@@ -73,14 +73,14 @@ Open at least:
 - [x] `python -m backtest.run_all --unit-only` → **unit suites PASS** (now includes `quality_guards`)  
 - [x] Unattended: no silent high-risk send/delete (DEFER, not auto-consent)  
 - **Verified:** 2026-08-06 live smoke (boot, 10 cmds, unit, DEFER). Ongoing: `run_all --unit-only`  
-- Pass date: **2026-08-06**  Models: **gpt-5.6-sol / gpt-5.6-luna / gpt-5.5**
+- Pass date: **2026-08-06**  Provider/model baseline: recorded privately per deployment.
 
 ### Level B — Core Green (near-term goal)
 - [x] Level A  
 - [x] `python -m backtest.run_all --skip-exploratory` → **all unit + live suites PASS**  
 - [x] ≥3 real email checks (test address): Message Id; no internal paths; no placeholders / invented numbers when tools fail  
 - [x] Follow-up context works (“tại sao lại thế” remembers prior turn)  
-- **Evidence (2026-08-06 check):** A smoke 7/7; run_all 9/9 (2026-08-04, P0.1); emails P0.3 (multi MsgId → kxctran@…, double-send, dig); follow-up + file đó + scope veto P0.4  
+- **Evidence (2026-08-06 check):** A smoke 7/7; run_all 9/9 (2026-08-04, P0.1); email sends with Message Id, double-send protection, and referential recipient coverage; follow-up + file đó + scope veto P0.4.
 - Pass date: **2026-08-06**
 
 ### Level C — Portable / hybrid-local ready
@@ -89,6 +89,11 @@ Open at least:
 - [ ] New machine: clone + env + unit `run_all` PASS + 5 live smokes  
 - [ ] If local model: ≥20/20 Brain route JSON parse + live suites not mass-red  
 - [ ] Full local 3-role not required if hybrid is solid
+
+**Current local-model evidence:** a Qwen3 8B Ollama trial was acceptable for basic
+chat but did not reliably follow the tool-routing contract. It is not the default Brain
+or Worker baseline. Keep the hybrid provider stack until a candidate meets the route
+JSON, tool-use, and live-suite gates above; never declare Level C from a chat-only test.
 
 **Near-term goal: Level B.**
 
@@ -103,20 +108,20 @@ Open at least:
   - Unit 5/5: context, user_model, proactive, outbound, conversation_bugs  
   - Live all PASS: integration, hard_special, brain_worker, rag_memory  
 - [x] **Known baseline (2026-08-03):** hard_special 15/16 (Special 7) + rag partial — **fixed; re-run 2026-08-04 full green**  
-- Pass date: **2026-08-04**  Models: **gpt-5.6-sol / gpt-5.6-luna / gpt-5.5**
+- Pass date: **2026-08-04**  Provider/model baseline: recorded privately per deployment.
 
 ### P0.2 — Brain JSON / routing stable
 - [x] **Do:** Brain model in `.env` must emit parseable router JSON reliably.  
 - [x] **Test:** 20 smokes (greet, single tool, multi-tool, VI, EN, vague) + 5 consecutive AgentLoop turns  
 - [x] **Pass when:** ≥20/20 `ROUTE_DECISION` parse OK; 5/5 consecutive simple chat + tool  
 - **Verified:** 2026-08-06 live route smoke 20/20 + 5 consec. Ongoing: integration / hard_special  
-- Pass date: **2026-08-06**  Brain model: **gpt-5.6-sol**
+- Pass date: **2026-08-06**  Brain model: recorded privately per deployment.
 
 ### P0.3 — Professional email by default
 - [x] **Do:** Tools first → clean body → **one** send; no forced HTML dashboard unless user asks visual.  
 - [x] **Test:** `test_outbound`; hard_special market+email; 2–3 real mails to test inbox  
 - [x] **Pass when:** Message Id; no `agent_output/`/`ciel_workspace/` in body; no `[]` / invented prices; no double-send; referential “gửi mail đó” correct recipient  
-- **Close (2026-08-06):** `test_outbound` 36/36; dig+referential; gmail list multi-id fix; live mails to kxctran@…  
+- **Close (2026-08-06):** `test_outbound` 36/36; digest + referential-recipient coverage; Gmail multi-id fix; live mail verification to an operator-controlled test inbox.
 - **HTML analysis:** `build_analysis_report_html` + `send_telegram_document` (see report_ops / telegram_ops)  
 - Pass date: **2026-08-06**
 
@@ -336,16 +341,19 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 
 | Date | Item | Models (B/W/M) | Tests | Result | Notes |
 |------|------|----------------|-------|--------|-------|
-| 2026-08-03 | Baseline | sol / luna / gpt-5.5 | unit 5/5; live 2/4 | Unit OK; hard 15/16; rag partial | improve.md + run_all created |
+| 2026-08-03 | Baseline | provider-configured | unit 5/5; live 2/4 | Unit OK; hard 15/16; rag partial | improve.md + run_all created |
 | 2026-08-03 | Handoff | — | — | — | Moved into repo; linked from instructionAI/SKILL.md for AI continuity |
-| 2026-08-03 | P0.1 RAG | sol/luna/5.5 | smoke + full test diagnose | partial→fix | Self-match ate top-k; over-fetch RAG; shell memory fallback; smoke: Python+Rust OK |
-| 2026-08-04 | P0.1 RAG retest | sol/luna/5.5 | test_rag_memory full | OPERATIONAL | Python+Rust+Falcon PASS; archive/recall PASS; Brain used get_fact |
-| 2026-08-04 | P0.1 run_all | sol/luna/5.5 | run_all --skip-exploratory | **9/9 PASS** | unit+live full green; hard 16/16; rag OPERATIONAL; note: gateway 408 once mid hard_special but suite recovered |
-| 2026-08-04 | Live news/mail dig | sol/luna/5.5 | live | **OK** | News dig + multi mail kxctran; BTC Binance-first |
-| 2026-08-06 | P0.2–P0.4 + Level A/B | sol/luna/5.5 | live + unit | **PASS** | Route 20/20; email dig/send; context 3/3; Level A/B tick |
-| 2026-08-06 | P1.1 + P1.4 + TG HTML | sol/luna/5.5 | live + unit | **PASS** | Honest tools; sanitize/middleware; telegram document HTML |
+| 2026-08-03 | P0.1 RAG | provider-configured | smoke + full test diagnose | partial→fix | Self-match ate top-k; over-fetch RAG; shell memory fallback; smoke: Python+Rust OK |
+| 2026-08-04 | P0.1 RAG retest | provider-configured | test_rag_memory full | OPERATIONAL | Python+Rust+Falcon PASS; archive/recall PASS; Brain used get_fact |
+| 2026-08-04 | P0.1 run_all | provider-configured | run_all --skip-exploratory | **9/9 PASS** | unit+live full green; hard 16/16; rag OPERATIONAL; note: gateway 408 once mid hard_special but suite recovered |
+| 2026-08-04 | Live news/mail dig | provider-configured | live | **OK** | News digest + multi-recipient mail verification; BTC Binance-first |
+| 2026-08-06 | P0.2–P0.4 + Level A/B | provider-configured | live + unit | **PASS** | Route 20/20; email digest/send; context 3/3; Level A/B tick |
+| 2026-08-06 | P1.1 + P1.4 + TG HTML | provider-configured | live + unit | **PASS** | Honest tools; sanitize/middleware; Telegram document HTML |
 | 2026-08-06 | Cleanup | — | — | done | Removed ephemeral `backtest/_smoke_*.py`; guards → `test_quality_guards` in `run_all` unit |
-| 2026-08-08 | P1.5 plan validation | sol/luna/5.5 | unit 7/7; plan 10/10; live search→Gmail | **PASS** | Pure validator before execution; continuation re-validation; duplicate delivery repair only when reference-safe; one real Gmail Message Id |
+| 2026-08-08 | P1.5 plan validation | provider-configured | unit 7/7; plan 10/10; live search→Gmail | **PASS** | Pure validator before execution; continuation re-validation; duplicate delivery repair only when reference-safe; one real Gmail Message Id |
+| 2026-08-24 | Conversation follow-up repair | provider-configured | `test_conversation_bugs` 78/78; deployed lookup/guard smoke | **PASS** | Chat cannot claim an unexecuted tool call; successful search/scrape carries a 15-minute, RAM-only query + public-URL anchor only for an explicit follow-up. |
+| 2026-08-25 | Documentation and Telegram ops refresh | — | link/content audit | done | README, hand-off docs, RAG walkthrough, prompt inventory, and deployment instructions now describe the bounded lookup bridge and keep configuration/secrets out of public docs. |
+| 2026-08-25 | Terse lookup continuation | provider-configured | `test_conversation_bugs` 82/82 | **PASS** | Fresh “làm đi” / “mở đi” follows one cached public URL with deterministic `smart_scrape`; several URLs require a selection unless explicitly requested together. |
 
 | 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
 | 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
@@ -364,7 +372,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | Memory / user model / cost | `instructionAI/data_pipeline.md` | — |
 | UI / voice | `instructionAI/voice_and_interface.md` | — |
 | **What to upgrade next** | **`improve.md` (this file)** | `backtest/run_all.py` |
-| Dated live status (optional) | `note.md`, `architect.md` | not required for hand-off |
+| Dated live status (optional) | `note.md` | not required for hand-off |
 
 ### Maintained backtest suites (via `run_all`)
 
@@ -389,7 +397,7 @@ Removed as non-regression: sample generators (`generate_test_samples` / `run_tes
 
 ```text
 Read instructionAI/SKILL.md and improve.md.
-Continue Ciel personal-agent upgrades from the first unchecked P0 item.
+Continue Ciel personal-agent upgrades from the first unchecked roadmap item.
 Keep Python decisions / LLM compose. Do not turn this into a coding-IDE product.
 Run the tests listed for that item and only tick Pass when criteria match.
 ```

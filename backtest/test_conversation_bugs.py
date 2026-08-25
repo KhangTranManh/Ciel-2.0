@@ -272,6 +272,14 @@ def test_router_task_hijack():
     check("when task equals the user's own words, no redundant hint is appended",
           "topic guess" not in p3)
 
+    print("  case C — the process chat branch blocks a fake tool status before reply")
+    core3.worker.generate = lambda p, *a, **k: "Đang chạy stealth_search, chờ kết quả."
+    core3.router.route = lambda u, t, h: {"action": "chat", "task": "ask for the topic"}
+    guarded = core3.process("tra tin mới về vụ đó")
+    check("process returns the honest fallback, never the fictional running status",
+          "chưa chạy tra cứu" in guarded.lower()
+          and "stealth_search" not in guarded.lower(), guarded)
+
     print("  control — action='code' is a DIFFERENT contract (task=code SPEC, not a"
           " reply) and must be untouched by this fix")
     core4 = CielCore()
@@ -520,6 +528,132 @@ def test_selfmatch_filter():
           != _normalize_for_selfmatch("phân tích thêm về tin đó"))
 
 
+def test_unbacked_chat_tool_promise_guard():
+    """A Worker on the chat path must not fabricate a running tool."""
+    print("\n[9] Chat execution boundary — no fake background tool work")
+    from core.llm_connector import CielCore, _UNBACKED_CHAT_TOOL_PROMISE_RE
+
+    # This guard has no runtime dependency on a loaded model/tool pack. Avoid a full
+    # CielCore init here so the regression stays a fast deterministic unit test.
+    core = CielCore.__new__(CielCore)
+    core._log_thought = lambda *args, **kwargs: None
+    core._detect_language = lambda text: "Vietnamese" if "tin" in text.lower() else "English"
+    fake_vi = (
+        "Rõ, Master — đang chạy `stealth_search` để tra tin mới nhất. "
+        "Chờ kết quả trả về, tôi tổng hợp ngay."
+    )
+    check("detects a Vietnamese running-search promise",
+          bool(_UNBACKED_CHAT_TOOL_PROMISE_RE.search(fake_vi)))
+    blocked_vi = core._block_unbacked_chat_tool_promise(
+        fake_vi, "tra tin mới nhất về vụ đó")
+    check("replaces the fake promise with an honest clarification",
+          "chưa chạy tra cứu" in blocked_vi.lower()
+          and "stealth_search" not in blocked_vi.lower(), blocked_vi)
+
+    fake_en = "I am going to run smart_scrape now and wait for the results."
+    blocked_en = core._block_unbacked_chat_tool_promise(fake_en, "find the latest news")
+    check("keeps the fallback in the Master's language",
+          blocked_en.startswith("I have not run a search"), blocked_en)
+
+    explanation = "stealth_search is the live-web tool used when a search actually runs."
+    check("does not block a harmless explanation of a tool",
+          core._block_unbacked_chat_tool_promise(explanation, "what is stealth_search?")
+          == explanation)
+    check("does not mistake addressing the Master for a tool call",
+          not _UNBACKED_CHAT_TOOL_PROMISE_RE.search("Tôi sẽ gọi bạn là Master từ giờ."))
+
+
+def test_active_lookup_followup_context():
+    """A live lookup grounds explicit and safe terse read-only follow-ups."""
+    print("\n[10] Active lookup context — source-grounded web follow-ups")
+    import threading
+    import time
+    from core.llm_connector import CielCore
+
+    core = CielCore.__new__(CielCore)
+    core._log_lock = threading.RLock()
+    core._log_thought = lambda *args, **kwargs: None
+    core._active_lookup = None
+    core._tool_map = {"smart_scrape": object()}
+    raw_search = (
+        "1. Source A: https://example.com/article-a\n"
+        "2. Source B: https://example.org/article-b\n"
+        "3. Source C: https://example.net/article-c\n"
+        "4. Source D: https://example.edu/article-d\n"
+    )
+    raw_single = "Only source: https://example.com/article-a\n"
+    core._remember_active_lookup(
+        "stealth_search", {"query": "Nguyen Si Cuong case"}, raw_single,
+        "Investigate Nguyen Si Cuong",
+    )
+    note = core._open_thread_note("scrape that article in detail")
+    check("deictic scrape opens a bounded active-lookup thread",
+          "Active live lookup" in note and "smart_scrape" in note, note)
+    check("thread carries the original query and real URLs only",
+          "Nguyen Si Cuong case" in note
+          and "https://example.com/article-a" in note
+          and "https://example.org/article-b" not in note, note)
+
+    generic_note = core._open_thread_note("làm đi")
+    check("a terse Vietnamese imperative keeps one live lookup active",
+          "short imperative" in generic_note
+          and "https://example.com/article-a" in generic_note
+          and "Call smart_scrape" in generic_note, generic_note)
+    generic_route = core._apply_active_lookup_route_override(
+        {"action": "chat"}, generic_note)
+    check("a single grounded URL overrides a chat route to smart_scrape",
+          generic_route.get("action") == "tool"
+          and generic_route.get("tool_name") == "smart_scrape"
+          and generic_route.get("tool_args", {}).get("url") == "https://example.com/article-a",
+          repr(generic_route))
+    import core.llm_connector as connector_module
+    saved_recent_turns_setting = connector_module.CONTEXT_RECENT_TURNS_ENABLED
+    try:
+        connector_module.CONTEXT_RECENT_TURNS_ENABLED = False
+        no_history_note = core._open_thread_note("mở đi")
+        check("a live lookup still works when recent-turn context is disabled",
+              "Active live lookup" in no_history_note
+              and "https://example.com/article-a" in no_history_note, no_history_note)
+    finally:
+        connector_module.CONTEXT_RECENT_TURNS_ENABLED = saved_recent_turns_setting
+    core._clear_active_lookup_for_new_turn("mở đi")
+    check("a terse imperative does not clear the active lookup",
+          core._active_lookup is not None)
+
+    core._clear_active_lookup_for_new_turn("what time is it?")
+    check("an unrelated turn clears the lookup immediately", core._active_lookup is None)
+
+    core._remember_active_lookup(
+        "stealth_search", {"query": "several candidates"}, raw_search, "search")
+    ambiguous = core._open_thread_note("mở đi")
+    check("a generic command does not guess among several links",
+          "[TARGET CHOICE REQUIRED]" in ambiguous
+          and "do NOT run a tool" in ambiguous, ambiguous)
+    ambiguous_route = core._apply_active_lookup_route_override(
+        {"action": "tool", "tool_name": "smart_scrape"}, ambiguous)
+    check("several grounded URLs deterministically stay in chat for a choice",
+          ambiguous_route.get("action") == "chat" and "choose one source" in ambiguous_route.get("task", ""),
+          repr(ambiguous_route))
+    plural = core._open_thread_note("đọc tất cả các bài")
+    check("an explicit plural command may use only the cached links",
+          "multi_tool" in plural
+          and "https://example.com/article-a" in plural
+          and "https://example.net/article-c" in plural
+          and "https://example.edu/article-d" not in plural, plural)
+    plural_route = core._apply_active_lookup_route_override({"action": "chat"}, plural)
+    check("an explicit plural request becomes only cached smart_scrape steps",
+          plural_route.get("action") == "multi_tool"
+          and len(plural_route.get("tools", [])) == 3
+          and all(step.get("tool_name") == "smart_scrape" for step in plural_route.get("tools", [])),
+          repr(plural_route))
+
+    core._remember_active_lookup(
+        "stealth_search", {"query": "temporary query"}, raw_search, "temporary")
+    core._active_lookup["created_at"] = time.time() - core._ACTIVE_LOOKUP_TTL_SECONDS - 1
+    check("an expired lookup cannot be revived by a deictic follow-up",
+          core._open_thread_note("scrape it") == "" and core._active_lookup is None)
+
+
 def main():
     print("=" * 72)
     print("CONVERSATION BUGS SUITE — found by reading a real transcript")
@@ -527,7 +661,8 @@ def main():
     for fn in (test_scope_veto, test_long_paste_style_rule, test_recent_turns_block,
                test_recent_turns_never_reaches_router, test_router_task_hijack,
                test_referential_recipient_override, test_open_thread_for_router,
-               test_selfmatch_filter):
+               test_selfmatch_filter, test_unbacked_chat_tool_promise_guard,
+               test_active_lookup_followup_context):
         fn()
 
     print("\n" + "=" * 72)

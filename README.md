@@ -13,7 +13,7 @@
 <p align="center">
   <a href="improve.md">Roadmap (Level B)</a> ·
   <a href="instructionAI/SKILL.md">AI hand-off</a> ·
-  <a href="architect.md">Architecture</a> ·
+  <a href="instructionAI/architecture.md">Architecture</a> ·
   <a href="note.md">Live Status</a> ·
   <a href="ui/README.md">UI</a>
 </p>
@@ -122,17 +122,18 @@ breakdown.
 
 ## Status (Level B)
 
-As of **2026-08-08**, the personal-agent pass bar is **Level B (Core Green)** — see
-[`improve.md`](improve.md) for the living checklist and journal.
+The current personal-agent pass bar is **Level B (Core Green)** — see
+[`improve.md`](improve.md) for the living checklist, evidence, and next upgrade.
 
 | Area | State |
 |------|--------|
 | **Level A** (daily CLI) | PASS — boot, unit suites, ~10 daily tools, unattended DEFER |
-| **Level B** (core green) | PASS — live `run_all --skip-exploratory`, real email quality, follow-up context |
+| **Level B** (core green) | PASS — live integration baseline, real email quality, bounded follow-up context |
 | **P0 foundation** | PASS |
 | **P1.1** honest tool failures / **P1.4** outbound sanitize | PASS |
 | **P1.5** deterministic multi-tool plan validation | PASS — unit + live search to Gmail smoke verified |
-| **Telegram** files + plain text + **HTML document** attach | Working |
+| **Telegram** files + plain text + **HTML document** attach | Working in the container deployment |
+| **Search follow-up grounding** | Working — “làm đi” / “mở đi” executes only a single fresh grounded URL; several links require a choice unless explicitly requested together |
 | **Level C** portable / **P1.2–P1.3** formal / **P2–P3** | Open (roadmap) |
 
 **For AI assistants upgrading Ciel:** start at
@@ -199,11 +200,11 @@ beyond providers and safety. Every tier's own knobs are in the
 # swapping providers later is a 2-variable edit (API_KEY + BASE_URL) plus whichever
 # *_MODEL names change, no code change needed. See agent_system/config.py's note.
 BRAIN_PROVIDER=custom          # custom | vilao | deepseek | gemini | ollama
-BRAIN_MODEL=gpt-5.6-sol
+BRAIN_MODEL=<router-model>
 WORKER_PROVIDER=custom
-CODER_MODEL=gpt-5.6-luna      # NOT "WORKER_MODEL" — see gotcha below
+CODER_MODEL=<worker-model>    # NOT "WORKER_MODEL" — see gotcha below
 MIDDLEWARE_PROVIDER=custom
-MIDDLEWARE_MODEL=gpt-5.5
+MIDDLEWARE_MODEL=<review-model>
 API_KEY=...                    # your OpenAI-compatible endpoint's key
 BASE_URL=https://your-provider.example/v1
 # Only needed if a tier uses one of the OTHER providers instead of "custom":
@@ -308,6 +309,9 @@ python -m backtest.test_quality_guards
 
 # Multi-tool structure, dependency, schema, and duplicate-delivery checks
 python -m backtest.test_plan_validation
+
+# Conversation boundaries, explicit lookup follow-ups, and tool-promise guard
+python -m backtest.test_conversation_bugs
 ```
 
 Maintained suites live under `backtest/test_*.py` and `backtest/run_all.py`.  
@@ -457,6 +461,9 @@ not to run both at once yet: [docker/README.md](docker/README.md).
 ### Memory & Data
 - **Hybrid RAG Memory** — short-term chat history plus long-term ChromaDB semantic
   memory, filtered against recalling a question's own prior failure as "context".
+- **Bounded lookup continuity** — a successful `stealth_search`/`smart_scrape` retains
+  only its query and up to three public URLs for one explicit follow-up (“scrape that
+  result”). It expires in 15 minutes, clears on a new topic, and is never persisted.
 - **Two memory stores, split by security boundary** — `facts.json` (pull-only, may
   hold secrets, never injected) vs. `user_model.json` (injected, refuses secrets).
 - **Email Send Pipeline** — market/asset reports, research digests, and document
@@ -514,7 +521,9 @@ not to run both at once yet: [docker/README.md](docker/README.md).
 
 1. **User input arrives** at `CielCore.process()` (`core/llm_connector.py`) — from the
    CLI loop, the WebSocket API, a voice transcript, or the autonomous pipeline.
-2. **RAG recall** searches ChromaDB for relevant past context, filters out a result
+2. **Active lookup / RAG context** keeps an in-RAM source anchor only for an explicit
+   immediate search follow-up; separately, RAG searches ChromaDB for relevant past context,
+   filters out a result
    that is just the current question recalling its own prior failure, and injects a
    compressed summary — skipped for short/low-relevance queries.
 3. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or
@@ -694,6 +703,16 @@ time** yet: two independent `CielCore` processes writing the same JSON/SQLite-ba
 state concurrently is a real race condition. Treat them as alternatives to pick one from
 for now. Full instructions: [`docker/README.md`](docker/README.md).
 
+For an existing Telegram deployment, rebuild after dependency or Dockerfile changes;
+otherwise recreate the service after Python/config changes:
+
+```bash
+docker compose -f docker/docker-compose.telegram.yml up -d --build
+docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100
+```
+
+Keep the server `.env`, OAuth files, and persistent `ciel_data/` outside version control.
+
 ### Daily CI jobs (`.github/workflows/health_check.yml`)
 
 Builds this same image and runs it daily (cron, 07:00 Vietnam time) — not a bare
@@ -753,7 +772,7 @@ Ciel 2.0/
 ├── main.py                    # CLI entry point (text + voice)
 ├── main_api.py                 # FastAPI + WebSocket server for the UI (+ /skills, /health, /tts)
 ├── main_telegram.py             # Telegram bot entry point (see core/telegram_interface.py)
-├── architect.md                # Full architecture map (start here for deep dives)
+├── instructionAI/architecture.md # Full architecture map (start here for deep dives)
 ├── note.md                    # Live status / rolling changelog
 ├── requirements.txt
 ├── docker/                     # Container deployment — Dockerfile + 2 compose files (API, Telegram)
@@ -800,7 +819,7 @@ Ciel 2.0/
 ├── scripts/                    # format_thoughts_log, cost_report, health_check, daily_digest
 ├── email_template/             # market_report · analysis_report · health_report
 ├── instructionAI/              # AI hand-off — start with SKILL.md
-├── improve.md                  # Upgrade roadmap (Level A/B/C, P0–P3) — Level B as of 2026-08-06
+├── improve.md                  # Upgrade roadmap (Level A/B/C, P0–P3)
 ├── ciel_workspace/             # Sandbox (+ telegram_uploads/ for inbound bot files)
 └── agent_output/               # Generated code + analysis HTML reports
 ```
@@ -868,8 +887,9 @@ failure patterns instead of guessing from a handful of anecdotal bad responses.
 
 **Run the no-LLM suites before anything else.** `backtest/test_context.py`,
 `test_outbound.py`, `test_proactive.py`, `test_user_model.py`, and
-`test_conversation_bugs.py` cover 369 assertions with zero LLM calls and zero network —
-they catch a regression in seconds, before you spend a real call finding it.
+`test_conversation_bugs.py`, `test_quality_guards.py`, and `test_plan_validation.py`
+are maintained deterministic regression suites. Run them before spending a real model
+call to diagnose a change.
 
 **Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on
 boot, that's PyTorch failing to initialize — not a code bug. Ciel disables RAG
@@ -881,9 +901,11 @@ gracefully and keeps running.
 
 This is currently an internal/experimental project without a formal contribution
 process. If you fork it: keep the safety-flag separation intact, prefer deterministic
-checks over trusting the Brain to "remember" a rule, and read `architect.md`'s
-changelog section before touching `core/llm_connector.py` — most of its logic exists
-because of a specific, previously-observed failure.
+checks over trusting the Brain to "remember" a rule, and read
+[`instructionAI/conventions.md`](instructionAI/conventions.md) plus
+[`instructionAI/architecture.md`](instructionAI/architecture.md) before touching
+`core/llm_connector.py` — most of its logic exists because of a specific,
+previously-observed failure.
 
 ## Acknowledgements
 

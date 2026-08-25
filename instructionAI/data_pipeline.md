@@ -28,6 +28,30 @@ Short-Term (JSON)                    Long-Term (ChromaDB)
   path. **Never** the Router — see the July-2026 decision under RAG Recall Pipeline
   below; `test_conversation_bugs.py` asserts this holds.
 
+### Active Lookup Context
+
+`CielCore._active_lookup` is a RAM-only bridge for one explicit follow-up, or one terse
+read-only continuation, to a successful `stealth_search` or `smart_scrape`. It stores the
+lookup query and at most three public HTTP(S) source URLs. It is not chat history, RAG,
+user data, or durable task state.
+
+- A follow-up such as “scrape that article”, “đào sâu vụ này”, or “tiếp tục” receives a
+  bounded `[OPEN THREAD]` containing only that query and those exact URLs. A short
+  “làm đi”, “mở đi”, “xem đi”, or “do it” has the same meaning only while one live URL
+  exists.
+- The Router uses `smart_scrape` with an anchored URL instead of asking for a URL it has
+  already received or inventing one. When several URLs are cached, a singular/generic
+  command asks the Master to choose; only an explicit plural request may scrape the
+  cached set.
+- This result is enforced after routing: `_apply_active_lookup_route_override()` replaces
+  a model `chat`/wrong-tool decision with read-only `smart_scrape` steps over the cached
+  URLs. It cannot affect file, mail, shell, or destructive actions.
+- The anchor expires after 15 minutes, clears immediately on an unrelated turn, and never
+  survives a restart. These limits prevent a source from an older topic being reused by a
+  later deictic request.
+- It is independent of `CONTEXT_RECENT_TURNS_ENABLED`: disabling raw recent-chat context
+  must not disable this URL-only, tool-proven continuation channel.
+
 ### Long-Term Memory (RAG)
 
 - **Storage**: `ciel_data/vector_memory/` (ChromaDB persistent directory).

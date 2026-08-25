@@ -303,3 +303,22 @@ disposable.
     right one. When the override fires, the synthesis prompt must be told the confirmed
     recipient explicitly (`recipient_override_note`); don't trust the model to have
     reached the same correction on its own.
+16. **A chat response cannot claim that a tool is running.** `action == "chat"` gives
+    the Worker no tool handle. `_block_unbacked_chat_tool_promise()` rejects a concrete
+    search/tool promise such as "running `stealth_search`" or "waiting for the results"
+    and returns an honest clarification instead; it does not create a fake pending task.
+    The matcher must not treat ordinary language such as "I will call you Master" as a
+    tool call. This is a code guard as well as an `execute_chat()` prompt boundary
+    because Router and Worker see intentionally different context.
+17. **A successful live lookup may ground one narrow follow-up.** `_active_lookup`
+    retains only the query and up to three public URLs in RAM for 15 minutes. It reaches
+    the Router when the next request explicitly says to scrape/read/deepen that result,
+    or uses a terse read-only imperative such as “làm đi” / “mở đi” while exactly one
+    URL is live. Several cached URLs require a choice unless the Master explicitly asks
+    for all of them. `_apply_active_lookup_route_override()` enforces the resulting
+    read-only `smart_scrape` plan after model routing, so a model cannot misclassify a
+    terse continuation as chat. It then clears on a new topic and on restart. It is not
+    a shortcut for feeding general `chat_history` or Tier-2 task records into routing.
+    It must remain available even when `CONTEXT_RECENT_TURNS_ENABLED=false`, because its
+    URLs came from a real tool this process just ran, not from raw conversation history.
+    Keep the regression in `backtest/test_conversation_bugs.py`.

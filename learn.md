@@ -203,9 +203,9 @@ ciel_workspace/ · agent_output/              # sandbox — mọi file tool ch�
 
 ## 9. Triết lý kiểm thử
 
-- **5 suite không dùng LLM** (`test_context`, `test_outbound`, `test_proactive`,
-  `test_user_model`, `test_conversation_bugs` — 369+ assertion) chạy trong vài giây,
-  dùng làm cổng chặn cho mọi thay đổi ở `core/`.
+- **Các suite không dùng LLM** (`test_context`, `test_outbound`, `test_proactive`,
+  `test_user_model`, `test_conversation_bugs`, `test_quality_guards`,
+  `test_plan_validation`) chạy nhanh và dùng làm cổng chặn cho mọi thay đổi ở `core/`.
 - **Test fixture thường là đoạn hội thoại THẬT đã từng gây lỗi**, copy nguyên văn từ
   `thoughts.log` — không phải dữ liệu giả tưởng tượng.
 - **Lưu ý quan trọng**: `test_conversation_bugs.py` **không cô lập log** — nó tạo
@@ -216,4 +216,5 @@ ciel_workspace/ · agent_output/              # sandbox — mọi file tool ch�
 ---
 
 *File này tổng hợp lại toàn bộ quá trình làm việc — muốn đào sâu bất kỳ phần nào, xem
-`instructionAI/` (kiến trúc ổn định) hoặc `note.md` (trạng thái/changelog mới nhất).*
+`instructionAI/` (kiến trúc ổn định), `note.md` (trạng thái/changelog mới nhất), hoặc
+`improve.md` (roadmap + bằng chứng test).*

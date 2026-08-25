@@ -68,6 +68,22 @@ that endpoint belongs to the API entry point and a long-polling bot has no liste
 port 8000. Judge the Telegram deployment from `docker compose ... ps` and the
 `[Telegram] Bot online` log instead.
 
+### Update an existing Telegram deployment
+
+From the repository root, use `--build` when `Dockerfile`, dependencies, or image
+contents changed. For a Python/source or `.env` change, recreating the one service is
+enough:
+
+```
+docker compose -f docker/docker-compose.telegram.yml up -d --force-recreate
+docker compose -f docker/docker-compose.telegram.yml ps
+docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100
+```
+
+Do not place the server address, SSH password, bot token, OAuth credentials, or copied
+`.env` values in this repository. The server keeps those files privately alongside the
+checked-out project; persistent `ciel_data/` remains mounted across recreations.
+
 ## Shared memory, and why not to run both yet
 
 Both files mount the SAME `ciel_data/agent_output/ciel_workspace` on purpose —

@@ -293,6 +293,29 @@ def _admits_missing_knowledge(text: str) -> bool:
     return False
 
 
+# A chat-routed Worker has no tool handle.  Some models nevertheless narrate an
+# imaginary next step ("I'm running stealth_search" / "wait for the results") when
+# the Router deliberately chose chat to ask for a missing subject.  That is worse
+# than a normal bad answer: it leaves the Master waiting for work that will never run.
+# Match the *claim of current/future execution*, not a harmless explanation of what a
+# tool is, so a question such as "what does stealth_search do?" stays answerable.
+_UNBACKED_CHAT_TOOL_PROMISE_RE = re.compile(
+    r"(?:\b(?:đang|sẽ|will|currently|going\s+to)\b[^.!?\n]{0,56}"
+    r"\b(?:chạy|dùng|thực\s+hiện|tìm|tra|search(?:ing)?|look\s*up|run(?:ning)?|"
+    r"stealth_search|smart_scrape|search_gmail|get_weather)\b"
+    r"|\b(?:để\s+)?(?:tôi|mình|em|i|we)\b[^.!?\n]{0,40}"
+    r"\b(?:chạy|dùng|thực\s+hiện|tìm|tra|search(?:ing)?|look\s*up|run(?:ning)?)\b"
+    r"|\b(?:chờ|đợi|wait(?:ing)?)\b[^.!?\n]{0,40}"
+    r"\b(?:tôi|mình|em|i|we)\b)",
+    re.IGNORECASE,
+)
+
+# A completed live lookup may ground one immediate deictic follow-up ("scrape it",
+# "read that article", "đào sâu vụ này") without exposing general chat history to the
+# Router. Only public URLs from a successful lookup are kept, in RAM, for a short TTL.
+_PUBLIC_URL_RE = re.compile(r"https?://[^\s<>\"'\]\[()]+", re.IGNORECASE)
+
+
 def _find_dangerous_code_patterns(text: str) -> list:
     """Deterministic scan for genuinely destructive code/commands (drive format, mkfs,
     rmtree, fork bombs, etc.) — same bar backtest/test_hard_special.py checks against.
@@ -451,6 +474,9 @@ class CielCore:
         # which parallel step workers already share.
         self._sent_this_turn = set()
         self._telegram_delivery_sent_this_turn = False
+        # Bounded session-only grounding for a deictic follow-up to a successful web
+        # lookup. It is neither durable task state, RAG, nor general chat history.
+        self._active_lookup = None
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
         # where preferences actually change the output. It renders to "" while empty, so
@@ -1123,6 +1149,196 @@ class CielCore:
                 break
         return last_human, last_ai
 
+    # An active lookup is deliberately narrower than general conversation memory. It
+    # carries only the query and public source URLs that an already-successful live
+    # lookup returned, and only when the next turn plainly refers back to that lookup.
+    _ACTIVE_LOOKUP_TTL_SECONDS = 15 * 60
+    _ACTIVE_LOOKUP_MAX_URLS = 3
+    _LOOKUP_FOLLOWUP_RE = re.compile(
+        r"(?:\bscrape\b|\bsmart_scrape\b|\b(?:read|open)\s+(?:that|this|the)\s+"
+        r"(?:article|news|story|case)\b|\b(?:continue|dig\s+deeper|investigate\s+more)\b|"
+        r"(?:đào\s+sâu|phân\s+tích\s+thêm|đọc\s+kỹ|scrape|tiếp\s+tục|"
+        r"tin\s+(?:đó|này)|bài\s+(?:đó|này)|vụ\s+(?:đó|này)))",
+        re.IGNORECASE,
+    )
+    # A terse imperative is natural immediately after Ciel returned a link, but is
+    # unusable as general Router context. It is accepted only while _active_lookup is
+    # still live, and the resolution below remains read-only and URL-grounded.
+    _LOOKUP_GENERIC_FOLLOWUP_RE = re.compile(
+        r"^\s*(?:(?:ok(?:ay)?|uh|ừ|ừm|được|rồi)[,\s]+)?"
+        r"(?:(?:làm|mở|xem|đọc|tiếp)\s*(?:đi|nó|cái\s+đó|link\s+đó|bài\s+đó)?|"
+        r"(?:do|open|read|continue)\s*(?:it|that|this)?)\s*[.!?]*\s*$",
+        re.IGNORECASE,
+    )
+    _LOOKUP_MULTI_FOLLOWUP_RE = re.compile(
+        r"(?:\b(?:all|both|sources?)\b|tất\s+cả|cả\s+hai|các\s+(?:bài|link|nguồn)|"
+        r"những\s+(?:bài|link|nguồn))",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_generic_lookup_followup(cls, user_input: str) -> bool:
+        """Whether a short imperative can continue a *live* lookup only."""
+        return bool(cls._LOOKUP_GENERIC_FOLLOWUP_RE.search((user_input or "").strip()))
+
+    @classmethod
+    def _is_lookup_followup(cls, user_input: str) -> bool:
+        """Whether a message explicitly or tersely continues a live lookup."""
+        text = (user_input or "").strip()
+        return bool(cls._LOOKUP_FOLLOWUP_RE.search(text) or
+                    cls._is_generic_lookup_followup(text) or
+                    cls._LOOKUP_MULTI_FOLLOWUP_RE.search(text))
+
+    @staticmethod
+    def _public_urls(text: str) -> list[str]:
+        """Extract a small stable set of public HTTP(S) URLs from tool output."""
+        urls = []
+        for raw in _PUBLIC_URL_RE.findall(text or ""):
+            url = raw.rstrip(".,;:!?")
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _remember_active_lookup(self, tool_name: str, tool_args: dict,
+                                result_text: str, user_input: str) -> None:
+        """Cache successful live-lookup facts for one bounded follow-up.
+
+        It is called only after ``execute_tool`` has established success. The cache is
+        memory-only so a restart cannot resurrect an old article as the meaning of
+        "that article" in a later conversation.
+        """
+        if tool_name not in {"stealth_search", "smart_scrape"}:
+            return
+        args = tool_args or {}
+        urls = self._public_urls(str(args.get("url", "")) + "\n" + (result_text or ""))
+        if not urls:
+            return
+        with self._log_lock:
+            previous = self._active_lookup or {}
+            query = str(args.get("query") or previous.get("query") or user_input or "").strip()
+            self._active_lookup = {
+                "tool": tool_name,
+                "query": query[:240],
+                "urls": urls[:self._ACTIVE_LOOKUP_MAX_URLS],
+                "created_at": time.time(),
+            }
+        self._log_thought(
+            "CONTEXT", "active_lookup_set",
+            f"{tool_name}: cached {len(urls[:self._ACTIVE_LOOKUP_MAX_URLS])} public source URL(s) "
+            "for one short-lived deictic follow-up.",
+        )
+
+    def _active_lookup_note(self, user_input: str) -> str:
+        """Return a Router-safe active lookup note, or an empty string.
+
+        A broad new message never receives this context. Expiry is enforced at read
+        time as well as at new-turn handling, making stale source reuse impossible
+        even if this helper is called independently in a future entry point.
+        """
+        if not self._is_lookup_followup(user_input):
+            return ""
+        with self._log_lock:
+            active = self._active_lookup
+            if not active:
+                return ""
+            age = time.time() - float(active.get("created_at", 0))
+            if age > self._ACTIVE_LOOKUP_TTL_SECONDS:
+                self._active_lookup = None
+                expired = True
+            else:
+                expired = False
+                active = dict(active)
+        if expired:
+            self._log_thought("CONTEXT", "active_lookup_expired",
+                              "Active live lookup exceeded its 15-minute TTL.")
+            return ""
+        urls = active.get("urls") or []
+        if not urls:
+            return ""
+        generic = self._is_generic_lookup_followup(user_input)
+        asks_for_many = bool(self._LOOKUP_MULTI_FOLLOWUP_RE.search(user_input or ""))
+        if len(urls) > 1 and not asks_for_many:
+            sources = "\n".join(f"- {url}" for url in urls)
+            return (
+                f"Active live lookup from THIS session (age {int(age)}s) [TARGET CHOICE REQUIRED]:\n"
+                f"- Query: {active.get('query')}\n"
+                f"- Exact public source URL(s):\n{sources}\n"
+                f"Master (now): {self._clip_open_thread_line(user_input)}\n"
+                "→ The Master is continuing this lookup, but the request names no one source. "
+                "Ask one concise question identifying these links; do NOT run a tool, invent a URL, "
+                "or claim a lookup is running."
+            )
+        selected_urls = urls if asks_for_many else urls[:1]
+        sources = "\n".join(f"- {url}" for url in selected_urls)
+        continuation = "short imperative" if generic else "explicit reference"
+        tool_instruction = (
+            "Use multi_tool with one smart_scrape step per exact URL below."
+            if asks_for_many else
+            "Call smart_scrape with the one exact URL below."
+        )
+        return (
+            f"Active live lookup from THIS session (age {int(age)}s):\n"
+            f"- Tool: {active.get('tool')}\n"
+            f"- Query: {active.get('query')}\n"
+            f"- Exact public source URL(s):\n{sources}\n"
+            f"Master (now): {self._clip_open_thread_line(user_input)}\n"
+            f"→ This {continuation} continues that lookup. {tool_instruction} Never invent "
+            "a URL or claim the lookup is still running."
+        )
+
+    def _clear_active_lookup_for_new_turn(self, user_input: str) -> None:
+        """Forget an active lookup as soon as the Master changes subject."""
+        if self._is_lookup_followup(user_input):
+            return
+        with self._log_lock:
+            if not self._active_lookup:
+                return
+            self._active_lookup = None
+        self._log_thought("CONTEXT", "active_lookup_cleared",
+                          "New non-follow-up turn cleared the prior live lookup context.")
+
+    def _apply_active_lookup_route_override(self, decision: dict, open_thread: str) -> dict:
+        """Deterministically execute a safe, URL-grounded lookup continuation.
+
+        The Router receives the same bounded context as a hint, but a short imperative
+        such as ``làm đi`` should not depend on a model correctly emitting a tool plan.
+        This override is deliberately limited to the read-only ``smart_scrape`` tool and
+        URLs already embedded in the active-lookup note. It never applies to files,
+        email, shell, or any other deictic request.
+        """
+        if not (open_thread or "").startswith("Active live lookup from THIS session"):
+            return decision
+        if "smart_scrape" not in self._tool_map:
+            return decision
+        urls = self._public_urls(open_thread)
+        if not urls:
+            return decision
+        if "[TARGET CHOICE REQUIRED]" in open_thread:
+            self._log_thought(
+                "ROUTER", "active_lookup_choice_required",
+                f"Preserved action=chat: {len(urls)} cached URLs need an explicit selection.",
+            )
+            return {
+                "action": "chat",
+                "task": (
+                    "Ask the Master to choose one source before reading it. Offer only these "
+                    f"grounded URLs: {', '.join(urls)}. Do not claim a tool has run."
+                ),
+            }
+        steps = [{"tool_name": "smart_scrape", "tool_args": {"url": url}} for url in urls]
+        overridden = (
+            {"action": "tool", "tool_name": "smart_scrape", "tool_args": steps[0]["tool_args"],
+             "response_hint": "Read the grounded article and answer from its extracted content."}
+            if len(steps) == 1 else
+            {"action": "multi_tool", "tools": steps,
+             "response_hint": "Read only the grounded articles and summarize their extracted content."}
+        )
+        self._log_thought(
+            "ROUTER", "active_lookup_route_override",
+            f"Replaced model route with read-only smart_scrape over {len(steps)} grounded URL(s).",
+        )
+        return overridden
+
     def _open_thread_note(self, user_input: str) -> str:
         """Bounded prior exchange for the Router when the Master is slot-filling.
 
@@ -1136,9 +1352,15 @@ class CielCore:
         grounded path.
         """
         try:
+            text = (user_input or "").strip()
+            # A live lookup is not recent-turn context. It contains only URLs produced
+            # by a successful tool in this process, so disabling history injection must
+            # not also disable a safe, deterministic scrape continuation.
+            active_lookup = self._active_lookup_note(text)
+            if active_lookup:
+                return active_lookup
             if not CONTEXT_RECENT_TURNS_ENABLED:
                 return ""
-            text = (user_input or "").strip()
             if not text or not self._is_open_thread_candidate(text):
                 return ""
             last_human, last_ai = self._last_human_ai_pair()
@@ -1313,6 +1535,13 @@ class CielCore:
             f"{self.ciel_persona}\n\n"
             f"{self._profile_block()}"
             f"{style_rule}{capabilities_context}\n\n"
+            "[CHAT EXECUTION BOUNDARY]\n"
+            "This turn was routed as chat: no tool has run, and your response cannot "
+            "start one. Do NOT say or imply that you are running, about to run, or "
+            "waiting on a tool/search (including stealth_search, smart_scrape, Gmail, "
+            "or weather). Do not promise results later. If information is missing, ask "
+            "one precise clarifying question; if the Router's reference hint says the "
+            "topic is missing, do not infer a topic from recent conversation.\n\n"
             f"{recent_section}"
             f"User's request: {task}"
         )
@@ -1320,6 +1549,33 @@ class CielCore:
         response = self.worker.generate(persona_task)
         self._log_thought("WORKER", "chat_response", response)
         return response
+
+    def _block_unbacked_chat_tool_promise(self, response: str, user_input: str) -> str:
+        """Replace an impossible Worker promise on an ``action=chat`` turn.
+
+        The prompt above reduces these claims, but it cannot be the safety boundary:
+        the Worker has no tool handle in this path, so Python must prevent a model
+        variant from making the Master wait for a nonexistent background operation.
+        This deliberately does not create a pending task.  A pending task represents
+        work that really started or awaits approval, neither of which happened here.
+        """
+        if not _UNBACKED_CHAT_TOOL_PROMISE_RE.search(response or ""):
+            return response
+
+        self._log_thought(
+            "SAFETY", "unbacked_chat_tool_promise_blocked",
+            "Worker claimed a current/future tool action on an action=chat turn; "
+            "replaced with an honest clarification instead of creating fake pending work.",
+        )
+        if self._detect_language(user_input) == "Vietnamese":
+            return (
+                "Mình chưa chạy tra cứu nào ở lượt này. Bạn muốn mình kiểm tra chính xác "
+                "chủ đề hoặc vụ việc nào?"
+            )
+        return (
+            "I have not run a search in this turn. What exact topic or case should I "
+            "look into?"
+        )
 
     def _request_confirmation(self, tool_name: str, tool_args: dict, risk_override: str = None) -> bool:
         """Request Master's approval before executing a high-risk tool."""
@@ -1703,6 +1959,11 @@ class CielCore:
             )
 
         self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
+
+        # A successful web lookup can ground only its own immediate, explicitly
+        # deictic follow-up. Record the source before Worker formatting so the Router
+        # receives real URLs even if the prose summary omits one.
+        self._remember_active_lookup(tool_name, current_args, result_text, user_input)
 
         # Chain refs ({prev}/{step_N}) need the STRUCTURED result (e.g. search_gmail's
         # real "id" field) — capture it here, before any Worker humanizing below turns
@@ -3511,6 +3772,7 @@ RULES:
         with self._log_lock:
             self._sent_this_turn = set()
             self._telegram_delivery_sent_this_turn = False
+        self._clear_active_lookup_for_new_turn(user_input)
 
         # TIER 7b — learn a durable preference from this turn, if there is one. Placed
         # at the TOP rather than at the end because `process()` has many return points
@@ -3634,6 +3896,8 @@ RULES:
             # Router — this is one prior human + one prior AI line, max.
             open_thread = self._open_thread_note(user_input)
             if open_thread:
+                prefer_active_lookup = open_thread.startswith("Active live lookup from THIS session")
+                active_lookup_needs_choice = "[TARGET CHOICE REQUIRED]" in open_thread
                 prefer_google = bool(self._OPEN_THREAD_NUDGE_RE.search(user_input or ""))
                 prefer_file = bool(
                     self._OPEN_THREAD_FILE_DEICTIC_RE.search(user_input or "")
@@ -3641,7 +3905,19 @@ RULES:
                 prefer_email = bool(
                     self._OPEN_THREAD_EMAIL_DEICTIC_RE.search(user_input or "")
                 )
-                if prefer_email:
+                if active_lookup_needs_choice:
+                    hint_line = (
+                        " The live lookup has several grounded URLs and the Master did not "
+                        "select one. Return action=chat with one concise source-choice question; "
+                        "do not run or promise any tool."
+                    )
+                elif prefer_active_lookup:
+                    hint_line = (
+                        " Follow the Active live lookup instruction exactly: use smart_scrape "
+                        "only with its listed URL(s). Do not re-run search or ask for a URL "
+                        "already grounded here."
+                    )
+                elif prefer_email:
                     hint_line = (
                         " Prefer get_gmail_message (or get_gmail_thread) with the Active "
                         "Gmail message_id / RECENT ENTITIES gmail_message_id. Gmail tools "
@@ -3781,6 +4057,7 @@ RULES:
                         decision = self._fallback_direct_action(user_input)
                     else:
                         raise
+            decision = self._apply_active_lookup_route_override(decision, open_thread)
             action = decision.get("action", "chat")
 
             # TIER 2: open a task record for anything that actually DOES something.
@@ -4043,6 +4320,10 @@ RULES:
                 else:
                     task = user_input
                 response = self.execute_chat(task)
+                # A chat turn cannot execute tools. Keep the Worker from turning a
+                # clarification into a fictional background search before any optional
+                # deterministic search fallback is considered below.
+                response = self._block_unbacked_chat_tool_promise(response, user_input)
                 # Look it up before settling for "I don't have that". Free unless the
                 # reply actually conceded a knowledge gap — see the method's docstring.
                 # Passed `user_input`, never `task`: the search must be built from the

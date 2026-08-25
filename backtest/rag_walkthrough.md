@@ -64,6 +64,17 @@ Ciel has **two types of memory** that work together:
 - **Purpose:** Recall past conversations from days/weeks/months ago
 - **How it searches:** Converts your question into a mathematical "embedding" (vector), then finds past conversations with the most similar meaning
 
+### Immediate lookup follow-up (not RAG)
+
+After a successful `stealth_search` or `smart_scrape`, Ciel can retain one small,
+RAM-only anchor: the query and up to three public source URLs. An explicit follow-up such
+as “scrape that article” receives this anchor so the Router can act on the real URL.
+
+This is deliberately **not** chat history or long-term memory: it expires after 15
+minutes, clears when the user changes topic, and disappears on restart. It prevents an
+immediate deictic follow-up from losing its source without allowing old conversation
+state to leak into unrelated routing decisions.
+
 ---
 
 ## Reading the thoughts.log — Entry by Entry

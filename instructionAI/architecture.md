@@ -12,7 +12,6 @@ Ciel-2.0/
 ├── main.py                       # CLI entry point (input loop, safety callback, --voice/--speak)
 ├── main_api.py                   # FastAPI/WebSocket backend: WS /ws, GET /skills /health, POST /tts
 ├── main_telegram.py               # Telegram bot entry point — thin wrapper around core.telegram_interface
-├── architect.md                  # Detailed project roadmap and changelog (dated)
 ├── note.md                       # Live status / rolling changelog (dated)
 ├── credentials.json              # Google OAuth credentials (not tracked in git)
 ├── requirements.txt               # Python dependencies
@@ -121,7 +120,8 @@ Ciel-2.0/
 │   ├── test_outbound.py             # duplicate-send guard + stale-status strip (stub tools)
 │   ├── test_proactive.py            # T6 — notifier + triggers (simulated clock)
 │   ├── test_user_model.py           # T7 — profile authority/decay/secrets
-│   ├── test_conversation_bugs.py    # scope veto, recent-turns, referential email, open thread
+│   ├── test_conversation_bugs.py    # scope veto, recent turns, referential delivery,
+│   │                                  # open thread, active lookup, honest chat boundary
 │   │                                  (constructs real CielCore — may append to thoughts.log)
 │   ├── test_quality_guards.py       # P1 guards: sanitize, write-intent, gmail digest, HTML
 │   │                                  builder, telegram_uploads write-block (maintained unit)
@@ -137,7 +137,7 @@ Ciel-2.0/
 │                                    # email+news → Telegram, see "Docker Deployment" below)
 ├── email_template/                 # market_report.html · analysis_report.html · health_report.html
 ├── instructionAI/                  # AI-assistant instruction files (start with SKILL.md)
-├── improve.md                      # Upgrade roadmap Level A/B/C + P0–P3 (Level B as of 2026-08-06)
+├── improve.md                      # Upgrade roadmap Level A/B/C + P0–P3 and verification journal
 ├── ciel_workspace/                 # Sandbox (+ telegram_uploads/ for inbound bot files)
 └── agent_output/                   # Generated code + analysis HTML reports
 ```
@@ -198,6 +198,8 @@ skills.internal.memory_ops → standalone (reads/writes ciel_data/facts.json dir
 User input (text or voice transcript) → CielCore.process()
   → clear this turn's cancel flag and outbound-send record (Tier 5 / duplicate-send guard)
   → Tier 7b: assess_preference(text) — free; only durable wording spends one extraction call
+  → RAM active-lookup anchor: only an explicit scrape/read/deepen follow-up can receive
+    the last successful lookup's query + up to three public URLs (15-minute TTL)
   → RAG recall: search ChromaDB (skipped if query < 15 chars or relevance < 0.65;
     a result whose archived question normalises identically to THIS one is filtered —
     otherwise a repeated question recalls its own prior failure as "context")
@@ -477,7 +479,23 @@ Reading a real session (not a failing test) surfaced three related bugs:
    different contract (a spec, not a pre-written answer) and is untouched.
 
 Verified live, model-for-model, on both reproductions — see `note.md` for the exact
-before/after replies. Tests: `backtest/test_conversation_bugs.py` (44 assertions).
+before/after replies. The maintained regressions live in
+`backtest/test_conversation_bugs.py`.
+
+### Explicit lookup follow-ups are a separate, bounded context channel
+
+Raw recent turns must not enter routing, but a successful lookup creates a different
+problem: an immediate request such as “scrape that article” needs the actual URL, not a
+guess. `CielCore._active_lookup` solves only that case. After a successful
+`stealth_search` or `smart_scrape`, it stores the original query and at most three public
+HTTP(S) URLs in process memory. `_open_thread_note()` injects that record only when the
+next request explicitly asks to scrape, read, deepen, or continue that lookup.
+
+The record expires after 15 minutes, clears as soon as the Master changes topic, and is
+never persisted. It therefore cannot become hidden long-term memory, cross-session
+state, or a back door for general chat history in the Router. `data_pipeline.md` defines
+the data boundary; `test_conversation_bugs.py` covers the positive, expiry, and
+topic-change cases.
 
 ## Tier 5 — Interruptibility (`CielCore.request_cancel`)
 
@@ -625,17 +643,15 @@ Tests: `backtest/test_user_model.py` (108 assertions, no LLM).
 Each tier (Brain / Worker / Middleware) selects its provider and model independently
 via `.env` — no code changes to switch.
 
-**Current (since 2026-07-27):** all three tiers run on a single `custom`
-OpenAI-compatible endpoint (`API_KEY` + `BASE_URL`), switched from Vilao for balance
-reasons. Vilao lines are deliberately left unused in `.env` for rollback — see `note.md`
-for the exact date and reasoning; that file is the live source of truth for which
-provider/model is actually running, not this table.
+Provider and model choices are deployment-specific and are intentionally not recorded in
+repository documentation. The runtime source of truth is the private `.env` on the host.
+The public contract is the configuration-key mapping below.
 
-| Tier | Provider | Model (live) | Config Key |
+| Tier | Provider | Model | Config Key |
 |------|----------|-------|------------|
-| **Brain (Router)** | `custom` | `gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
-| **Worker (Generator)** | `custom` | `gpt-5.6-luna` (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
-| **Middleware (Verifier, optional)** | `custom` | `gpt-5.5` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
+| **Brain (Router)** | deployment-selected | `.env` model | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
+| **Worker (Generator)** | deployment-selected | `.env` model (via `CODER_MODEL`, not `WORKER_MODEL`) | `WORKER_PROVIDER`, `CODER_MODEL` |
+| **Middleware (Verifier, optional)** | deployment-selected | `.env` model | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
 
 > Provider model names/aliases drift — check the alias is still live (a trivial request,
 > compare reported `input_tokens` against what you actually sent) before suspecting the
@@ -646,12 +662,10 @@ changing `*_PROVIDER` + the matching `*_API_KEY`/model name, no code change. **T
 fallback:** if the primary endpoint is unavailable, `BRAIN_PROVIDER=deepseek` + a valid
 DeepSeek model works with zero code changes.
 
-**Measure a new alias before adopting it.** On the same endpoint/key, one Brain alias
-(`ccf/claude-opus-4-8`) added **~6,500 unsuppressable tokens per call**, while
-`nt/cx/gpt-5.6-sol` added ~10 — switching cost one `.env` line and cut Brain tokens 52%,
-latency 51%, at identical 11/11 correctness. ~79% of the old cost was text nobody sent.
-To check: issue one trivial request and compare the provider's reported `input_tokens`
-against what you actually sent.
+**Measure a new alias before adopting it.** Gateways may add thousands of hidden input
+tokens to one alias but not another. To check, issue one trivial request and compare the
+provider's reported `input_tokens` against what you actually sent; record the result in
+the private deployment notes rather than committing provider-specific identifiers.
 
 > **Gotcha:** the Worker's MODEL is read from `CODER_MODEL`, never `WORKER_MODEL`; its
 > PROVIDER is `WORKER_PROVIDER` (`CODER_PROVIDER` is not read).

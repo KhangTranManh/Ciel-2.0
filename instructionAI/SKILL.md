@@ -17,7 +17,7 @@ If the Master (or a new session) only points you at **`instructionAI/`**, do thi
 
 1. **Read this file** (`SKILL.md`) end-to-end for rules and the file index.
 2. **Open `../improve.md`** — living upgrade roadmap: P0–P3, Level A/B/C, journal.  
-   **As of 2026-08-06:** **Level A + Level B** and **P0 (foundation)** are **PASS**.  
+   **Current baseline:** **Level A + Level B** and **P0 (foundation)** are **PASS**.
    **P1.1** (honest tools), **P1.4** (middleware/sanitize), and **P1.5**
    (deterministic plan validation) are **DONE**.
    Continue from the **first unchecked** item (typically **P1.2** proactive formal day, **P1.3** user_model formal, **Level C** portable, or **P2/P3**) unless the Master says otherwise.
@@ -31,7 +31,7 @@ If the Master (or a new session) only points you at **`instructionAI/`**, do thi
 
 ```text
 Read instructionAI/SKILL.md and improve.md.
-Ciel is Level B (Core Green) as of 2026-08-06 — P0 done; P1.1/P1.4 done.
+Ciel is Level B (Core Green) — P0 done; P1.1/P1.4/P1.5 done.
 Continue from the first unchecked improve.md item (P1.2 / P1.3 / Level C / P2 / P3).
 Keep Python decisions / LLM compose. Do not turn this into a coding-IDE product.
 Run: python -m backtest.run_all --unit-only  (includes quality_guards)
@@ -76,14 +76,13 @@ see *Three Entry Points* in `architecture.md`. Container images for the first tw
 
 | File | Purpose |
 |------|---------|
-| `../improve.md` | **Upgrade roadmap** — P0–P3, Level A/B/C, journal. **Level B reached 2026-08-06.** Update checkboxes when work lands. |
-| `../architect.md` | Full project map + changelog (heavier; optional after SKILL + architecture) |
+| `../improve.md` | **Upgrade roadmap** — P0–P3, Level A/B/C, journal. Update checkboxes when work lands. |
 | `../note.md` | Dated live status / provider notes (diary; not stable rules) |
 | `../backtest/run_all.py` | Unified regression runner (`python -m backtest.run_all [--unit-only\|--skip-exploratory]`) |
 | `../backtest/test_quality_guards.py` | Unit guards (sanitize, write-intent, gmail digest, HTML builder, TG upload protect) — no ephemeral `_smoke_*` scripts |
 
-For the dated changelog and current live status, see `../architect.md` and `../note.md`
-— **stable rules stay in `instructionAI/`**; **what to improve next stays in `../improve.md`**.
+For current live status, see `../note.md` — **stable rules stay in `instructionAI/`**;
+**what to improve next stays in `../improve.md`**.
 
 A project-agnostic prompt that bootstraps/maintains an `instructionAI/`-style folder in
 any other project lives at `references/portable_instruction_generator_prompt.md`.
@@ -412,9 +411,25 @@ model.
     encoding, `$OutputEncoding`, and `PYTHONUTF8=1` to UTF-8 before such a pipeline;
     normal API/WebSocket/Telegram input is UTF-8 already.
 
+34. **A successful web lookup grounds only a bounded immediate follow-up.**
+    `CielCore._active_lookup` keeps a query and at most three public source URLs in RAM
+    for 15 minutes. It is injected when the Master explicitly asks to scrape/read/deepen
+    that result, or uses a terse read-only “làm đi” / “mở đi” while one URL is clear.
+    Several URLs require a choice unless the request explicitly asks for all. A
+    deterministic post-route override permits only the resulting read-only
+    `smart_scrape` step(s), so a weak Router cannot turn it back into chat. It clears on
+    a new topic and restart. Do not turn it into general Router history or durable memory
+    — see `data_pipeline.md`.
+
+35. **A chat response cannot pretend that a tool is running.** The chat Worker has no
+    execution handle. `execute_chat()` states that boundary and
+    `_block_unbacked_chat_tool_promise()` rejects concrete, unsupported promises while
+    allowing ordinary language such as addressing the Master. A genuine tool action
+    must be routed and executed first.
+
 ## Current pass bar (snapshot — detail in `../improve.md`)
 
-| Level / item | Status (2026-08-08) |
+| Level / item | Status |
 |--------------|---------------------|
 | Level A (Daily OK) | **PASS** |
 | Level B (Core Green) | **PASS** |

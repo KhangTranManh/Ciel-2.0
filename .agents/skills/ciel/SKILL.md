@@ -12,7 +12,7 @@ description: >
 
 For all project knowledge, see `instructionAI/SKILL.md` (the master copy).
 
-**Cold start:** `instructionAI/SKILL.md` → `improve.md` (Level B as of 2026-08-06; continue first unchecked item).  
+**Cold start:** `instructionAI/SKILL.md` → `improve.md` (Level B baseline; continue the first unchecked roadmap item).
 **Tests:** `python -m backtest.run_all --unit-only` (includes `quality_guards`).
 
 ## Quick Reference
@@ -25,4 +25,4 @@ For all project knowledge, see `instructionAI/SKILL.md` (the master copy).
 | Safety gate & risk rules | `instructionAI/safety_and_risk.md` |
 | Memory pipeline & scheduler | `instructionAI/data_pipeline.md` |
 | Upgrade roadmap (Level A/B/C, P0–P3) | `improve.md` (root) |
-| Detailed changelog (optional) | `architect.md` (root) |
+| Live status / changelog (optional) | `note.md` (root) |

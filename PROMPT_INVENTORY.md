@@ -1,9 +1,8 @@
 # Prompt Inventory — Ciel 2.0
 
 A single map of **every prompt in the project**: where it lives, which model consumes it,
-and how prompts stack at runtime. This is Step 1 of the prompt-refactor plan (see
-architect.md Changelog) — a read-only inventory, no wording changed. Use it to see the
-whole picture before rewriting any individual prompt.
+and how prompts stack at runtime. This is a read-only inventory; use it alongside
+`instructionAI/` and `improve.md` before rewriting any individual prompt.
 
 **Maintenance rule (keep this file honest):** when you add, move, rename, or delete a
 prompt, update the matching row here in the same change. One row = one prompt. If a row's
@@ -24,7 +23,7 @@ USER input
   │
   ├─ [Worker]  sanitize_task ......... translate/clean input to EN before routing
   │
-  ├─ [Brain]   persona  +  CIEL_ROUTER_PROMPT  +  _tool_list_str
+  ├─ [Brain]   persona + CIEL_ROUTER_PROMPT + _tool_list_str + bounded context
   │            → routing decision (chat / tool / code / multi_tool)
   │
   ├─ action = chat ....... [Worker]  persona + persona_task            → reply
@@ -67,12 +66,13 @@ they're not named constants.
 | Task var | File:line | Purpose |
 |---|---|---|
 | `sanitize_task` | `core/llm_connector.py:~1355` | Translate/clean the user request to EN before routing |
-| `persona_task` | `core/llm_connector.py:~417` | Generate a chat-action reply (persona + task) |
+| `persona_task` | `core/llm_connector.py` | Generate a chat-action reply from the real user message, recent turns, and non-binding Router hint |
 | `format_task` (single) | `core/llm_connector.py:~646` | Format one tool's result into a reply |
 | `format_task` (multi) | `core/llm_connector.py:~928` | Synthesize a multi_tool run — the big anti-hallucination RULES block |
 | `body_task` | `core/llm_connector.py:~1648` | Synthesize a professional email body from real tool data |
 | `code_guardrail` / `augmented_task` | `core/llm_connector.py:~784` | Safety/quality guardrail appended to code-gen tasks |
 | RAG compress prompt | `core/llm_connector.py:~736` | Compress large recalled memory before it reaches the Brain |
+| Active lookup note | `core/llm_connector.py` | Deterministic, not an LLM prompt: injects query + public URLs only for an explicit lookup follow-up |
 
 ### 2c. Self-healing (`core/recovery_manager.py`)
 

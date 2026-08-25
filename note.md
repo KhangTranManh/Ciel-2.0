@@ -1,7 +1,8 @@
 # Ciel 2.0 — Live status
 
 **What this file is:** rolling “what is true *right now*” — models, front-ends, open work, short changelog.  
-**What it is not:** architecture or rules. Those live in [`instructionAI/`](instructionAI/) (stable) and [`architect.md`](architect.md) (roadmap/history).
+**What it is not:** architecture or rules. Those live in [`instructionAI/`](instructionAI/)
+(stable); the living roadmap and verification journal are in [`improve.md`](improve.md).
 
 ---
 
@@ -15,7 +16,7 @@ Keep it short. Prefer tables and one-line bullets.
 | Add **newest** changelog entry at the **top** of *Changelog* | Duplicate long bug narratives already fixed and in `instructionAI` |
 | One entry ≈ **3–8 lines**: what / where / verified? | Grow past ~200 lines without pruning old changelog |
 | Link files: `` `core/foo.py` `` | Copy entire prompts or `.env` secrets |
-| Move detail older than ~2 weeks into a one-liner or “see `architect.md`” | Leave stale model names after a provider switch |
+| Move detail older than ~2 weeks into a one-liner or `improve.md` | Leave stale model names after a provider switch |
 
 **Template for a changelog entry:**
 
@@ -28,19 +29,18 @@ Keep it short. Prefer tables and one-line bullets.
 
 ---
 
-## Current status *(as of 2026-07-29)*
+## Current status *(as of 2026-08-25)*
 
-### Models (OpenAI-compatible custom endpoint)
+### Models and providers
 
-Switched from Vilao (2026-07-27, balance). Vilao lines may remain in `.env` unused for rollback.
+Provider and model choices are deployment-specific and belong only in `.env`. The
+supported stack is `custom`, Vilao, DeepSeek, Gemini, or Ollama per tier. The Worker
+model key is **`CODER_MODEL`**, not `WORKER_MODEL`.
 
-| Tier | Provider key | Model (live) | Config |
-|------|----------------|--------------|--------|
-| Brain | custom | `gpt-5.6-sol` | `BRAIN_PROVIDER`, `BRAIN_MODEL` |
-| Worker | custom | `gpt-5.6-luna` | `WORKER_PROVIDER`, **`CODER_MODEL`** (not `WORKER_MODEL`) |
-| Middleware | custom | `gpt-5.5` | `MIDDLEWARE_PROVIDER`, `MIDDLEWARE_ENABLED` |
-
-Swap stack: `API_KEY` + `BASE_URL` + model names. Measure new aliases for **gateway-injected tokens** before adopting (see below).
+Swap a stack with its provider, endpoint/key, and model fields together. Measure a new
+alias for **gateway-injected tokens** before adopting it (see below). A local model that
+can chat is not automatically router-ready: it must pass the structured-route and live
+tool checks in `improve.md` before replacing the hybrid baseline.
 
 ### Front-ends (all → same `CielCore`)
 
@@ -70,9 +70,9 @@ Docker: `docker/` (`docker-compose.api.yml`, `docker-compose.telegram.yml`).
 
 | Suite | Notes |
 |-------|--------|
-| Fast (no LLM) | `test_context`, `test_outbound`, `test_proactive`, `test_user_model`, `test_conversation_bugs` — gate after `core/` edits |
+| Fast (no LLM) | `test_context`, `test_outbound`, `test_proactive`, `test_user_model`, `test_conversation_bugs`, `test_quality_guards`, `test_plan_validation` — gate after `core/` edits |
 | Live LLM / mail | `test_integration`, `test_hard_special`, … — real providers + real Gmail |
-| Disposable mail | `kxctran@gmail.com`, `kxcpro123@gmail.com`, `prokxcpro@gmail.com` |
+| Email smoke | Use a disposable inbox controlled by the operator; never commit its address |
 | Python | 3.12+ venv (`pandas-ta`) |
 
 **Caveat:** `test_conversation_bugs.py` is **not** log-sandboxed — it writes into live `ciel_data/logs/thoughts.log`.
@@ -84,6 +84,8 @@ Docker: `docker/` (`docker-compose.api.yml`, `docker-compose.telegram.yml`).
 - Windows `thoughts.log` is CRLF; parsers must normalize (`_iter_entries`).
 - `SEARCH_API_KEY` missing → search **silently degrades** to DDG/RSS, never errors. Must be set in `.env` **and** as a GitHub secret, or CI digests look fine while using the weaker source.
 - A long-running bot keeps the code it started with. Restart after editing `core/` — a whole session was once debugged against stale in-memory code.
+- A successful lookup is not general memory. Its RAM-only URL anchor lasts 15 minutes,
+  is available only to an explicit scrape/read/deepen follow-up, and clears on a new topic.
 
 ---
 
@@ -137,13 +139,28 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 | Priority | Item |
 |----------|------|
 | Backend | Wire UI `{ type: "cancel" }` → `request_cancel` in `main_api` if not done |
-| Reliability | Plan/arg validator, provider fallback client, Brain latency (persona off router, skip trivial routes) |
+| Reliability | Continue P1.2/P1.3 evidence; test provider fallback and Brain latency without weakening deterministic guards |
 | UI | Optional: surface deferred approvals / proactive NOTIFY over WS |
-| Deploy | UI static (e.g. Pages/Vercel) ≠ full agent; agent needs host + secrets (see ops notes, not here) |
+| Deploy | UI static (e.g. Pages/Vercel) ≠ full agent; the Telegram service needs a host, `.env`, OAuth files, and persistent `ciel_data/` |
 
 ---
 
 ## Changelog *(newest first — prune aggressively)*
+
+### 2026-08-25 — Conversation reliability and Telegram deployment refresh
+
+- `core/llm_connector.py`: a chat-only response is blocked from promising a tool call it
+  cannot execute; ordinary Vietnamese “gọi” language is not treated as a tool promise.
+- Successful web lookups retain a bounded RAM-only query/URL anchor. Explicit
+  scrape/read/deepen requests and terse read-only “làm đi” / “mở đi” follow-ups use it;
+  a single URL runs `smart_scrape`, while several URLs require a choice unless explicitly
+  requested together. It expires after 15 minutes and clears on a new topic.
+- Verified: `backtest.test_conversation_bugs` 82/82; the route override is deterministic
+  and cannot apply to email, files, shell, or other high-risk actions.
+- The URL-only continuation is independent of `CONTEXT_RECENT_TURNS_ENABLED`; disabling
+  raw recent-chat injection cannot disable a lookup that the current process just ran.
+- Telegram deployment is run as the single `ciel-telegram` compose service; recreate it
+  after source or `.env` changes and inspect compose logs rather than a nonexistent API health endpoint.
 
 ### 2026-07-30 → 07-31 — Real Google search; agent stops giving up early
 
@@ -172,7 +189,7 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 
 ### 2026-07-25 and earlier
 - Web search provenance/recency; multi_tool/RAG reliability; voice STT/TTS; cost tracking; Middleware tier; UI foundation.
-- Detail: `architect.md` changelog.
+- Detail: `improve.md` verification journal and the stable explanations in `instructionAI/`.
 
 ---
 
