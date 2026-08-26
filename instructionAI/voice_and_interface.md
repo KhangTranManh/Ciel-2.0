@@ -1,224 +1,194 @@
-# Voice & Interface — Ciel 2.0
+# Voice and Interfaces — Ciel 2.0
 
-How Ciel listens, talks back, and presents itself — on the CLI and in the browser/
-desktop UI.
+## Interface principle
 
-## Design Principle (read this before touching voice)
+Voice, CLI, API/UI, and Telegram are transport layers over the same `AgentLoop` and
+`CielCore`. They do not define different personas, routing rules, tools, permissions, or
+memory semantics.
 
-**Voice is a modality layer, not a rewrite of the persona.** A spoken sentence becomes
-text and flows through the exact same pipeline the keyboard uses
-(`AgentLoop.run_step()` / `ciel.send()`). A reply is spoken only AFTER a deterministic
-normalizer cleans it — the prompts, persona, and text/HUD/email formatting are never
-dumbed down to be "speech-friendly." If TTS output sounds wrong, fix the normalizer
-(`to_speech()`), not the Brain/Worker prompts.
+Every interactive front end provides:
 
-## Speech-to-Text (`core/voice_input.py`)
+- user input as text;
+- final responses from the shared runtime;
+- a confirmation callback for risky work;
+- cooperative cancellation;
+- its own presence or allow-list boundary.
 
-Mic capture via `sounddevice` (bundles PortAudio; installs clean on Windows). Energy-
-based endpointing auto-calibrates ambient noise and stops after ~1.3s of silence.
+## Speech to text
 
-| `STT_BACKEND` | Engine | Notes |
+`core/voice_input.py` captures microphone audio, calibrates ambient energy, and stops on
+silence.
+
+| `STT_BACKEND` | Engine | Characteristics |
 |---|---|---|
-| `whisper` *(default)* | `faster-whisper`, local CPU (int8) | Offline, no key. `WHISPER_MODEL=small` benchmarks ~1.1–1.4s/utterance with good Vietnamese accuracy — chosen specifically to avoid depending on a free/unofficial cloud endpoint. `warmup()` pre-loads the model at startup. |
-| `google` | SpeechRecognition → free Google Web Speech | No key, vi-VN, needs internet. Kept as a fallback; historically the default, moved off because free cloud STT is a reliability risk. |
-| `gemini` | google-genai | Needs `GEMINI_API_KEY`. |
+| `whisper` | `faster-whisper`, local int8 | Default; offline after model download |
+| `google` | Google Web Speech through SpeechRecognition | Network fallback, no project key |
+| `gemini` | Gemini audio transcription | Requires Gemini credentials |
 
-`main.py --voice`: Enter on an empty line = speak; `:v`/`:voice` = one-off capture in
-any mode.
+CLI controls:
 
-## Text-to-Speech (`core/speech_output.py`)
-
-`to_speech()` strips markdown, emojis, `[TAG]`-style headers, code blocks, and URLs
-(numbers preserved) before the text reaches the TTS engine.
-
-| `TTS_BACKEND` | Engine | Notes |
-|---|---|---|
-| `edge` *(default)* | edge-tts (Microsoft neural voices) | Free, no key, vi-VN neural. **Reliability caveat**: an UNOFFICIAL free endpoint that intermittently raises `NoAudioReceived` (~1/3 of calls, independent of text content). `_edge_synth_bytes()` retries with backoff — that retry is the fix for sporadic failures, not the text/voice. |
-| `pyttsx3` | Offline OS/SAPI voices | No internet; weak/no Vietnamese voices typically. |
-| `space` / `rvc` | mikuTTS HF Space (RVC character voice) | Experimental. ~25s/utterance, the Space may sleep. Not a default. |
-
-Prosody: `TTS_VOICE`, `TTS_RATE`, `TTS_PITCH`, `TTS_VOLUME`. RVC-only (only when
-`TTS_BACKEND=space`): `RVC_MODEL`, `RVC_TTS_VOICE`, `RVC_F0_UP`, `RVC_F0_METHOD`,
-`RVC_INDEX_RATE`, `RVC_PROTECT`, `RVC_SPACE`.
-
-**GPU note:** none of the default backends use the local GPU — edge-tts and the RVC
-Space run remotely; `pyttsx3` and `faster-whisper` (small, int8) are light CPU workloads.
-
-## Voice in the Browser/Desktop UI
-
-- **Output** (reuse the CLI engine, don't reinvent it in the browser): the UI's 🔊
-  toggle POSTs the reply text to `POST /tts`, which runs the SAME `to_speech()` +
-  edge-tts as the CLI and returns MP3 bytes — identical quality, zero client-side
-  normalization code. The `<audio>` element routes through a Web Audio `AnalyserNode`
-  (currently only consumed for a "speaking" state indicator — see below).
-- **Input**: `ui/src/io/input/VoiceInput.tsx` uses the browser's native Web Speech API
-  (`SpeechRecognition`, vi-VN) — a SEPARATE engine from the CLI's server-side
-  `voice_input.py`, intentionally (instant, no backend round-trip). Some Tauri WebView2
-  builds lack `SpeechRecognition`; the mic button self-disables rather than erroring.
-
-## The Current UI Layout
-
-`App.tsx` renders a two-region workbench — **not** the three-column orb layout earlier
-versions had:
-
-```
-┌─────────────┬───────────────────────────────┐
-│ Skills rail │  Session header               │
-│ (collapsible,│  Status strip                 │
-│  backend-    │  Transcript (chat history)    │
-│  driven via  │  Input dock (text · voice ·   │
-│  GET /skills)│    stop-button when busy ·    │
-│             │    🔊 read-aloud toggle)       │
-└─────────────┴───────────────────────────────┘
+```bash
+python main.py --voice
+python main.py --voice --speak
 ```
 
-`VitalsBar` (cost/tokens) sits above both, and `ConnectionBanner` shows reconnect
-state. `ConfirmDialog` overlays modally when a safety-gate decision is pending.
+In voice mode, an empty Enter starts capture; `:v` or `:voice` performs one capture in
+any mode. Captured text enters the same request path as typed text.
 
-**The raw thought stream is gone from the UI entirely** — `ThoughtStream.tsx` and
-`thoughtParser.ts` were removed. The backend still tails `thoughts.log` and emits
-`{"type": "thought", ...}` frames over the WebSocket (harmless — nothing subscribes to
-them client-side), but nothing renders them. Do not resurrect a raw-log view without a
-real reason; `thoughts.log` is an audit trail, not a UI primitive.
+## Text to speech
 
-### The orb is currently unmounted
+`core/speech_output.py::to_speech()` deterministically removes code blocks, Markdown,
+URLs, emoji, and audit-like tags before synthesis. The original text response remains
+unchanged.
 
-`ui/src/orb.ts` (a framework-agnostic Three.js particle system) and
-`ui/src/components/Orb.tsx` (its React wrapper) still exist in the codebase and still
-compile, but **`App.tsx` no longer imports or renders `Orb`**. The current UI favors a
-leaner skills+chat workbench. If you are asked to bring the orb back: `createOrb(canvas)
-→ { setState, setAnalyser, destroy }` is unchanged and ready to remount — it knows
-nothing about React, Ciel, or the bus, so mounting it again is a component change, not
-a rewrite. It was originally kept alive as a component (not deleted) specifically so
-this stays cheap. If you touch it: never propose replacing the React shell to get the
-orb look — the app's `SkillGrid`/`VitalsBar`/`ConfirmDialog`/cancel button have no
-equivalent in a from-scratch orb-only UI.
-
-## The Floating Desktop Widget (`ui/src/Widget.tsx`, Tauri only)
-
-A second, much smaller surface than the dashboard above: an always-on-top bubble that
-expands into a compact 340×460 chat panel — chat + voice only, no skills rail/vitals.
-Same `useCiel()` hook and bus as `App.tsx`; a separate root component, not a separate
-frontend. `main.tsx` picks `App` vs `Widget` by `getCurrentWindow().label` (`"main"` vs
-`"widget"`, declared in `src-tauri/tauri.conf.json`) — **not** a URL query param. An
-earlier version tried `?widget=1`; it rendered the FULL dashboard inside the tiny
-window instead of the widget, because a per-window `url` composing with `devUrl` in
-`tauri dev` is not reliable — a window's own `label` is a plain synchronous field Tauri
-sets directly and can't be affected by how the page URL was constructed.
-
-**Draggable like a mobile assistive-touch bubble** via `data-tauri-drag-region` (Tauri's
-own drag mechanism, not a hand-rolled mousedown/mousemove threshold — that was tried
-first and didn't reliably distinguish a click from a drag). Requires its own
-`capabilities/widget.json` (`core:window:allow-set-size/-position/-outer-position/
--outer-size/-current-monitor/-start-dragging`, `core:event:allow-listen/-unlisten`) —
-the default capability file scopes to `"windows": ["main"]` only, so every one of these
-calls silently no-ops on the widget window without it.
-
-Expand/collapse resizes the SAME window in place (not two separate windows), anchored
-to wherever the user last dragged it — position/size are tracked passively via
-`onMoved`/`onResized` listeners into a ref, never read back synchronously at
-click-time (that path was tried and never confirmed reliable; the event-driven version
-is what's actually verified working).
-
-**Safety confirmations and cancellation reach the widget too** — `pendingConfirm` from
-`useCiel()` force-expands the bubble (a confirmation nobody can see is not a
-confirmation) and renders the same `ConfirmDialog` the dashboard uses; a Stop button
-replaces the mic while a request is in flight (`cancel()`, Tier 5), matching the
-dashboard's busy state.
-
-`WidgetErrorBoundary` wraps the panel specifically because a native window can resize
-correctly while React fails to render inside it — that failure mode looks identical to
-"nothing happened," and cost real debugging time before the boundary made it visible.
-
-## Modality Seam (why voice was cheap to add, and why removing the orb was cheap too)
-
-Everything talks to `ui/src/core/bus.ts`, never directly to the WebSocket. Input
-produces text and calls `ciel.send(text)` — voice input just calls the same function a
-keystroke would. Output consumes bus `response` events — voice output just subscribes
-an extra handler, and the orb (when mounted) just subscribes to state changes the same
-way. This is why voice I/O could be added, and the orb could be unmounted, without
-touching the WebSocket protocol, the Router, or any tool.
-
----
-
-## The WebSocket Protocol
-
-`WS /ws` — one socket, JSON both ways. Plain text sent to the socket is treated as user
-input.
-
-| Direction | `type` | Payload / meaning |
+| `TTS_BACKEND` | Engine | Characteristics |
 |---|---|---|
-| server → client | `thought` | one entry tailed live from `thoughts.log` (unconsumed by the current UI — see above) |
-| server → client | `vitals` | per-tier call counts, exact token totals, estimated USD |
-| server → client | `response` | the final reply for a turn |
-| server → client | `status` | transient state |
-| server → client | `error` | failure surfaced to the user |
-| server → client | `confirm_request` | safety gate needs a decision — see below |
-| client → server | `confirm_response` | `{"approved": true\|false}` |
-| client → server | `cancel` | Tier-5 interrupt request — **wired**, see below |
-| client → server | *(raw text)* | a user message |
+| `edge` | Microsoft Edge neural speech | Default network voice; retry protected |
+| `pyttsx3` | Operating-system speech | Offline; voice quality depends on installed voices |
+| `space` / `rvc` | Remote RVC Space | Experimental and slow |
 
-**`confirm_request` carries two distinct cases**, and a UI must render them
-differently: `tool_name` is a real tool → a single risky action (the old per-call
-prompt). `tool_name == "plan"` → Tier-3 plan-level approval, one question covering
-every step that needs consent, asked *before anything runs* — answering "no" means
-**nothing ran**, the opposite of the per-call case where earlier steps already
-happened.
+Voice tuning uses `TTS_VOICE`, `TTS_RATE`, `TTS_PITCH`, and `TTS_VOLUME`. RVC-specific
+options apply only to the experimental backend.
 
-The CLI also offers a third answer, `A` = *approve this tool for the rest of the
-session* (`permissions.grant_for_session`). The UI has no equivalent yet — worth
-adding, since a gate that's too noisy gets switched off entirely.
+Voice formatting problems are fixed in `to_speech()`, not by simplifying the Brain,
+Worker, or persona prompts.
 
-## Cancellation — wired end to end (Tier 5)
+## CLI
 
-Both sides are done: `ws.ts::cancel()` sends `{"type": "cancel"}`;
-`main_api.py`'s WebSocket loop calls `ciel_agent.core.request_cancel("cancelled from
-UI")` on receipt. `useCiel.ts` exposes a `cancel()` that the UI's Stop button and Esc
-key call while a request is in flight.
+`main.py` provides:
 
-Cancellation is **cooperative and lands at the next step boundary**, never mid-tool —
-the UI reflects this with a `status === "cancelling"` state ("Stopping at the next step
-boundary…") rather than implying an instant stop. The job closes as `cancelled`, which
-`status` queries report distinctly from a crash.
+- typed and optional spoken input;
+- optional spoken output;
+- blocking safety confirmation;
+- session-scoped tool grants;
+- Ctrl+C cancellation during a request;
+- live presence tracking for CLI notifications.
 
-## What Still Needs Wiring
+An explicit unsafe/auto-approve CLI mode wires a callback that returns true. This is an
+operator choice, not the default safety behavior.
 
-Two backend capabilities are finished and simply not surfaced in the current UI yet:
+## API
 
-| Gap | Backend is ready | What the UI needs |
+`main_api.py` provides:
+
+- `GET /health`
+- `GET /skills`
+- `POST /tts`
+- `WS /ws`
+
+The WebSocket carries one user turn at a time and streams structured events. If a risky
+step needs confirmation while no WebSocket is attached, the action is recorded as
+deferred and denied. Confirmation timeout also fails closed.
+
+### WebSocket frames
+
+| Direction | Type | Purpose |
 |---|---|---|
-| **Proactive notifications** | `core/notifier.py` routes app → CLI → Telegram; `AppChannel` is first in priority | `main_api.py` never constructs an `AppChannel`, so a Tier-6 notification falls through to Telegram even with the UI open. Needs: `AppChannel(is_live_fn=lambda: _confirm_ws is not None, send_fn=lambda note: _push({"type": "notification", ...}))`, plus a new `notification` frame type the UI renders — distinctly for `notify` (one-shot) vs `ask` (expects an answer, escalates to Telegram if ignored). |
-| **Deferred approvals** | `DeferredStore` records background actions blocked because nobody was present | surface `core.deferred.pending()` as a small queue. Offer **"re-issue this request"**, never "approve and run it now" — Ciel deliberately does not replay a stale mutating action against a world that has moved on. |
+| Server → client | `status` | Processing and cancellation state |
+| Server → client | `response` | Final user-facing response |
+| Server → client | `error` | Surfaced runtime failure |
+| Server → client | `vitals` | Model calls, token totals, estimated cost |
+| Server → client | `thought` | Audit event; current UI does not render it |
+| Server → client | `confirm_request` | Tool or whole-plan approval request |
+| Client → server | `confirm_response` | Boolean confirmation decision |
+| Client → server | `cancel` | Request cancellation at next step boundary |
+| Client → server | raw text | User message |
 
-New read-only surfaces worth building panels for, once the above lands:
+`tool_name == "plan"` means approval covers all displayed risky steps before anything
+runs. A normal tool name means one per-call decision.
 
-| Source | What it is | Why a UI wants it |
-|---|---|---|
-| `core.tasks.recent()` | Tier-2 durable task records — goal, steps, status | a real activity/history panel; `interrupted` jobs are resumable |
-| `core.user_model.live_traits()` | Tier-7 learned profile, with provenance | let the Master **see and delete** what Ciel believes about them |
-| `core.user_model.explain(key)` | why a trait is believed, and how confident | "why do you think that?" answered honestly |
-| `notifier.peek_digest()` | findings held back by the daily budget | a quiet "things I didn't interrupt you for" list |
+## Browser and desktop UI
 
-The user-model panel is worth building carefully: it describes a real person, stored
-in a human-readable file precisely so it can be audited and corrected.
-`forget(key)`/`forget_all()` already exist — a profile you cannot erase is not one
-anybody consented to.
+The React/Tauri UI uses a two-region workbench:
 
-**Known-open, not a UI concern:** `main_api.py` still auto-approves a confirmation
-request when no WebSocket is attached. That predates the Tier-6 unattended ceiling and
-is the one remaining place where silence still means consent — see `safety_and_risk.md`.
+```text
+┌──────────────┬──────────────────────────────────┐
+│ Skills rail  │ Session header and status       │
+│ from /skills │ Transcript                      │
+│              │ Input, voice, stop, read-aloud  │
+└──────────────┴──────────────────────────────────┘
+```
 
-## Things That Will Bite a Rewrite
+`VitalsBar` reports usage; `ConnectionBanner` reports connectivity;
+`ConfirmDialog` handles safety decisions. The raw thought stream is intentionally not
+rendered. `thoughts.log` is an audit format, not a UI model.
 
-- **Never render `thoughts.log` as the primary output.** It is a raw audit trail
-  parsed by three scripts — do not reformat it to suit a UI.
-- **`GET /skills` is the only source of the tool list.** The skill grid is 100%
-  backend-driven so a new `skills/**/*_ops.py` appears with zero frontend edits. Keep
-  that property.
-- **Don't reimplement TTS in the browser.** `POST /tts` runs the same normalizer +
-  engine as the CLI; a client-side voice would drift from it immediately.
-- **The orb is framework-agnostic on purpose** (`ui/src/orb.ts`, no React import), and
-  currently unmounted rather than deleted — see above. If you change frameworks or
-  decide to bring it back, it comes with you unchanged.
-- **Keep the bus seam.** Every capability in the "what still needs wiring" table above
-  is a new *event type* on the existing bus, not a new transport.
+The UI communicates through `ui/src/core/bus.ts`. Text input, browser voice input,
+WebSocket responses, TTS, and optional visual components subscribe to that seam instead
+of calling each other directly.
+
+### Voice in the UI
+
+- Input uses browser `SpeechRecognition` with Vietnamese locale when available. Tauri
+  WebView2 builds without that API disable the microphone control gracefully.
+- Output calls backend `POST /tts`, preserving the same normalizer and voice used by
+  CLI. The client plays returned audio rather than reimplementing speech formatting.
+
+### Orb and widget
+
+`ui/src/orb.ts` and `ui/src/components/Orb.tsx` remain compilable but are not mounted by
+the current dashboard. Restoring the orb is a component change, not a frontend rewrite.
+
+`ui/src/Widget.tsx` is a separate Tauri window surface using the same bus and `useCiel`
+hook. Window selection is based on the Tauri window label, not URL parameters. The
+widget force-expands for confirmation and exposes the same cancellation boundary as the
+main dashboard.
+
+## Telegram
+
+`main_telegram.py` and `core/telegram_interface.py` provide:
+
+- long polling without an HTTP server;
+- numeric chat-ID allow-list before routing;
+- text, photo, and document input;
+- sandboxed downloads under `ciel_workspace/telegram_uploads/`;
+- inline confirmation for risky calls;
+- `/cancel` cooperative cancellation;
+- plain-text and document delivery.
+
+Inbound files become normal user turns containing their safe local path plus caption.
+Brain chooses an appropriate read/describe tool; transport does not force a tool.
+
+Generated HTML/PDF reports go to `agent_output/` and use
+`send_telegram_document`. The interface does not duplicate the report as a second long
+chat response after a successful attachment.
+
+Telegram Compose intentionally disables the API image health check. Health is container
+state plus the `[Telegram] Bot online` startup log.
+
+## Proactive interface routing
+
+`core/proactive_setup.py` currently constructs:
+
+- CLI presence channel plus Telegram fallback for CLI mode;
+- Telegram channel for API and Telegram modes.
+
+The backend `AppChannel` abstraction exists, but `main_api.py` does not yet publish
+proactive notification frames to the WebSocket. Consequently an API/UI deployment
+routes proactive messages to Telegram even while the UI is open.
+
+Deferred approvals are stored but do not yet have a dedicated UI queue. A future panel
+must offer “reissue this request,” not “approve and replay,” because stale mutating work
+is deliberately non-replayable.
+
+## Cancellation contract
+
+Cancellation is cooperative:
+
+1. the interface calls `CielCore.request_cancel()`;
+2. the runtime sets a thread-safe event;
+3. the next step boundary stops execution;
+4. the durable task closes as cancelled.
+
+Interfaces display “stopping at the next step boundary” rather than claiming immediate
+termination. Killing a tool mid-write or mid-send is not supported.
+
+## Rewrite constraints
+
+- Tool lists remain backend-driven through `GET /skills`.
+- Every new front end wires confirmation before it can invoke tools.
+- The bus remains the UI modality seam.
+- TTS normalization remains server-side and shared.
+- Raw audit logs remain outside the user-facing transcript.
+- Active Subject, recent turns, and Telegram file metadata remain core contracts; an
+  interface does not implement its own conversational memory.

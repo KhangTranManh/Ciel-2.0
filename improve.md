@@ -172,6 +172,13 @@ JSON, tool-use, and live-suite gates above; never declare Level C from a chat-on
 - [ ] **Pass when:** suite PASS + one real day without spam.  
 - Pass date: ________
 
+**Planner foundation (implemented 2026-08-26):** monthly goals and weekly actions use
+separate SQLite tables and separate auto-discovered tool packs; immediate todos remain
+in JSON. Opt-in `monthly_plan` and `weekly_plan` triggers catch up after downtime and
+use the persistent Notifier key/cooldown path. `backtest.test_planner` is 32/32. This
+does not close P1.2 by itself: the existing pass bar still requires a real day without
+spam.
+
 ### P1.3 — User model
 - [ ] Preferences only; never inject secrets into `user_model`.  
 - [ ] **Test:** `test_user_model`  
@@ -358,6 +365,8 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-08-25 | Terse lookup continuation | provider-configured | `test_conversation_bugs` 82/82 | **PASS** | Fresh “làm đi” / “mở đi” follows one cached public URL with deterministic `smart_scrape`; several URLs require a selection unless explicitly requested together. |
 | 2026-08-25 | Two-model topology | Brain + Worker | unit 7/7; config + boot smoke | **PASS** | Middleware and Router Assistant disabled; dormant aliases mirror Worker/Brain; optional code retained for rollback. |
 | 2026-08-25 | Active subject handoff | Brain + Worker | unit 8/8 suites; subject 8/8; exact two-turn live smoke | **PASS** | RAM-only grounded topic/entities/action reaches Brain before routing; 15-minute/3-turn expiry; laptop price/used follow-up routed `multi_tool`. |
+| 2026-08-26 | Monthly/weekly planner foundation | Brain + Worker | planner 32/32; unit 9/9; startup wiring smoke | **PASS (foundation)** | Separate monthly/weekly tools over planner.db; JSON todos unchanged; deterministic catch-up triggers and persistent delivery dedupe shared by CLI/Telegram/API. P1.2 still needs a real-day no-spam observation. |
+| 2026-08-27 | Planner VPS delivery smoke | Brain + Worker | planner 32/32 in container; isolated 302s Telegram run | **PASS (deployment smoke)** | Rebuilt/recreated Telegram; one weekly message delivered and repeated polls suppressed using temporary DB/state. Production data unchanged. This is not the formal P1.2 real-day observation. |
 
 | 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
 | 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
@@ -386,6 +395,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | active_subject | unit | `backtest.test_active_subject` |
 | user_model | unit | `backtest.test_user_model` |
 | proactive | unit | `backtest.test_proactive` |
+| planner | unit | `backtest.test_planner` |
 | outbound | unit | `backtest.test_outbound` |
 | conversation_bugs | unit | `backtest.test_conversation_bugs` |
 | integration | live | `backtest.test_integration` |

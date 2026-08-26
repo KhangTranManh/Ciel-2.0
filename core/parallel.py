@@ -41,6 +41,7 @@ _DEFAULT_PARALLEL_SAFE = frozenset({
     "search_gmail", "get_gmail_message", "get_gmail_thread",
     # misc reads / pure computation
     "get_weather", "calculate", "get_current_time", "get_fact", "list_todos",
+    "list_monthly_goals", "list_weekly_plan",
 })
 
 # Matches one OR two braces, mirroring CielCore._STEP_REF_RE: a step written {step_1}

@@ -1,232 +1,184 @@
-# Safety & Risk — Ciel 2.0
+# Safety and Risk — Ciel 2.0
 
-Safety mechanisms that prevent Ciel from performing destructive or unwanted actions
-without approval — whether a human is at the keyboard or not.
+## Security model
 
-## The Decoupled Safety Model (critical — do not re-couple)
+Ciel separates content permissiveness, execution authority, filesystem scope, and
+unattended behavior. No single flag disables all four.
 
-Two **independent** flags govern two **different** things:
+| Control | Purpose |
+|---|---|
+| `SAFETY_OPEN` | Brain content-filter permissiveness only |
+| `DISABLE_SAFETY_GATE` | Interactive destructive-tool confirmation only |
+| `PermissionPolicy` | Exact-call `AUTO`, `ASK`, `DENY`, or `DEFER` decision |
+| Filesystem sandbox | Restricts user-operable paths |
+| Unattended ceiling | Prevents silence or old grants becoming consent |
 
-- **`SAFETY_OPEN`** (+ `VILAO_SAFETY_BYPASS`) — relaxes Brain **content filtering**
-  only (fewer false refusals on normal tasks like email). No effect on the
-  destructive-tool gate.
-- **`DISABLE_SAFETY_GATE`** — controls the **destructive-tool confirmation gate**
-  only. Default **`false`** (gate ACTIVE / fail-safe). Set `true` only for fully
-  unattended automation, and even then it does not mean "act without oversight" — see
-  the unattended ceiling below, which `DISABLE_SAFETY_GATE` cannot bypass.
+`SAFETY_OPEN` and `DISABLE_SAFETY_GATE` were separated after coupling them allowed a
+denied destructive action to proceed. They never share logic.
 
-These were deliberately split after an incident where coupling them let a *denied*
-confirmation still allow a destructive action through. Never merge them back.
+## Pre-execution order
 
-## The Safety Gate (Attended Confirmation)
+```text
+Brain plan
+  -> deterministic plan validation
+  -> exact-call permission review
+  -> attended plan confirmation when required
+  -> per-call delivery/content guards
+  -> tool execution
+```
 
-**Eight tools** require the Master's explicit Y/N approval before execution:
+An invalid multi-tool plan executes nothing. Permission approval applies only to the
+tool and arguments displayed; later continuation steps must be validated and reviewed
+again.
+
+## High-risk tools
+
+The following tools require explicit attended approval unless a narrower policy denies
+them first:
 
 | Tool | Risk |
-|------|------|
-| `delete_file` | Permanently DELETE a file from the workspace |
-| `execute_shell_command` | Run an OS shell command on the machine |
-| `send_gmail_message` | Send a plain-text email from the Master's Gmail |
-| `send_gmail_html_message` | Send a rich HTML email (e.g. market dashboard reports) |
-| `reply_to_email` | Reply to an existing email thread |
-| `trash_email` | Move an email to Trash |
-| `git_confirm_push` | Commit and PUSH code to the remote repo |
-| `vision_act` | Autonomously control the screen (click, type, scroll) |
+|---|---|
+| `delete_file` | Permanent workspace deletion |
+| `execute_shell_command` | Arbitrary host/container command |
+| `send_gmail_message` | External plain-text email |
+| `send_gmail_html_message` | External HTML email |
+| `reply_to_email` | External thread reply |
+| `trash_email` | Inbox mutation |
+| `git_confirm_push` | Commit and remote push |
+| `vision_act` | Autonomous screen control |
 
-**Plus a content-based gate**, not tied to a fixed tool list: `write_file`,
-`append_file`, and `execute_code()` also require Y/N when the WRITTEN CONTENT matches a
-genuinely destructive pattern — drive/disk `format`, `mkfs.`, `shutil.rmtree(`,
-`rm -rf /`, fork bombs, `DROP DATABASE/TABLE`, `shutdown /r`, etc.
-(`_find_dangerous_code_patterns()`). This exists because the pre-declared tool list
-alone missed a case where generated code wrote a fully-wired drive-format function to
-disk via an ordinary `write_file` call.
+`write_file`, `append_file`, and `execute_code` also require approval when their
+content matches destructive patterns such as disk formatting, recursive root deletion,
+database dropping, shutdown commands, or fork bombs. The content gate covers risk that
+cannot be captured by a fixed tool-name list.
 
-**Every `(tool, args)` also resolves through `core/permissions.py`'s three-way policy**
-(`AUTO`/`ASK`/`DENY`) — see Tier 3 in `architecture.md` for plan-level approval, grant
-scopes, and why a grant is keyed on the exact call signature, not the tool name.
+## Confirmation channels
 
-Before that permission review, `core/plan_validation.py` rejects malformed, unknown, or
-forward-dependent multi-tool steps without executing any of them. It may remove only a
-dependency-safe duplicate outbound delivery; `CielCore.execute_tool()` remains the final
-per-turn guard, so later continuation rounds cannot bypass idempotency.
+Supported front ends wire the same callback signature:
 
-### How it works
-
-1. `CielCore.execute_tool()` checks if the tool is in `_HIGH_RISK_TOOLS`, OR (for
-   `write_file`/`append_file`/`execute_code`) scans the content for dangerous patterns.
-2. If flagged, `_request_confirmation()` builds a human-readable preview (with an
-   optional dynamic `risk_override` for the content-based gate) and calls
-   `self.confirm_callback`.
-3. The callback is wired by the entry point:
-   - **CLI** (`main.py`): blocking `input("Y/N")` with a yellow safety banner.
-   - **WebSocket** (`main_api.py`): sends `confirm_request` JSON to the UI, blocks up
-     to 60s for `confirm_response`.
-4. Denied → the tool returns `[CANCELLED]` without executing.
-5. No callback set → auto-approves with a warning log (fail-open for pipelines that
-   intentionally never wire one — **not** the same thing as `DISABLE_SAFETY_GATE`).
-
-All safety events log to `thoughts.log` under the `[SAFETY]` actor:
-`[CONFIRM_REQUESTED]`, `[CONFIRM_APPROVED]`, `[CONFIRM_DENIED]`, `[DEFERRED]`,
-`[DUPLICATE_SEND_SUPPRESSED]`.
-
-## The Unattended Ceiling — silence is never consent (Tier 6)
-
-Everything above assumes a human is present to answer. A trigger firing at 03:00 has
-nobody to ask, and **"nobody answered" must never resolve to "yes"**.
-`PermissionPolicy.decide(..., attended=False)` adds a fourth outcome:
-
-```
-AUTO   read-only → runs
-DENY   refused outright → still wins over everything
-DEFER  risky + nobody present → recorded, NOT run, raised at the next interaction
+```python
+confirm_callback(tool_name, preview, tool_args) -> bool
 ```
 
-In that context, **session grants, plan approvals, and `DISABLE_SAFETY_GATE` are all
-ignored.** Each is evidence a human agreed *while present*, and none of that transfers
-to a background run hours later. `DISABLE_SAFETY_GATE` means "stop asking me" — a
-statement about interruptions, not a standing permission to act unsupervised. The only
-escape hatch is per-tool and explicit: `CIEL_UNATTENDED_AUTO_TOOLS`, which cannot reach
-past the deny list.
+- CLI uses a blocking terminal prompt and supports a session grant.
+- API uses a WebSocket `confirm_request`/`confirm_response` exchange.
+- Telegram uses an inline Yes/No keyboard restricted to the configured chat ID.
 
-`CielCore.unattended` is **thread-local**, and `_run_steps` propagates it into parallel
-workers by hand. A plain attribute would let the scheduler thread flip it while a
-foreground request was mid-flight, turning that user's confirmations into silent
-deferrals — a safety control that fails open in a thread is worse than none.
+API and Telegram fail closed when the client disappears or times out. The raw
+`CielCore` compatibility path still warns and auto-approves when no callback exists;
+therefore a new front end must always set one and must not rely on the raw default.
 
-`DeferredStore` (`ciel_data/state/deferred.json`) records what was blocked and
-**deliberately never replays it**. A mutating action decided against 03:00's world is
-not the same action at 09:00, and approving it from a one-line summary is approving a
-fragment — the exact failure Tier 3 removed. The Master re-issues it as a fresh
-request, planned against the world as it now is.
+## Unattended ceiling
 
-`main_api.py`'s `_ws_confirm()` applies this at the point it matters most: if no
-WebSocket is attached when a high-risk step needs approval (client disconnected
-mid-run, or a background step outlives the connection that started it), it records
-the action via `DeferredStore.add()` and returns `False` — deny, not auto-approve.
-This does not go through `core.unattended`/`permissions.decide()` like the scheduler
-path does; it is a second, narrower enforcement point specific to the one channel
-(`main_api.py`) where "socket present" is the actual attendance signal.
+`PermissionPolicy.decide(..., attended=False)` converts risky work to `DEFER`.
 
-## Outbound Idempotence — one delivery per recipient per turn
+In unattended mode:
 
-For an HTML report, `send_telegram_document` is the terminal Telegram delivery. The
-workflow safeguard must not append `send_telegram`, and `core/telegram_interface.py`
-must not relay the full synthesized response after a successful attachment. This avoids
-an attachment followed by duplicate report text.
+- `DENY` still wins.
+- Safe read-only calls may remain `AUTO`.
+- Session grants are ignored.
+- Plan approvals are ignored.
+- `DISABLE_SAFETY_GATE` is ignored.
+- Only explicitly configured `CIEL_UNATTENDED_AUTO_TOOLS` may widen the safe set, and
+  never past a deny rule.
 
-Telegram's inbound upload note (`[File/Ảnh Master vừa gửi qua Telegram, ...]`) is
-transport metadata, not a request to send a reply through Telegram. Intent detection
-strips it before deciding whether to append an outbound delivery step.
+Deferred calls are recorded in `ciel_data/state/deferred.json` and never replayed
+automatically. The user reissues a fresh request against current state.
 
-`execute_tool` suppresses a second outbound send (`send_gmail_message`,
-`send_gmail_html_message`, `reply_to_email`, `send_telegram`,
-`send_telegram_document`) to the same recipient/channel within one request.
+Unattended state is thread-local and explicitly propagated into parallel workers. A
+background trigger cannot change the permission context of a foreground user turn.
 
-This exists because **two independent mechanisms** can complete a plan missing its
-send step — the workflow safeguard in `execute_multi_tool` (which appends one) and the
-Tier-1 loop (which re-plans one) — and neither knew about the other. Reproduced live:
-the same report delivered twice, with two different subjects.
+## Outbound delivery controls
 
-Rules that make it correct:
-- **Key on the RECIPIENT, never a full argument signature.** The duplicates differ in
-  subject and body by construction, so a signature over all args would never match.
-- **Record only on SUCCESS.** A failed send must stay retryable; marking it delivered
-  would turn one provider hiccup into mail that never goes out and never says why.
-- **Check before the safety gate.** Asking the Master to approve a send about to be
-  suppressed is worse than not asking.
-- **Scoped to one turn.** Two separate requests may legitimately mail the same person
-  again.
+### One delivery per recipient per turn
 
-Any new code path that can send **must** go through `execute_tool`, or it bypasses
-this.
+`CielCore.execute_tool()` deduplicates successful Gmail and Telegram sends by
+recipient/channel. This covers:
 
-## Outbound Email — Sanitizer + Middleware (the layers before send)
+- `send_gmail_message`
+- `send_gmail_html_message`
+- `reply_to_email`
+- `send_telegram`
+- `send_telegram_document`
 
-Every outbound email/report body passes, in order:
+The check runs before confirmation, and a delivery is recorded only after tool success.
+Failure remains retryable. The scope resets at the start of the next user turn.
 
-1. **Deterministic sanitizer** (`_sanitize_outbound_email()`) — strips `[COGNITION]`
-   lines, persona tag prefixes, signature placeholders, "email sent/Message Id"
-   scaffolding, redundant Subject lines, and (email only, not file reports) internal
-   paths (`agent_output/…`, `ciel_workspace/…`). Live tool numbers must survive.
-2. **Middleware review** (optional, `MIDDLEWARE_ENABLED`, email/report bodies only) —
-   an LLM-based semantic check for relevance/consistency/grounding a sanitizer can't
-   catch (e.g. "claims Bearish but the price is above both moving averages"). A
-   finalizer (can rewrite the body), capped at `MIDDLEWARE_MAX_PASSES`, and **fails
-   open on every failure mode** — a hiccup, timeout, or unfixable flag must never block
-   a legitimate send. It may ONLY flag numbers that contradict each other *within* the
-   same body — never reject a number merely because it looks unfamiliar against the
-   model's training-era knowledge.
-3. The safety-gate preview (Y/N) reflects the FINAL body, after both steps.
-4. The outbound idempotence guard (above) applies at send time, before the gate.
+An HTML Telegram attachment is terminal delivery for that turn: workflow safeguards do
+not append a second text send, and Telegram does not repost the full report body after
+the document.
 
-### Synthesis-placeholder guard (deterministic)
+### Email sanitization and Middleware
 
-A multi_tool plan defers a write/send whose body is a synthesis placeholder, fills it
-with the Worker-synthesized report, then executes it. If a placeholder ever SURVIVES to
-the actual write/send, it is blocked — `_has_unsynthesized_placeholder()` matches ANY
-paraphrased marker, not one fixed string, because a stronger Brain paraphrasing the
-canonical marker once let a hollow shell reach disk under the old exact-string check.
-Symmetric across both the email and file-write paths.
+Outbound email passes through:
 
-### Subject enforcement (deterministic)
+1. deterministic removal of internal cognition, duplicate subject scaffolding,
+   placeholders, false sent-status prose, and internal paths;
+2. optional Middleware semantic review for relevance and internal consistency;
+3. final exact-subject enforcement when the user specified one;
+4. the confirmation preview using the final body;
+5. provider delivery and Message ID verification.
 
-When the request names an exact subject (`subject exactly '...'`, `tiêu đề '...'`), the
-send step's subject is overwritten with it (`_enforce_subject()`) rather than trusting
-the Brain to keep it. Applies on both the single-send (`action="tool"`) and multi_tool
-paths; only touches an existing `subject` arg, so `reply_to_email` is unaffected.
+Middleware is bounded and fail-open. It may identify contradictions inside the body,
+but cannot reject grounded tool data merely because the model considers it unfamiliar.
 
-## Quarantine Zone (Workspace Sandbox)
+A synthesis placeholder surviving to a real write/send is blocked by pattern, not one
+canonical string. Stronger models may paraphrase placeholders.
 
-File tools in `system_ops.py` are locked to `ciel_workspace/` (and `agent_output/` for
-generated code):
+## Filesystem sandbox
 
-- `_is_safe_path(target_path)` resolves the path and checks
-  `resolved_path.is_relative_to(WORKSPACE_DIR)`.
-- An escaping path raises `PermissionError`.
-- Applies to: `list_workspace`, `read_file`, `write_file`, `append_file`,
-  `delete_file`, `get_file_info`, `run_python_script`, `read_document`.
+File tools operate under `ciel_workspace/` and, for generated outputs,
+`agent_output/`. Resolved paths escaping those roots raise `PermissionError`.
 
-**Never weaken this check** — it is what stops Ciel from accidentally deleting or
-overwriting project source files.
+Linux containers can receive Windows-style paths from model prompts. Remapping accepts
+only paths containing a recognized sandbox segment and maps the suffix to the current
+host/container root. Arbitrary drive paths remain rejected.
 
-## Vision Failsafe
+Telegram uploads are stored under `ciel_workspace/telegram_uploads/`. The inbound note
+that reports their saved location is transport metadata, not write intent. Uploads are
+not overwritten unless the user explicitly asks; derived reports belong in
+`agent_output/`.
 
-- **`pyautogui.FAILSAFE = True`** — moving the mouse to any screen corner aborts all
-  vision actions.
-- **Max 10 steps** — the vision loop hard-stops after 10 screenshot→action cycles.
-- **Loop-break detector** — auto-stops after 3 identical `action@grid` attempts.
-- **Debug screenshots** — every vision step is saved to
-  `ciel_workspace/screenshots/` for audit.
-- `vision_act` is also one of the 8 high-risk tools — Y/N is required before it starts
-  controlling the screen.
+## Plan and recovery safety
 
-## Self-Healing Guardrails
+`core/plan_validation.py` verifies loaded tool names, schema-compatible object
+arguments, backward step references, and dependency-safe duplicate handling before any
+permission or execution.
 
-- **Max 3 attempts** per tool error (syntax fix → logic rewrite → stdlib-only rewrite).
-- **Syntax validation** via Worker before saving any fixed code.
-- **Skip-list** (`_HEALING_SKIP_PATTERNS`) — errors no parameter guess could ever fix
-  (missing library, network timeout, geo-restriction, OS socket errors) short-circuit
-  past the retry loop instead of burning a guaranteed-to-fail Worker call.
-- Escalating strategies prevent the same fix being tried twice.
+Recovery is bounded:
 
-## Shell Command Safety
+- tool healing has a fixed attempt ceiling;
+- syntax is validated before repaired code is saved;
+- environmental and non-repairable failures skip model-based retries;
+- a failed corrective attempt cannot replace an already successful result;
+- deterministic failure signals cannot be overruled by a model saying “satisfied.”
 
-`os_ops.py` has a basic dangerous-keyword guard for `execute_shell_command`. Also
-covered by the Safety Gate (Master approval required) — the two layers are
-independent.
+## Vision safety
 
-## Credential Safety
+Desktop vision uses PyAutoGUI failsafe corners, a finite action loop, repeated-action
+detection, screenshot auditing, and high-risk confirmation for `vision_act`.
 
-- **No secrets in code** — all API keys live in `.env` (gitignored).
-- **Git auto-excludes** `.env`, `credentials.json`, and token files
-  (`github_ops.py`).
-- **OAuth tokens** — `gmail_token.json` is auto-generated in `ciel_data/`
-  (gitignored).
-- **`credentials.json`** (Google OAuth client) is never tracked. If missing, Gmail
-  tools simply don't load (0 tools registered); the rest of Ciel is unaffected.
-  Recreate via Google Cloud Console (OAuth client, Desktop app type, Gmail API scope
-  `https://mail.google.com/`).
-- **A second credential boundary lives in `core/user_model.py`** — anything that looks
-  like a credential is refused at the store level before it can ever be injected into
-  a prompt. See Tier 7 in `architecture.md` and the "two memory stores" section of
-  `data_pipeline.md`.
+Headless Docker deployments disable `vision_ops` through
+`DISABLED_SKILL_MODULES=vision_ops`. Loading a display-dependent module and denying it
+later is less reliable than excluding it at discovery time.
+
+## Credentials and private data
+
+- `.env`, `credentials.json`, Gmail tokens, `ciel_data/`, and deployment credentials
+  stay outside Git.
+- Docker bind-mounts private files instead of baking them into the image.
+- Git tooling excludes known secret paths from automated commits.
+- Missing Gmail credentials disable Gmail capability rather than the whole assistant.
+- `UserModel` rejects secret-like content before storage and prompt injection.
+- Logs and documentation never include raw keys, passwords, tokens, private `.env`
+  values, or authorization headers.
+
+Repository publication also requires checking history, not only the working tree.
+Removing a secret from the latest commit does not remove it from earlier Git objects.
+
+## Audit events
+
+Confirmation requests, approvals, denials, deferrals, duplicate suppression, trigger
+outcomes, and provider usage are recorded in `thoughts.log` using the existing stable
+format. The audit trail supports diagnosis; it does not grant authority or serve as a
+user-facing response stream.

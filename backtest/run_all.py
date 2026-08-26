@@ -101,6 +101,12 @@ SUITES: list[Suite] = [
         "Deterministic multi-tool structure, dependency, schema, and duplicate-delivery checks",
     ),
     Suite(
+        "planner",
+        "backtest.test_planner",
+        "unit",
+        "SQLite monthly/weekly plans, separate tools, catch-up triggers, and dedupe",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",

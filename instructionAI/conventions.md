@@ -1,335 +1,251 @@
 # Conventions — Ciel 2.0
 
-Code patterns, naming rules, and gotchas for working on this project. For what each of
-the seven agent-capability tiers *does* and *why*, see `architecture.md` — this file is
-about the patterns that keep them safe to extend.
+## General style
 
-## Brain/Router → Worker Separation
+- Python modules use `snake_case.py`; classes use `PascalCase`; functions, variables,
+  tool names, and environment keys use established `snake_case` or `UPPER_SNAKE_CASE`.
+- Type hints are used on boundaries and persistent data structures.
+- Deterministic policies remain pure or independently testable; model clients do not
+  own safety decisions.
+- Optional features fail open for assistant availability and fail closed for authority.
+  A broken memory lookup may disappear; a missing confirmation may not become consent.
+- Comments explain why a non-obvious constraint exists, especially when it prevents a
+  previously observed failure.
 
-The system strictly separates **routing**, **verification**, and **generation**:
+## Model-role convention
 
-- **Brain / Router** — decides what to do. Outputs JSON with `hidden_thought` + action.
-  Never generates final content. For `action == "chat"`, its `task` field is a *hint*,
-  not the reply — see the Known Gotchas entry below; a strong model routinely tries to
-  pre-write the answer into it.
-- **Middleware** *(optional, email-scoped)* — semantically reviews outbound
-  email/report bodies AFTER the deterministic sanitizer, BEFORE the safety-gate
-  preview. Catches what regex can't (topic mismatch, internal numeric contradictions,
-  hollow templated shells). A FINALIZER (edits the body in place), not a blocking gate,
-  and **fail-open** on any error. Disabled by default (`MIDDLEWARE_ENABLED=false`).
-- **Worker** — generates text/code. Never makes routing decisions. Tenacity retry
-  protection.
+The standard model topology is:
 
-The maintained runtime has two model identities. Brain runs low-temperature for routing
-and evaluation; Worker runs slightly higher for natural generation and formatting.
-Middleware and Router Assistant remain optional code paths but are disabled, with their
-dormant model IDs set equal to Worker and Brain respectively. This keeps rollback easy
-without allowing an unnoticed third model.
-
-## Tool Pack Registration
-
-1. Create a file (e.g., `skills/external/my_ops.py`).
-2. Define a function matching `get_*_tools()` returning
-   `{"tools": [StructuredTool, ...], "prompt": "..."}`.
-3. `ToolManager.__init__()` auto-discovers all `*.py` files in `skills/internal/` and
-   `skills/external/` — no manual registration. The UI's skill grid (`GET /skills`)
-   picks it up automatically too.
-
-The `prompt` string is the tool's "manual." **Caveat** (see `PROMPT_INVENTORY.md`):
-these per-skill manuals are collected but not fed to the live Brain prompt — the actual
-per-tool guidance the Brain sees is `name` + `description[:80]` + arg schema, plus
-`_TOOL_HINTS` overrides in `core/llm_connector.py`. If a tool needs stronger routing
-guidance, extend `_TOOL_HINTS` rather than assuming the manual is read.
-
-## Skill Contract — what a new tool MUST honour
-
-Auto-discovery means a new pack never touches `core/`. That is exactly why these
-invariants matter: nothing stops you breaking them, and the failure shows up later as
-wrong output, not an import error.
-
-**1. A tool may be invoked MORE THAN ONCE per user request.** Three independent
-mechanisms can re-invoke it: self-healing (up to 3), Brain self-correction (up to 2),
-and the Tier-1 loop (up to `AGENT_LOOP_MAX_ROUNDS`). Design every tool to be
-**idempotent or preview-only**:
-- Read/query tools — inherently fine.
-- Tools with outside effects (send, push, delete, pay, post) — split into a **preview**
-  tool and a **confirm** tool; let the preview declare the pairing (point 2). The loop
-  stops the moment a confirmation is staged, so the Master decides.
-- Never make a single call both decide and act irreversibly.
-
-**2. Opt into confirmation via the result, never by editing core.**
-
-```python
-return make_result(
-    True, data={"message": preview_text}, tool_name="my_preview",
-    confirm={"tool": "my_commit", "args": {...}},   # ← the whole registration
-)
+```text
+BRAIN_PROVIDER + BRAIN_MODEL  -> routing, planning, evaluation
+WORKER_PROVIDER + CODER_MODEL -> conversation, generation, synthesis
 ```
 
-`CielCore.execute_tool` reads `result["confirm"]` generically. A bare "yes" later
-resolves it with zero LLM calls and survives a process restart
-(`ciel_data/state/pending_action.json`). One pending slot: a new risky request while
-one is outstanding is refused deterministically.
+`WORKER_MODEL` is the Python constant derived from `.env` key `CODER_MODEL`. Do not add
+an environment variable named `WORKER_MODEL` or a third model role for ordinary work.
 
-**3. Return the standard envelope** — `make_result()` from `skills/_result.py`. A bare
-string still works (`ToolManager` wraps it), but it can never opt into point 2, and
-`success=False` is the only thing self-healing recognises as failure.
+Router Assistant and Middleware are optional experiments. If enabled, their model IDs
+reuse Brain or Worker identities unless the operator deliberately chooses otherwise.
 
-**4. Errors must be shaped, not prose.** `ContinuationPolicy` decides "this step failed"
-from the result's opening (`[TOOL_ERROR`, `Error:`, `Lỗi:`, `not found`, `[]`). A tool
-reporting failure as a cheerful sentence is invisible to both the healer and the loop.
+## Tool-pack registration
 
-**5. If a tool lists things, list them line-per-item.** The fan-out signal (Tier 1, S4)
-counts entries matching bullet / `1.` / bare-filename lines. A listing returned as one
-comma-joined blob reads as a single item, and "do X for each of them" silently stops
-after the listing.
+ToolManager discovers `skills/**/*_ops.py`. A pack exposes exactly one public factory:
 
-**6. Long results: hand over the facts, don't assume the model infers them.** Dates,
-sources, and units belong in the tool output (see `stealth_search`'s `Published:`
-labels). Add the tool to `_TOOLS_NEEDING_FORMAT` / `_RETRIEVAL_TOOLS` in
-`core/llm_connector.py` if it needs completeness-oriented formatting over the terse
-default.
+```python
+def get_example_tools() -> dict:
+    return {
+        "tools": [tool_a, tool_b],
+        "prompt": "[EXAMPLE]\nUse tool_a when ...",
+        "parallel_safe": ["tool_a"],  # optional, explicit allow-list
+    }
+```
 
-**7. Destructive tools go in `_RISK_DESCRIPTIONS`** (`core/llm_connector.py`) so the
-Y/N safety gate covers them. Separate from point 2: the gate asks before *this* call,
-`confirm=` carries an action across *turns*. Risky tools usually want both.
+Rules:
 
-**8. Declare `parallel_safe` only for tools with no outside effect.** A tool listed
-there may run concurrently with others in the same plan (`core/parallel.py`). Omit it
-and the tool stays sequential — the safe default. Never list a tool that writes, sends,
-deletes, mutates shared state, or is not thread-safe.
+- Tool names are globally unique and stable.
+- Descriptions state when to use the tool and what evidence it returns.
+- Unknown/new tools are sequential by default.
+- `parallel_safe` contains read-only, independent calls only.
+- Load-time capability removal uses `DISABLED_SKILL_MODULES=<module-stem>`.
+- Runtime allow/deny policy remains in permissions; it is not replaced by disabling a
+  module.
 
-**9. An outbound tool must go through `CielCore.execute_tool`**, never a side path —
-that is the one choke point where the duplicate-recipient guard and the unattended
-`DEFER` ceiling apply (see `safety_and_risk.md`).
+## Tool contract
 
-## Router JSON Structure
+Every tool:
+
+1. Validates required inputs and rejects ambiguity it cannot safely normalize.
+2. Returns `skills._result.make_result()` with `ok`, `status`, `data`, and structured
+   error metadata instead of inventing success prose.
+3. Makes repeated equivalent calls safe. Reads are naturally idempotent; writes use a
+   stable identity or a preview/confirm split.
+4. Reports partial results and missing data explicitly.
+5. Returns facts needed by the response: source, date status, path, message ID, page
+   count, or other provenance as applicable.
+6. Does not bypass `CielCore.execute_tool()` for external delivery or high-risk work.
+7. Bounds data-sized output before it enters context assembly.
+
+The tool may be invoked more than once in one request through correction, healing,
+continuation, or retry. “The model should call it once” is not a valid safeguard.
+
+## Planner conventions
+
+Monthly and weekly planning are separate tool packs and one storage boundary:
+
+- `core/planner_store.py` owns all SQL and schema initialization.
+- `skills/internal/monthly_plan_ops.py` owns monthly goal tools.
+- `skills/internal/weekly_plan_ops.py` owns weekly task tools.
+- `core/planner_triggers.py` reads plans and creates notifications; it does not mutate
+  plans.
+
+Formats:
+
+- Month: `YYYY-MM`.
+- Week: ISO Monday in `YYYY-MM-DD`; any date input normalizes to that Monday.
+- Weekday: `0..6`, Monday through Sunday.
+- Local time: 24-hour `HH:MM`.
+- Status: `active`, `completed`, or `cancelled`.
+
+Identity and history:
+
+- Monthly uniqueness: month plus case-insensitive title.
+- Weekly uniqueness: week, case-insensitive title, weekday, and time.
+- Equivalent adds return the existing row rather than creating duplicates.
+- Completion updates status and keeps the record.
+- Weekly tasks may link to a monthly goal; deletion semantics use `ON DELETE SET NULL`.
+- Immediate loose todos remain in `ciel_workspace/todos.json`.
+
+## Router and plan JSON
+
+Normalized route actions are `chat`, `tool`, `code`, and `multi_tool`. Tool steps have a
+loaded tool name and object-shaped `args`.
 
 ```json
 {
-  "hidden_thought": {
-    "observation": "What the Brain literally sees",
-    "reasoning": "Why this action, what was rejected",
-    "risk": "Any risk identified or 'none'"
-  },
-  "action": "chat|tool|code|multi_tool",
-  ...action-specific fields...
+  "action": "multi_tool",
+  "steps": [
+    {"tool": "stealth_search", "args": {"query": "..."}},
+    {"tool": "smart_scrape", "args": {"url": "{step_0}"}}
+  ]
 }
 ```
 
-`hidden_thought` is logged to `thoughts.log` but never saved to `memory_bank.json`.
-`Router.route()` does **not** feed raw `chat_history` into the routing call —
-deliberate, to avoid conflating an old unresolved request with a new unrelated one.
-Cross-turn continuity for the *response* flows through `_recent_turns_block()`
-(Tier 4) and RAG recall instead; the Router only ever sees the current request plus a
-recall block bounded and filtered against self-match.
+References point backward only:
 
-The deliberate routing exception is not raw history: `core/active_subject.py` hands
-Brain one bounded session record (`topic`, grounded entities, last action). Keep its
-extraction and expiry in that module, not scattered through route branches. Never add
-recipients, paths, URLs, secrets, commands, confirmation state, or destructive
-arguments; explicit current wording always wins.
+- `{prev}` means the immediately previous result.
+- `{step_N}` means an earlier numbered result.
 
-For `action == "chat"`, `task` is a hint the Router may set — it is never handed to the
-Worker as the request. See the Known Gotchas entry for why.
+Plan validation happens before permissions and execution. Do not duplicate schema,
+reference, or tool-existence checks in route-specific branches.
 
-## Naming Conventions
+## Context conventions
 
-- **Modules**: `snake_case` ending in `_ops.py` for tool packs.
-- **Factory functions**: `get_*_tools()` — must match this pattern for auto-discovery.
-- **Tool names**: `snake_case` matching the function name.
-- **Log actors**: `BRAIN`, `WORKER`, `MIDDLEWARE`, `ROUTER`, `HEALING`, `RAG`, `USER`,
-  `SAFETY`, `SYSTEM`, `CONTEXT`, `TRIGGER`, `USER_MODEL` — used in `_log_thought()`.
-  Every real LLM invocation, across all tiers, also logs a
-  `[<TIER>] [LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line.
-- **Config keys**: `UPPER_SNAKE_CASE` in both `.env` and `agent_system/config.py`.
+New prompt context enters through `ContextAssembler.add(name, text, priority)`. Direct
+string concatenation is reserved for local formatting within a block, not adding new
+cross-cutting context.
 
-## Cost Tracking
+- Blocks drop whole under budget pressure.
+- Recent turns are Worker-only response context.
+- Active Subject is Brain-visible structured state, not raw history.
+- Active lookup state is URL-specific and short-lived.
+- Fact vault contents are pull-only.
+- User-model output is bounded and secret-rejecting.
 
-Every real LLM call (Brain/Worker/Middleware, including healing/syntax-check sub-calls)
-logs one `[LLM_CALL]` entry with EXACT provider token counts
-(`agent_system/utils/usage.py:extract_usage()`). `CielCore` accumulates per-tier call
-counts, token totals, and an ESTIMATED USD cost (`core/cost.py`, overridable via
-`ciel_data/model_pricing.json`) at the single `_log_thought()` chokepoint. Live totals
-surface in the API's vitals feed; `scripts/cost_report.py` aggregates historical spend.
-**Do not add a second place that counts LLM calls** — extend the chokepoint.
+Current user wording overrides every remembered block.
 
-## Audit Trail (`thoughts.log`)
+## Safety conventions
 
+- Permission is resolved on exact `(tool, args)`, never a tool name alone.
+- `DENY` outranks grants and flags.
+- Unattended risky calls become `DEFER`; deferred work is never replayed automatically.
+- Interactive confirmation callbacks fail closed on absence or timeout.
+- Dangerous content inside ordinary write/code tools receives the same confirmation as
+  named high-risk tools.
+- Outbound deduplication keys on recipient/channel and records only successful sends.
+
+See `safety_and_risk.md` for the complete matrix.
+
+## Filesystem conventions
+
+User-operable file tools are restricted to:
+
+- `ciel_workspace/` for input and work-in-progress files.
+- `agent_output/` for generated deliverables.
+
+Telegram uploads land under `ciel_workspace/telegram_uploads/`. They are treated as
+received inputs, not as write instructions. Reports derived from uploads go to
+`agent_output/`.
+
+Windows paths inside a Linux container are recognized only when a sandbox segment is
+present. Arbitrary drive paths are rejected rather than guessed.
+
+## Logging and cost
+
+`ciel_data/logs/thoughts.log` is a machine-parsed audit format. Its separator, header,
+actor/action fields, and `[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` order are
+stable contracts. Readers normalize CRLF; the writer format does not change for UI
+presentation.
+
+Every provider call records the actual model identity and provider-reported usage when
+available. Model aliases are measured before adoption because compatible gateways may
+inject significant hidden prompt overhead.
+
+User-facing logs never print credentials, OAuth tokens, authorization headers, or full
+private `.env` values.
+
+## Interface conventions
+
+- All front ends call the same `AgentLoop` and `CielCore`.
+- Each front end supplies `confirm_callback(tool_name, preview, tool_args) -> bool`.
+- Confirmation timeout or lost client returns false.
+- Cancellation requests the next safe step boundary.
+- Telegram checks the chat allow-list before routing.
+- UI tool lists come from `GET /skills`; front-end capability lists are not hardcoded.
+- Text-to-speech uses the backend normalizer; the persona is not simplified for voice.
+
+## Testing conventions
+
+Durable regression modules use `backtest/test_*.py` and are registered in
+`backtest/run_all.py`.
+
+```bash
+python -m backtest.run_all --unit-only
+python -m backtest.run_all --skip-exploratory
 ```
-[2026-05-21 14:30:00] [ACTOR] [ACTION]
-content
-------------------------------------------------------------
-```
 
-**Never modify this format** — `scripts/format_thoughts_log.py`,
-`scripts/prompt_harness.py`, `scripts/cost_report.py`, and `core/triggers.py`'s
-`_iter_entries` all parse it. The `[LLM_CALL]` line must keep `model=<id>` as the FIRST
-space-delimited token. The file is opened in **text mode**, so on Windows it is 100%
-CRLF — any new reader that takes a raw/binary tail must normalise that itself
-(`_iter_entries` already does; copy its pattern, don't reinvent it).
+Focused suites may run directly. Planner behavior belongs in
+`backtest/test_planner.py`; pure safeguards belong in the closest maintained unit suite.
+Do not add permanent `_smoke_*.py` files for one deployment event.
 
-Generated views (`thoughts_view.md`, `thoughts_view.jsonl`) are gitignored and
-disposable.
+Live tests:
 
-## Safe vs Dangerous to Modify
+- use explicit test labels;
+- use isolated temporary database/state files where possible;
+- verify provider acceptance, not only model narration;
+- verify negative controls and duplicate suppression;
+- remove test artifacts;
+- never expose secrets in output.
 
-### Safe to change
+## Documentation conventions
 
-- Add a new tool pack in `skills/internal/` or `skills/external/` (auto-discovered).
-- Edit persona files in `persona/`.
-- Adjust RAG thresholds (`MIN_RELEVANCE_SCORE`, `MIN_QUERY_LENGTH`, `DEFAULT_TOP_K`) in
-  `rag_manager.py`.
-- Add a new Trigger in `triggers.py` (take `now` as a parameter so it stays testable) —
-  preferred over adding a raw clock task to `scheduler.py`.
-- Add a context block via `ContextAssembler.add(name, text, priority)` — never by
-  appending to a prompt string.
-- Toggle any tier via `.env`: `AGENT_LOOP_*`, `AGENT_PARALLEL_*`, `CONTEXT_*`,
-  `ROUTER_PERSONA_MODE`, `USER_MODEL_*`, `PROACTIVE_*`. Every one degrades to the
-  pre-tier behaviour when off.
-- Update model names / provider selection in `.env`.
-- Add/override LLM prices in `ciel_data/model_pricing.json`.
-- Swap voice STT/TTS backends via `STT_BACKEND`/`TTS_BACKEND` in `.env`.
-- Add new tests in `backtest/` — prefer the no-LLM style (`test_context.py`,
-  `test_proactive.py`, `test_user_model.py`, `test_outbound.py`,
-  `test_conversation_bugs.py`, `test_quality_guards.py`, `test_plan_validation.py`) for pure Python decision
-  logic. Wire new unit suites into `backtest/run_all.py` `SUITES`. **Do not** add
-  long-lived `backtest/_smoke_*.py` one-offs — fold guards into `test_quality_guards`
-  or a named `test_*.py` suite.
+- `README.md` is concise public onboarding and operation.
+- `instructionAI/` stores stable architecture, contracts, gotchas, and design reasons.
+- `improve.md` stores roadmap state and pass criteria.
+- `note.md` stores dated results, provider observations, and deployment events.
+- Only `SKILL.md` lists every instruction file.
+- Topic files cross-reference instead of duplicating entire explanations.
+- Exact dependency versions stay in requirements and lockfiles.
 
-### Dangerous to change
+## Safe and dangerous changes
 
-- **`_log_thought()`'s format** in `llm_connector.py` — breaks log parsing, cost
-  accumulation, and `triggers.py::_iter_entries`'s CRLF normalisation.
-- **`_outbound_key()` / the duplicate-send guard** in `llm_connector.py` — the only
-  thing stopping two mechanisms from delivering the same email twice. Key on the
-  recipient, record on success only.
-- **`PermissionPolicy.decide(..., attended=)` and `CielCore.unattended`** — the
-  unattended ceiling. Keep `unattended` thread-local and keep propagating it into
-  parallel workers by hand.
-- **`_abort_if_cancelled()` call sites** — cancellation must stay at STEP boundaries.
-  Moving a check inside a tool turns a cancellation into a corruption.
-- **`ContinuationPolicy.assess()`'s scope veto** must stay the FIRST check, before
-  every continuation signal — see Tier 1 in `architecture.md`.
-- **The router's `task` field, for `action == "chat"`** — never hand it to
-  `execute_chat` as the request. See the Known Gotchas entry below;
-  `action == "code"`'s `task` is a different, untouched contract.
-- **`UserModel.looks_like_secret()`** — the boundary keeping credentials out of a store
-  injected into every prompt. Keep normalising `_`/`-` to spaces before matching.
-- **`_is_safe_path()` logic** in `system_ops.py` — weakens sandbox quarantine.
-- **`_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS`** in `llm_connector.py` — removing tools
-  disables safety checks.
-- **`_find_dangerous_code_patterns()`** in `llm_connector.py` — the content-based gate
-  for generated code.
-- **`_has_unsynthesized_placeholder()`** in `llm_connector.py` — matches ANY paraphrased
-  synthesis-placeholder marker, not one fixed string. Used by both the multi_tool
-  deferred-write detection and the write/email placeholder guards; a stronger Brain
-  once paraphrased the canonical marker and an exact-string check let a hollow shell
-  reach disk.
-- **`_resolve_step_refs()`** in `llm_connector.py` — deterministic `{{prev}}`/
-  `{{step_N}}` substitution. Keep the fast-path (`"{{" not in value`) so token-free
-  plans stay untouched.
-- **`stealth_search`'s source chain** in `web_agent_ops.py` — Google News RSS is
-  PRIMARY specifically because it is unofficial and the `ddgs` fallbacks exist for
-  when it fails. Don't collapse the chain, drop `_is_generic_news_query()`, drop the
-  real-`pubDate` recency filter, or reorder past "filter landing pages BEFORE trimming
-  to `max_results`".
-- **Router JSON parsing** in `router.py` — `_extract_json_object()` slices the first
-  balanced `{...}` before `json.loads`, tolerating prose some models wrap around the
-  decision.
-- **`memory_ops.py` imports** — must remain standalone (no `core/`/`agent_system/`
-  deps).
-- **`thoughts.log`'s file path** — hardcoded in `llm_connector.py`, `main_api.py`, and
-  `format_thoughts_log.py`.
-- **Coupling `SAFETY_OPEN` and `DISABLE_SAFETY_GATE`** — independent by design (see
-  `safety_and_risk.md`).
-- **`to_speech()`'s normalizer being replaced by prompt changes** — voice cleanup stays
-  deterministic post-processing, never a persona rewrite.
+Usually safe when covered by focused tests:
 
-## Known Gotchas
+- adding a read-only auto-discovered tool pack;
+- adding a trigger with a stable identity and explicit threshold;
+- changing UI layout behind the existing bus and protocol;
+- adding a provider through the existing model factory;
+- extending planner fields through a migration owned by `PlannerStore`.
 
-**Environment / providers**
-1. `agent_system/config.py` reads the Worker's model from `CODER_MODEL`, not
-   `WORKER_MODEL` — a `.env` entry literally named `WORKER_MODEL` has no effect.
-2. Keep `ROUTER_ASSISTANT_ENABLED=false` and `MIDDLEWARE_ENABLED=false` for the standard
-   two-model topology. Keep their dormant model names equal to `BRAIN_MODEL` and
-   `CODER_MODEL`; `VISION_MODEL` defaults to Brain. Do not delete the optional classes.
-3. Measure a new model alias before adopting it: gateways can inject thousands of
-   hidden, unsuppressable tokens per call. See the provider table in `note.md`.
+High-risk changes requiring broad regression and explicit review:
 
-**Windows-specific**
-4. The Router prompt includes WINDOWS SYSTEM ARCHITECT rules enforcing double-quoted
-   absolute paths and a `python -m` prefix — without this, tools fail on paths with
-   spaces.
-5. `thoughts.log` is 100% CRLF on Windows (text-mode writes). A binary/raw tail read
-   must normalise newlines itself or every check silently reports "nothing found".
-6. PowerShell's legacy pipeline encoding can replace Vietnamese/Unicode characters with
-   `?` before Python receives them. Before `@' … '@ | python -`, set
-   `[Console]::InputEncoding`, `[Console]::OutputEncoding`, `$OutputEncoding`, and
-   `PYTHONUTF8` to UTF-8. Do not diagnose a malformed subject as a Gmail problem when
-   the same `?` is already visible in the `execute_tool` log.
+- `core/llm_connector.py` turn ordering;
+- permissions, confirmation, unattended, and outbound-delivery guards;
+- `thoughts.log` format;
+- context routing boundaries;
+- RAG collection embedding configuration;
+- planner identity/schema rules;
+- Docker mounts and one-writer assumptions;
+- Telegram upload sandbox behavior;
+- automatic execution of deferred work.
 
-**Integration quirks**
-7. Vision prompts in `vision_ops.py` use Python `.format()` — curly braces in prompt
-   text must be doubled (`{{`/`}}`) or the app crashes with `Single '}' in format
-   string`.
-8. `langchain_google_community` has a known typo (`client_sercret_file` vs
-   `client_secrets_file`); `gmail_ops.py` and `scheduler.py` handle both via
-   `inspect.signature()`.
-9. `edge-tts` (default TTS) hits an unofficial Microsoft endpoint that intermittently
-   raises `NoAudioReceived` — the fix is `_edge_synth_bytes()`'s backoff retry, not a
-   different text/voice.
+## Known operational gotchas
 
-**Degradation and isolation**
-10. `rag_manager.py` lazy-loads ChromaDB/sentence-transformers; if missing, RAG degrades
-   gracefully and CielCore keeps working with JSON-only short-term memory.
-11. Self-correction retries (Brain evaluating tool results) are not saved to chat memory
-   or RAG, to prevent noise accumulation.
-12. Scheduled/legacy clock tasks must never write to `memory_bank.json` or call
-    `rag_manager.embed_and_save()` (Ghost Mode).
-13. `_HEALING_SKIP_PATTERNS` in `llm_connector.py` short-circuits error classes no
-    retry could ever fix (missing library, network timeout, geo-restriction) — removing
-    this is not "more robust", it just burns a guaranteed-to-fail Worker call each time.
-
-**Conversation-memory rules (found live — see Tier 4 in `architecture.md`)**
-14. `chat_history` reaches the model in exactly TWO places, both response-side, never
-    routing: `_recent_turns_block()` feeding `execute_chat` and the tool-result format
-    path. Do not add it to `router.route()`'s input — `test_conversation_bugs.py`
-    asserts the router never sees it.
-15. The router's `task` field, for `action == "chat"`, is a HINT — never the reply. A
-    strong Brain routinely pre-writes the actual final reply into it (once caught
-    literally: `"task": "Reply: \"...\""`), which bypasses the persona's
-    language-matching rule and any recent-turns context if handed to the Worker as the
-    request. `action == "code"`'s `task` is a different, untouched contract (a spec to
-    execute, not a pre-written answer).
-16. `ContinuationPolicy.assess()`'s scope veto must stay checked FIRST: an explicit
-    "chỉ … thôi" / "đừng …" / "only …" outranks every continuation signal, including
-    fan-out.
-17. **"send it to that email" is a RECIPIENT reference, not a content reference** — a
-    real email once went to the wrong address because only the body-referential guard
-    (`_is_referential_send`) existed. `_resolve_referential_recipient()` grounds `to` in
-    `chat_history` when the current turn names no address of its own, and must run at
-    the TOP of `execute_multi_tool` — before the report body is synthesized — or the
-    body ends up narrating the WRONG address even though the send itself goes to the
-    right one. When the override fires, the synthesis prompt must be told the confirmed
-    recipient explicitly (`recipient_override_note`); don't trust the model to have
-    reached the same correction on its own.
-18. **A chat response cannot claim that a tool is running.** `action == "chat"` gives
-    the Worker no tool handle. `_block_unbacked_chat_tool_promise()` rejects a concrete
-    search/tool promise such as "running `stealth_search`" or "waiting for the results"
-    and returns an honest clarification instead; it does not create a fake pending task.
-    The matcher must not treat ordinary language such as "I will call you Master" as a
-    tool call. This is a code guard as well as an `execute_chat()` prompt boundary
-    because Router and Worker see intentionally different context.
-19. **A successful live lookup may ground one narrow follow-up.** `_active_lookup`
-    retains only the query and up to three public URLs in RAM for 15 minutes. It reaches
-    the Router when the next request explicitly says to scrape/read/deepen that result,
-    or uses a terse read-only imperative such as “làm đi” / “mở đi” while exactly one
-    URL is live. Several cached URLs require a choice unless the Master explicitly asks
-    for all of them. `_apply_active_lookup_route_override()` enforces the resulting
-    read-only `smart_scrape` plan after model routing, so a model cannot misclassify a
-    terse continuation as chat. It then clears on a new topic and on restart. It is not
-    a shortcut for feeding general `chat_history` or Tier-2 task records into routing.
-    It must remain available even when `CONTEXT_RECENT_TURNS_ENABLED=false`, because its
-    URLs came from a real tool this process just ran, not from raw conversation history.
-    Keep the regression in `backtest/test_conversation_bugs.py`.
+- Docker source changes require `--build`; recreation alone keeps the previous image.
+- Telegram has no API health route; use container state and the bot-online log.
+- API and Telegram cannot safely write the same mounted state concurrently.
+- `category:primary` improves Gmail queries but cannot perfectly classify marketing
+  mail; presentation logic handles the remaining curation.
+- Missing `SEARCH_API_KEY` silently falls back to weaker web sources. CI and runtime
+  configuration must both carry the key when primary search is required.
+- Headless Docker cannot load screen vision reliably; disable `vision_ops` there.
+- PowerShell pipelines require explicit UTF-8 before passing Vietnamese text to Python.

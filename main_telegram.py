@@ -14,6 +14,7 @@ from colorama import Fore, Style
 from core.agent_loop import AgentLoop
 from core.scheduler import CielScheduler
 from core.telegram_interface import TelegramInterface
+from core.proactive_setup import setup_proactive
 
 langchain.debug = False
 langchain.verbose = False
@@ -33,6 +34,9 @@ def main():
         print(Fore.RED + f"[Telegram Fatal] {e}" + Style.RESET_ALL)
         sys.exit(1)
 
+    # Must precede start_background(): selected monthly/weekly and Tier-6 triggers
+    # ride this scheduler thread and use Telegram as their live channel.
+    setup_proactive(ciel, scheduler, include_cli=False)
     bot.start()
     scheduler.start_background()
     print(Fore.BLUE + "Ciel: Online via Telegram. Press Ctrl+C here to stop." + Style.RESET_ALL)

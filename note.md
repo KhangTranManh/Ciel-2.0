@@ -29,7 +29,7 @@ Keep it short. Prefer tables and one-line bullets.
 
 ---
 
-## Current status *(as of 2026-08-25)*
+## Current status *(as of 2026-08-26)*
 
 ### Models and providers
 
@@ -96,7 +96,9 @@ Docker: `docker/` (`docker-compose.api.yml`, `docker-compose.telegram.yml`).
 
 - Brain routing now also receives one compact ActiveSubject from the prior grounded
   turn (topic/entities/last action; no raw history). The exact laptop search to
-  price/used follow-up smoke routed `multi_tool`; unit runner is 8/8 suites.
+  price/used follow-up smoke routed `multi_tool`.
+- Monthly goals, weekly actions, and immediate todos now have explicit separate
+  storage horizons; current unit runner is 9/9 suites.
 
 ## Capability tiers (all built)
 
@@ -156,6 +158,27 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
 
 ## Changelog *(newest first — prune aggressively)*
 
+### 2026-08-27 — Planner VPS verification and documentation consolidation
+
+- Rebuilt and recreated the Telegram image with the planner, shared proactive wiring,
+  and the missing `core/active_subject.py` runtime dependency; startup discovered both
+  planner packs and the container remained stable.
+- An isolated five-minute Telegram smoke used temporary planner/notifier state: one
+  weekly notification was accepted and every repeated poll was suppressed. Production
+  planner data was not modified and smoke artifacts were removed.
+- Root README and all six master `instructionAI` topic files were rewritten around the
+  current two-model architecture. Repeated historical narrative was removed; stable
+  deployment, planner, context, safety, and interface contracts remain.
+
+### 2026-08-26 — Separate monthly and weekly planner
+
+- `core/planner_store.py` adds SQLite-backed monthly goals and weekly actions while
+  the existing immediate todos remain in `ciel_workspace/todos.json`.
+- Separate monthly/weekly tool packs auto-register; opt-in planner triggers share the
+  persistent Notifier and now wire through CLI, Telegram, and API startup.
+- Verified: `backtest.test_planner` 32/32, `run_all --unit-only` 9/9, and a no-send
+  Telegram startup smoke built exactly the two selected triggers.
+
 ### 2026-08-25 — Standardized two-model runtime
 
 - The maintained topology is Brain (route/plan/evaluate) + Worker
@@ -178,8 +201,9 @@ Philosophy: LLM proposes; **code** gates. Prefer pattern match over exact model 
   and cannot apply to email, files, shell, or other high-risk actions.
 - The URL-only continuation is independent of `CONTEXT_RECENT_TURNS_ENABLED`; disabling
   raw recent-chat injection cannot disable a lookup that the current process just ran.
-- Telegram deployment is run as the single `ciel-telegram` compose service; recreate it
-  after source or `.env` changes and inspect compose logs rather than a nonexistent API health endpoint.
+- Telegram deployment is run as the single `ciel-telegram` compose service; rebuild and
+  recreate after source changes, recreate after `.env`-only changes, and inspect Compose
+  logs rather than a nonexistent API health endpoint.
 
 ### 2026-07-30 → 07-31 — Real Google search; agent stops giving up early
 

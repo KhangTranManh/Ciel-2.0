@@ -32,61 +32,9 @@ def _voice_capture(lang: str):
 
 
 def _setup_proactive(ciel, scheduler):
-    """TIER 6: wire condition triggers to the CLI + Telegram channels.
-
-    Returns (presence, notifier), or (None, None) when proactivity is off. Any failure
-    here is swallowed: Ciel answering normally matters more than Ciel speaking first,
-    so a misconfigured trigger degrades to the previous behaviour instead of blocking
-    start-up.
-    """
-    from agent_system import config
-    if not config.PROACTIVE_ENABLED or not config.PROACTIVE_TRIGGERS:
-        return None, None
-    try:
-        from core.notifier import Presence, CliChannel, TelegramChannel, Notifier
-        from core.triggers import TriggerEngine, build_triggers, parse_price_alerts
-
-        presence = Presence(idle_threshold=config.PROACTIVE_IDLE_SECONDS)
-        # Order is priority: the terminal in front of the Master first, Telegram as the
-        # channel that still reaches them once they have walked away.
-        notifier = Notifier(
-            state_path=ciel.core.base_dir / "ciel_data" / "state" / "notify.json",
-            channels=[CliChannel(presence), TelegramChannel()],
-            daily_budget=config.PROACTIVE_DAILY_BUDGET,
-            ask_escalate_seconds=config.PROACTIVE_ASK_ESCALATE_SECONDS,
-            repeat_limit=config.PROACTIVE_REPEAT_LIMIT,
-        )
-        triggers = build_triggers(
-            enabled_names=config.PROACTIVE_TRIGGERS,
-            task_store=ciel.core.tasks,
-            log_path=ciel.core.base_dir / "ciel_data" / "logs" / "thoughts.log",
-            notifier=notifier,
-            deferred_store=ciel.core.deferred,
-            todo_path=ciel.core.base_dir / "ciel_workspace" / "todos.json",
-            unfinished_min_age=config.PROACTIVE_UNFINISHED_MIN_AGE,
-            cost_usd_limit=config.PROACTIVE_COST_USD_LIMIT,
-            cost_token_limit=config.PROACTIVE_COST_TOKEN_LIMIT,
-            failure_threshold=config.PROACTIVE_FAILURE_THRESHOLD,
-            price_alerts=parse_price_alerts(config.PROACTIVE_PRICE_ALERTS),
-            important_senders=config.PROACTIVE_IMPORTANT_SENDERS,
-            stale_todo_days=config.PROACTIVE_STALE_TODO_DAYS,
-            digest_hour=config.PROACTIVE_DIGEST_HOUR,
-            digest_minute=config.PROACTIVE_DIGEST_MINUTE,
-        )
-        if not triggers:
-            print(Fore.YELLOW + f"[Proactive] No known trigger in PROACTIVE_TRIGGERS="
-                  f"{','.join(config.PROACTIVE_TRIGGERS)} — nothing enabled." + Style.RESET_ALL)
-            return None, None
-        scheduler.trigger_engine = TriggerEngine(notifier, triggers,
-                                                 logger=ciel.core._log_thought)
-
-        def _mark():
-            ciel.core.unattended = True     # thread-local; runs inside the daemon thread
-        scheduler.mark_unattended = _mark
-        return presence, notifier
-    except Exception as e:
-        print(Fore.YELLOW + f"[Proactive] disabled: {type(e).__name__}: {e}" + Style.RESET_ALL)
-        return None, None
+    """Back-compatible CLI wrapper around the shared entry-point wiring."""
+    from core.proactive_setup import setup_proactive
+    return setup_proactive(ciel, scheduler, include_cli=True)
 
 
 def main():

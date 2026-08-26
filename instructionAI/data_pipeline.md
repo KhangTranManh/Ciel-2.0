@@ -1,258 +1,223 @@
 # Data Pipeline — Ciel 2.0
 
-How Ciel stores, recalls, and manages memory and scheduled data flows. For *why* the two
-memory stores are split and the full authority/decay/learning rules of the user model,
-see Tier 7 in `architecture.md` — this file covers the mechanics: what's on disk, how
-recall actually runs, and its known failure modes.
+## Data ownership
 
-## Hybrid Memory Architecture
+Ciel separates conversation, facts, user preferences, execution state, planning, and
+notification state because they have different authority and retention rules.
 
-```
-Short-Term (JSON)                    Long-Term (ChromaDB)
-┌─────────────────────┐              ┌─────────────────────────┐
-│ memory_bank.json    │   overflow   │ ciel_data/vector_memory/│
-│ Max 20 messages     │ ──────────→  │ ChromaDB + MiniLM-L6-v2 │
-│ LangChain history   │              │ Semantic search         │
-└─────────────────────┘              └─────────────────────────┘
-```
-
-### Short-Term Memory
-
-- **File**: `ciel_data/memory_bank.json` — JSON array of
-  `{"type": "human|ai", "content": "..."}`.
-- **Max size**: 20 messages (`self.max_history`), approximately 10 complete
-  user/assistant exchanges. Overflow archives into ChromaDB via
-  `rag_manager.embed_and_save()`.
-- **Load filter**: `_load_chat_memory()` strips toxic/refusal patterns on load.
-- **Reaches the model in exactly two places**, both response-side, via
-  `CielCore._recent_turns_block()`: `execute_chat`'s prompt and the tool-result format
-  path. **Never** the Router — see the July-2026 decision under RAG Recall Pipeline
-  below; `test_conversation_bugs.py` asserts this holds.
-
-### Active Lookup Context
-
-`CielCore._active_lookup` is a RAM-only bridge for one explicit follow-up, or one terse
-read-only continuation, to a successful `stealth_search` or `smart_scrape`. It stores the
-lookup query and at most three public HTTP(S) source URLs. It is not chat history, RAG,
-user data, or durable task state.
-
-- A follow-up such as “scrape that article”, “đào sâu vụ này”, or “tiếp tục” receives a
-  bounded `[OPEN THREAD]` containing only that query and those exact URLs. A short
-  “làm đi”, “mở đi”, “xem đi”, or “do it” has the same meaning only while one live URL
-  exists.
-- The Router uses `smart_scrape` with an anchored URL instead of asking for a URL it has
-  already received or inventing one. When several URLs are cached, a singular/generic
-  command asks the Master to choose; only an explicit plural request may scrape the
-  cached set.
-- This result is enforced after routing: `_apply_active_lookup_route_override()` replaces
-  a model `chat`/wrong-tool decision with read-only `smart_scrape` steps over the cached
-  URLs. It cannot affect file, mail, shell, or destructive actions.
-- The anchor expires after 15 minutes, clears immediately on an unrelated turn, and never
-  survives a restart. These limits prevent a source from an older topic being reused by a
-  later deictic request.
-- It is independent of `CONTEXT_RECENT_TURNS_ENABLED`: disabling raw recent-chat context
-  must not disable this URL-only, tool-proven continuation channel.
-
-### Active Subject Handoff
-
-`core/active_subject.py::ActiveSubject` is the compact layer between a completed turn
-and the next Brain route. It is session-only structured state, not a third memory store:
-`topic`, up to five grounded `entities`, `last_action`, age, and unrelated-turn count.
-
-- `begin_turn()` renders `[ACTIVE SUBJECT]` before Brain routing through
-  `ContextAssembler`; `complete_turn()` updates it once after the final response.
-- Successful read-only tools report evidence at the shared `execute_tool()` success
-  choke point. This costs no extra LLM call.
-- `begin_turn()`, `observe_tool()`, and `complete_turn()` are wrapped fail-open by
-  `CielCore`; a subject-state error logs under `CONTEXT` and the ordinary turn continues.
-- An entity survives only when it occurs in both Worker output and raw tool evidence.
-- Recipients, paths, URLs, credentials, command-like strings, confirmation state, and
-  destructive arguments are excluded.
-- The Brain prompt explicitly says current wording overrides the record. Three turns
-  without new grounded evidence, 15 minutes, or restart clears it.
-- It resolves omitted subjects such as “check their listed prices”; it does not replace
-  Worker recent turns, active URL lookup, RAG, or durable task state.
-
-### Long-Term Memory (RAG)
-
-- **Storage**: `ciel_data/vector_memory/` (ChromaDB persistent directory).
-- **Embedding model**: `all-MiniLM-L6-v2` (local, fast, ~80MB) via
-  `SentenceTransformerEmbeddingFunction`. A switch to ChromaDB's own ONNX
-  `DefaultEmbeddingFunction` was tried to drop the torch dependency, then reverted:
-  ChromaDB persists the embedding function choice IN the collection itself, so a
-  different one at runtime doesn't migrate an EXISTING collection — it just fails
-  ("sentence_transformers ... not installed") the moment the collection is actually
-  queried/written to. `docker/requirements-docker.txt` installs a CPU-only `torch`
-  wheel to keep this cheap in the container (~3.5GB, not the ~10GB a GPU build pulls).
-- **Collection**: `ciel_long_term_memory`.
-- **Graceful degradation**: missing/failing `chromadb`/`sentence-transformers` → RAG
-  silently disables; CielCore keeps working with JSON-only short-term memory.
-
-### RAG Recall Pipeline
-
-```
-User Input → rag_manager.search_similar(query, top_k=3)
-  → Skip if query < 15 chars (MIN_QUERY_LENGTH)
-  → Skip if all results score < 0.65 (MIN_RELEVANCE_SCORE)
-  → Skip a result whose archived question normalises identically to THIS query
-    (_normalize_for_selfmatch — a repeated question is the single most "similar"
-    thing in the store by construction, so without this it recalls its own prior
-    failure as "context" and repeats it)
-  → Tier-1: zero-token regex/structural cleanup
-     Removes: smart_scrape output, git_diff, raw HTML, base64, large fenced blocks
-     Extracts: compact [date] Human: ... | Ai: ... lines
-  → Tier-2: Worker compression (only if Tier-1 output > 4000 chars)
-  → Bounded by ContextAssembler (CONTEXT_RECALL_BUDGET) at its SOURCE, before it
-    fuses with the request — the only block whose size depends on retrieved data
-  → [CURRENT USER REQUEST] is placed BEFORE [RECALLED PAST CONTEXT] in the merged
-    text (reordered from recall-first) so noisy recall cannot push the Master's
-    actual words out of the part of the prompt a model attends to most reliably
-  → Router (Brain) sees this merged block; chat_history itself never reaches routing
-```
-
-**Why chat_history is excluded from routing, deliberately.** An earlier version fed
-`chat_history` into the Router and it let an old unresolved request bleed into a new,
-unrelated one. RAG recall is the intentional, *gated* substitute for cross-turn context
-at the Router (relevance-scored, self-match-filtered); raw history is not. The
-*response* path gets a second, separate channel — `_recent_turns_block()` — for exactly
-the case RAG can't cover: the turn that was **just** answered and hasn't been archived
-yet.
-
-### Memory Fallback for Inspection Tools
-
-The Brain often (reasonably) tries to VERIFY a memory question against ground truth by
-routing it to an inspection tool (`list_workspace`/`read_file`/`get_file_info`) instead
-of answering from recalled context — a good instinct, since RAG can be stale. But those
-tools are on `_SKIP_SELF_CORRECTION`, so a directory listing used to be returned
-verbatim as "the answer" when the inspection found nothing relevant.
-`_memory_fallback_for_inspection()` closes this deterministically (no Brain call): when
-a turn had recalled context, the request is a question, the tool is an inspection tool,
-and its result shares no content word with the question — Ciel answers from the
-recalled context via one Worker call, explicitly labeled as long-term memory that
-**could not be verified from the workspace**. Never fires on imperative requests
-("list my files"), when the result already addresses the question, or when there was
-no recall.
-
-### Key Configuration Constants
-
-| Constant | Value | Location |
-|----------|-------|----------|
-| `MIN_QUERY_LENGTH` | 15 | `rag_manager.py` |
-| `MIN_RELEVANCE_SCORE` | 0.65 | `rag_manager.py` |
-| `DEFAULT_TOP_K` | 3 | `rag_manager.py` |
-| `MAX_MEMORY_SNIPPET_CHARS` | 1800 | `rag_manager.py` |
-| `RAG_LLM_COMPRESS_CHAR_THRESHOLD` | 4000 | `llm_connector.py` |
-| `self.max_history` | 20 | `llm_connector.py` |
-| `CONTEXT_RECALL_BUDGET` | 600 (default) | `agent_system/config.py` |
-| `CONTEXT_RECENT_TURNS_BUDGET` | 500 (default) | `agent_system/config.py` |
-| `ACTIVE_SUBJECT_ENABLED` | true (default) | `agent_system/config.py` |
-| `ACTIVE_SUBJECT_TTL_SECONDS` | 900 (default) | `agent_system/config.py` |
-| `ACTIVE_SUBJECT_MAX_IDLE_TURNS` | 3 (default) | `agent_system/config.py` |
-| `ACTIVE_SUBJECT_MAX_ENTITIES` | 5 (default) | `agent_system/config.py` |
-
-## Two Memory Stores — and the Difference Is a Security Boundary
-
-| Store | Module | Holds | Read path |
+| Store | Owner | Purpose | Prompt injection |
 |---|---|---|---|
-| `ciel_data/facts.json` | `skills/internal/memory_ops.py` | secrets, credentials | **pull-only, NEVER injected** |
-| `ciel_data/user_model.json` | `core/user_model.py` | preferences, profile | **injected**, refuses credentials |
+| Recent chat history | LangChain file history | Short response continuity | Worker only, bounded |
+| ChromaDB vector memory | `core/memory.py` | Semantic long-term recall | Retrieved, filtered, bounded |
+| `ciel_data/facts.json` | `skills/internal/memory_ops.py` | Explicit fact vault | Never automatic; pull-only |
+| `ciel_data/user_model.json` | `core/user_model.py` | Preferences with provenance | Bounded, secret-rejecting |
+| `ciel_data/state/tasks.json` | `core/task_state.py` | Durable job lifecycle | Status path, not routing |
+| `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals and weekly actions | Through planner tools/triggers |
+| `ciel_workspace/todos.json` | productivity tools | Immediate loose checklist | Through todo tools/triggers |
+| `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |
+| `ciel_data/state/deferred.json` | `core/permissions.py` | Blocked unattended actions | Summary only; never replayed |
+| `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers |
 
-**Never merge them, and never inject the vault.** Everything in an injected store is
-sent to the provider on every call that carries it — including third-party gateways.
+## Per-turn context flow
 
-### Fact Vault (pull-only)
+```text
+User message
+  ├─> RAG query -> self-match filter -> bounded recall
+  ├─> user model -> live, non-secret, budgeted traits
+  ├─> active subject -> compact Brain-visible session state
+  ├─> cwd/language/runtime facts
+  └─> ContextAssembler -> prioritized whole blocks -> Brain
 
-- **Tools**: `save_fact(key, value)`, `get_fact(key)`, `delete_fact(key)`. Standalone —
-  no imports from `core/` or `agent_system/`; keep it that way.
-- The Router prefers recalled RAG context over redundant `get_fact` calls.
-- `_format_fact_result()` renders raw tool output for the user; raw data stays in
-  `thoughts.log`.
-- **Why it stayed empty for months**: pull-only by design. Recall needs the model to
-  guess an exact snake_case key *and* choose to look it up; writing needs the Master to
-  say "remember this" out loud. That gap is what the user model (below) fills — it was
-  never a bug in this module.
+Brain route -> tools/results -> Worker
+Worker additionally receives bounded recent raw turns
+Final response -> chat persistence + RAG archive + subject/profile updates
+```
 
-### User Model — the push side (Tier 7, full detail in `architecture.md`)
+`ContextAssembler` is the only cross-cutting prompt assembly boundary. Every block has
+a name, priority, and estimated size. Under pressure, a lower-priority block is removed
+whole; partial context is never presented as a complete fact.
 
-A small, bounded profile that enters the prompt by itself, kept honest by three rules —
-authority (what the Master said outranks what Ciel inferred), decay (non-stated traits
-fade unless re-observed), and a hard token ceiling (renders `""` while empty). It learns
-unprompted behind a free deterministic gate (`assess_preference()`), never spending a
-call on an ordinary turn.
+## Short-term conversation
 
-`looks_like_secret()` is the credential boundary: a deterministic refusal checked on
-both key and value, with separators (`_`/`-`) normalised to spaces before matching —
-without that, `\bcvv\b` does not match `card_cvv`.
+Recent messages are persisted by the existing LangChain history backend. The response
+path renders only the newest complete turns within `CONTEXT_RECENT_TURNS_BUDGET`.
 
-The file (`ciel_data/user_model.json`) is written indented and unescaped on purpose: it
-describes a real person, so it must be readable, editable, and deletable by hand.
-`forget()` / `forget_all()` really delete.
+Raw history is deliberately absent from Brain routing. Earlier designs let unresolved
+requests leak into new turns and bias tool selection. Conversation history therefore
+helps Worker interpret “why?” or “do it,” but cannot authorize or route an action.
 
-## Proactive Scheduler & Condition Triggers (Tier 6, full detail in `architecture.md`)
+## Active Subject
 
-The CI daily digest in `scripts/daily_digest.py` searches current news and reads article
-content through `smart_scrape`. If a planner passes a whole `stealth_search` result instead
-of one URL, `skills/external/web_agent_ops.py` extracts its first concrete article URL before
-fetching. The digest is plain text: each reported news item includes its source, date, and an
-exact `Link:` URL from tool output; Markdown decoration is not used in Telegram delivery.
+`core/active_subject.py` supplies the Brain with one structured, RAM-only subject:
 
-- **Module**: `core/scheduler.py` (legacy clock tasks) + `core/triggers.py` +
-  `core/notifier.py` (condition-based, Tier 6).
-- **Design principle**: Zero-Token Standby — Python watches the clock/conditions, the
-  LLM sleeps until a check actually needs to compose prose.
+- topic extracted from successful read-tool arguments;
+- at most `ACTIVE_SUBJECT_MAX_ENTITIES` entities grounded in tool evidence;
+- last completed read action;
+- age and unrelated-turn count.
 
-### Legacy clock tasks
+Lifecycle:
 
-| Task | Schedule | What it does |
-|------|----------|-------------|
-| Morning Digest | 08:00 daily | Gmail + market prices → Worker formats → `daily_brief.md` → delivered |
-| Brain Cleanse | 23:00 daily | Flush short-term memory into RAG + generate Daily Summary |
+1. `begin_turn()` expires stale state and renders the current snapshot.
+2. Successful read-only tools contribute evidence during the turn.
+3. `complete_turn()` commits one new snapshot after the final response, or ages the old
+   snapshot when no grounded evidence was produced.
+4. State clears after `ACTIVE_SUBJECT_TTL_SECONDS`,
+   `ACTIVE_SUBJECT_MAX_IDLE_TURNS`, explicit reset, or process restart.
 
-Morning Digest is now also available as a **declared trigger** (`morning_digest`).
-When the trigger engine owns it, `start_background()` skips registering the 08:00 clock
-task — two mechanisms delivering one brief is a double-send the Notifier cannot dedupe.
+Recipients, email addresses, URLs, filesystem paths, secrets, commands, confirmations,
+and destructive arguments are rejected. Active Subject resolves reference, not consent.
 
-### The nine condition triggers
+## Active lookup context
 
-Three groups — Ciel watching itself, the clock, and the outside world behind
-thresholds you set — opt-in **by name** via `PROACTIVE_TRIGGERS` (empty = nothing
-runs). Full table, the four anti-noise rules, and the unattended permission ceiling
-they share with Tier 3 are in `architecture.md`'s Tier 6 section.
+Web lookup follow-ups use a separate bounded channel. A successful search retains its
+query and at most three public source URLs for a short time. An explicit “open/read this”
+or a terse read-only follow-up can select `smart_scrape` deterministically.
 
-**Reading `thoughts.log` from a check**: always go through `_iter_entries`. The live
-log is 100% CRLF; a raw/binary tail that skips normalisation silently reports "nothing
-found" forever — indistinguishable from a healthy system.
+One URL can proceed directly. Several URLs require an explicit “all” request or a user
+choice. A new topic clears the state. The channel cannot become a general history or
+route to mutating tools.
 
-### Adding a New Scheduled Task
+## Long-term RAG
 
-1. Prefer a **Trigger** over a clock task: write `check(now) -> Notification | None`
-   and register it in `build_triggers()`. Take `now` as a parameter — never call
-   `time.time()` inside — so a whole day simulates in a test with zero LLM calls.
-2. Use raw API calls — import from skill modules (e.g.
-   `from skills.external.trading_ops import fetch_market_price`).
-3. Use `_get_worker()` for formatting (lazy-loaded, single call) only if the finding
-   genuinely needs prose; most don't.
-4. For a true wall-clock task, wrap the check in `daily_at(hour, minute, …)` rather
-   than adding a second mechanism.
-5. **Never** call `rag_manager.embed_and_save()` or write to `memory_bank.json`
-   (Ghost Mode — scheduled/triggered work must not pollute conversational memory).
+ChromaDB stores semantic conversation memories using the collection's established
+sentence-transformer embedding function. Runtime retrieval:
 
-## Audit Trail
+1. creates an embedding for the current request;
+2. retrieves nearby memories;
+3. removes empty, duplicate, and strong self-matches;
+4. compresses or clips recall at its source;
+5. submits one bounded `rag_recall` context block.
 
-- **File**: `ciel_data/logs/thoughts.log` — see `conventions.md` for the exact format
-  and why it must never change.
-- **Generated views** (gitignored, disposable): `thoughts_view.md` (grouped Markdown),
-  `thoughts_view.jsonl` (structured). Generator: `python scripts/format_thoughts_log.py
-  --limit 30`.
+If PyTorch, sentence-transformers, or the collection cannot initialize, Ciel disables
+RAG and continues. Replacing the embedding function does not migrate an existing
+collection; it produces incompatibility at query time.
 
-## Cost / Usage Tracking
+Inspection tools can fall back to memory only when live inspection is unavailable and
+the stored material is clearly labeled historical. Memory never upgrades old evidence
+into a current filesystem, inbox, market, or deployment claim.
 
-Every real LLM call across all tiers logs one
-`[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` entry (exact provider token counts via
-`agent_system/utils/usage.py`). `CielCore` accumulates per-tier counts/tokens/
-estimated-USD at the single `_log_thought()` chokepoint; the API's vitals feed surfaces
-this live. Pricing lives in `core/cost.py`, overridable per-model via
-`ciel_data/model_pricing.json` with zero code changes. For a historical view, run
-`python -m scripts.cost_report [--since-days N]` — read-only, no LLM call involved.
-This same log is also what Tier 6's `daily_cost` trigger reads to notice a spend spike
-without any extra tracking mechanism.
+## Fact vault and user model
+
+### Fact vault
+
+`facts.json` is explicit pull-only data. `memory_ops.py` reads and writes it without
+importing `core/` or `agent_system/`. The model must intentionally call a fact tool;
+vault contents never enter the prompt wholesale.
+
+Lookups are case-insensitive and misses return available keys rather than encouraging a
+guess. Because the vault may contain sensitive facts, it is excluded from automatic
+context and public source control.
+
+### User model
+
+`user_model.json` contains preferences that improve outputs when injected. Each trait
+has provenance and freshness. Explicitly stated preferences outrank inferred ones;
+inferred traits decay; rendering is capped by `USER_MODEL_TOKEN_BUDGET`.
+
+The storage boundary rejects secret-like keys and values. Learning is optional and
+begins with deterministic `assess_preference()`; the model extracts a candidate only
+when the wording indicates a durable preference. Daily limits prevent chat volume from
+creating unbounded extraction calls.
+
+The vault and profile never merge: one may contain secrets and is pull-only; the other
+is injected and therefore must be safe to expose to a model.
+
+## Durable task state
+
+`TaskStore` records a job ID, goal, steps, completion count, state, and timestamps.
+Active records loaded after a crash become `interrupted`. They can be reported or used
+to guide a new request, but are not silently resumed and do not feed Brain routing.
+
+Cancellation closes the current job at the next step boundary. Tool completion is
+recorded only after the tool returns.
+
+## Planner data
+
+`PlannerStore` owns a SQLite database with two tables:
+
+```text
+monthly_goals
+  id, month, title, notes, status, created_at, updated_at
+
+weekly_tasks
+  id, week_start, title, weekday, local_time,
+  monthly_goal_id, notes, status, created_at, updated_at
+```
+
+Monthly goals are high-level outcomes. Weekly tasks are concrete actions and may link
+to a monthly goal. Immediate todos remain a separate lightweight checklist.
+
+SQLite settings include foreign keys, a busy timeout, per-operation connections, and
+transactional writes. Unique indexes make equivalent retries idempotent. Completion
+retains history rather than deleting records.
+
+Planner tools are always available. Planner announcements require named proactive
+triggers:
+
+```dotenv
+PROACTIVE_ENABLED=true
+PROACTIVE_TRIGGERS=monthly_plan,weekly_plan
+```
+
+`PLANNER_TIMEZONE`, `PLANNER_MONTHLY_*`, and `PLANNER_WEEKLY_*` define local schedule
+boundaries. Monthly day is clamped to 1–28; weekly weekday uses Monday `0` through
+Sunday `6`.
+
+## Proactive scheduling
+
+`core/proactive_setup.py` is shared by CLI, API, and Telegram. It creates:
+
+1. available delivery channels;
+2. one `Notifier` using `ciel_data/state/notify.json`;
+3. general condition triggers from `core/triggers.py`;
+4. planner triggers from `core/planner_triggers.py`;
+5. one `TriggerEngine` attached to `Scheduler`.
+
+The scheduler polls Python checks. A trigger returns `None` or a `Notification`; it does
+not decide delivery policy.
+
+`Notifier` applies, in order:
+
+1. action contract — actionless notifications become digest items;
+2. stable-key cooldown;
+3. per-key repeat muting;
+4. daily interruption budget;
+5. first live channel that accepts delivery;
+6. digest fallback when no channel succeeds.
+
+Successful delivery updates state only after the channel returns success. A provider
+failure therefore remains retryable.
+
+### Planner notification identity
+
+- Monthly: `monthly_plan:<YYYY-MM>` with a cooldown longer than one month.
+- Weekly: `weekly_plan:<ISO-Monday>` with a cooldown longer than one week.
+
+Checks are catch-up aware. If the process was offline at the configured instant, the
+current period can still be announced later after startup. Empty plans do not emit a
+monthly notification; weekly output may combine structured weekly actions with open
+immediate todos.
+
+## Audit and usage
+
+`thoughts.log` is append-only chronological evidence for debugging, trigger checks,
+cost reporting, and prompt harnesses. Its CRLF-normalized parser contract is documented
+in `SKILL.md` and `conventions.md`.
+
+Provider calls emit model ID and input/output/total token counts when available. Usage
+is operational evidence, not durable project knowledge; dated numbers belong in
+`note.md`, not this file.
+
+## Persistence and deployment
+
+Container deployments bind-mount:
+
+- `ciel_data/`
+- `ciel_workspace/`
+- `agent_output/`
+- private `.env`
+- private `credentials.json`
+
+Rebuilding the image must not replace these paths. One Ciel process writes the shared
+state at a time. Live smoke tests use temporary planner/notifier state, verify delivery
+and duplicate suppression, and remove artifacts without touching production data.

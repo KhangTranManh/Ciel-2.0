@@ -1,11 +1,11 @@
 ---
 name: ciel-2.0
 description: >
-  Ciel 2.0 is a modular AI assistant with Brain-Worker architecture. It features
-  intent routing, multi-tool execution, self-healing error recovery, hybrid RAG
-  memory (ChromaDB + JSON), a safety gate for destructive tools, vision/UI
-  interaction via PyAutoGUI + Gemini Vision, and proactive background scheduling.
-  Built on LangChain with multi-provider support (Gemini, DeepSeek, Ollama).
+  Ciel 2.0 is a modular personal AI assistant with a two-model Brain/Router and
+  Worker architecture, deterministic plan validation and permissions, hybrid RAG
+  memory, bounded follow-up context, proactive notifications, and durable monthly
+  and weekly planning. Built on LangChain with custom OpenAI-compatible, Gemini,
+  DeepSeek, Vilao, and Ollama provider support.
 ---
 
 # Ciel 2.0 — AI Instruction Set

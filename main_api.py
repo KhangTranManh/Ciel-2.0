@@ -14,6 +14,7 @@ import langchain
 from langchain_core.globals import set_verbose, set_debug
 from core.agent_loop import AgentLoop
 from core.scheduler import CielScheduler
+from core.proactive_setup import setup_proactive
 
 langchain.debug = False
 langchain.verbose = False
@@ -159,6 +160,9 @@ async def startup_event():
 
         ciel_agent.core.confirm_callback = _ws_confirm
 
+        # The browser notification surface is not wired yet; Telegram remains the
+        # fallback for selected Tier-6 and planner triggers in API mode.
+        setup_proactive(ciel_agent, scheduler, include_cli=False)
         scheduler.start_background()
         print("[API] Ciel Core initialized and ready.")
     except Exception as e:

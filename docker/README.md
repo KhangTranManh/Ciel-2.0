@@ -70,14 +70,19 @@ port 8000. Judge the Telegram deployment from `docker compose ... ps` and the
 
 ### Update an existing Telegram deployment
 
-From the repository root, use `--build` when `Dockerfile`, dependencies, or image
-contents changed. For a Python/source or `.env` change, recreating the one service is
-enough:
+The Dockerfile uses `COPY . .`, so every Python/source, dependency, or Dockerfile
+change requires an image rebuild. An `.env`-only change needs recreation but not a
+rebuild:
 
 ```
+# Source, dependencies, or Dockerfile changed
+docker compose -f docker/docker-compose.telegram.yml up -d --build --force-recreate
+
+# Only .env changed
 docker compose -f docker/docker-compose.telegram.yml up -d --force-recreate
+
 docker compose -f docker/docker-compose.telegram.yml ps
-docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100
+docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100 ciel-telegram
 ```
 
 Do not place the server address, SSH password, bot token, OAuth credentials, or copied

@@ -607,6 +607,29 @@ class CielCore:
             "Read full page text after stealth_search when snippets are thin. "
             "Pass a concrete article URL from search results."
         ),
+        "add_monthly_goal": (
+            "Add a BIG outcome/milestone to the monthly plan. Args: title; optional "
+            "month='YYYY-MM', notes. Do not use for a small immediate todo."
+        ),
+        "list_monthly_goals": (
+            "List monthly goals. Args: optional month='YYYY-MM', include_closed=false."
+        ),
+        "update_monthly_goal": (
+            "Update a monthly goal by goal_id. Optional title, month, notes, status."
+        ),
+        "complete_monthly_goal": "Complete a monthly goal by goal_id.",
+        "add_weekly_task": (
+            "Add a CONCRETE action for one week. Args: title; optional week_start "
+            "YYYY-MM-DD, weekday Monday..Sunday/0..6, time HH:MM, monthly_goal_id, notes."
+        ),
+        "list_weekly_plan": (
+            "List weekly actions. Args: optional week_start YYYY-MM-DD, include_closed=false."
+        ),
+        "update_weekly_task": (
+            "Update weekly task by task_id; optional title/week_start/weekday/time/"
+            "monthly_goal_id/notes/status and clear_schedule/clear_monthly_goal."
+        ),
+        "complete_weekly_task": "Complete a weekly task by task_id.",
     }
 
     # Only call the Worker to format these tools. Others are already readable.
@@ -632,6 +655,11 @@ class CielCore:
         "save_fact", "delete_fact",
         "take_screenshot", "get_file_info", "open_application",
         "get_crypto_stats", "vision_describe",
+        # Planner writes are idempotent, but an evaluation retry still wastes a Brain
+        # call and can turn a successful local update into a confusing second action.
+        "add_monthly_goal", "list_monthly_goals", "update_monthly_goal",
+        "complete_monthly_goal", "add_weekly_task", "list_weekly_plan",
+        "update_weekly_task", "complete_weekly_task",
     }
 
     def _log_thought(self, actor: str, action: str, content: str):

@@ -1,964 +1,284 @@
-<p align="center">
-  <b>🛰️ CIEL 2.0</b>
-</p>
+# Ciel 2.0
 
-<h1 align="center">Ciel 2.0</h1>
+Ciel is a modular personal AI assistant that can converse, use tools, retain bounded
+context, continue multi-step work, and send proactive Telegram notifications. Its
+maintained topology uses two model identities:
 
-<p align="center">
-  An autonomous AI assistant built on a <b>Brain/Router → Worker</b> two-model pipeline
-  with optional Middleware verification,
-  extended by seven agent-capability tiers that close the gap between
-  <em>executing commands</em> and <em>pursuing goals</em>.
-</p>
+- **Brain/Router** — intent classification, planning, and result evaluation.
+- **Worker** — conversation, generation, synthesis, and formatting.
 
-<p align="center">
-  <a href="improve.md">Roadmap (Level B)</a> ·
-  <a href="instructionAI/SKILL.md">AI hand-off</a> ·
-  <a href="instructionAI/architecture.md">Architecture</a> ·
-  <a href="note.md">Live Status</a> ·
-  <a href="ui/README.md">UI</a>
-</p>
+Optional Router Assistant and Middleware code remains available for experiments, but
+both are disabled by default and reuse one of the two standard model identities.
 
-<p align="center">
-  <em>Internal research / experimental project — see <a href="#license--notes">License / Notes</a> before pointing this at production data.</em>
-</p>
+> Experimental personal-agent software. Review the safety model before connecting
+> production accounts or enabling unattended execution.
 
----
+## Current baseline
 
-## Table of Contents
+- Level A and Level B: **pass**.
+- Deterministic multi-tool plan validation: **pass**.
+- Bounded Active Subject handoff for follow-up turns: **pass**.
+- Monthly and weekly planner: **unit-tested, deployed, and live-notification tested**.
+- Telegram, CLI, and API/UI entry points share the same `CielCore` runtime.
 
-- [What this is](#what-this-is)
-- [Status (Level B)](#status-level-b)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Windows UTF-8](#windows-utf-8)
-- [Testing](#testing)
-- [Feature Overview](#feature-overview)
-- [How It Works](#how-it-works)
-- [Voice I/O](#voice-io)
-- [Observability & Cost](#observability--cost)
-- [Backend API](#backend-api)
-- [Docker Deployment](#docker-deployment)
-- [Rebuilding the UI](#rebuilding-the-ui)
-- [File Structure](#file-structure)
-- [Customization](#customization)
-- [Tips for Better Results](#tips-for-better-results)
-- [Contributing](#contributing)
-- [License / Notes](#license--notes)
+The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
+engineering rules live in [instructionAI/SKILL.md](instructionAI/SKILL.md).
 
----
-
-## What this is
-
-Ciel is a personal AI agent that does more than answer questions — it routes your
-request to the right internal logic, executes **real tools** (filesystem, shell,
-email, trading data, web search, git, screen control), and checks its own work before
-responding. It is not a single LLM call wrapped in a chat UI; it's a pipeline with
-distinct model roles and a safety layer intentionally decoupled from content
-filtering.
-
-Three layers, in order of importance:
-
-- **The core** — the `Brain/Router → Worker` loop in `core/`, with optional Middleware
-  verification. Every
-  request goes through it, and it's the part to understand first.
-- **The tool packs** — `skills/`, the extension surface. Adding a capability means
-  writing one tool file, not touching routing.
-- **The optional layers** — a desktop/browser **UI** (`ui/`), a self-training **MLOps
-  pipeline** (`autonomous_pipeline/`), and **voice I/O**. None are required to run Ciel
-  from the CLI.
-
-On top of that core sit **seven agent-capability tiers**:
-
-| # | Tier | Closes the gap where… |
-|---|---|---|
-| 1 | Agent loop | a flat plan can't express "if X then Y" |
-| 2 | Task state | interrupted work used to vanish without a trace |
-| 3 | Permissions | approval was binary and arrived mid-execution |
-| 4 | Context discipline | prompt assembly had no budget and no audit trail |
-| 5 | Interruptibility | a long request could only be stopped by killing the process |
-| 6 | Proactivity | Ciel could only ever answer, never speak first |
-| 7 | A model of you | memory retrieved passages but never accumulated understanding |
-
-One rule runs through all seven: **the decision is deterministic Python; the model
-only plans or composes.** That is what makes them survive a change — or a downgrade —
-of model. Each tier is a separate `core/` module and each can be switched off in
-`.env`, degrading to the pre-tier behaviour rather than breaking. See
-[`instructionAI/architecture.md`](instructionAI/architecture.md) for the full detail on
-each one, including three bugs found by reading real transcripts (not test failures)
-and fixed this cycle.
+## Architecture
 
 ```mermaid
-flowchart TD
-    U[User Input<br/>text or voice] --> RAG[RAG Recall + Compression<br/>self-match filtered]
-    RAG --> CTX["ContextAssembler<br/>bounded named blocks"]
-    SUBJECT["Active Subject<br/>topic + grounded entities + last action"] --> CTX
-    CTX --> ROUTER["Router / Brain<br/>classifies intent"]
-    ROUTER -->|chat| CHAT["Worker: chat response<br/>+ recent-turns context"]
-    ROUTER -->|tool| SAFE1{High-risk tool<br/>or dangerous code?}
-    ROUTER -->|code| SAFE1
-    ROUTER -->|multi_tool| SAFEGUARD["Workflow Safeguards<br/>auto-append missing send/write step"]
-    SAFEGUARD --> SAFE1
-    SAFE1 -->|yes| GATE["Safety Gate<br/>Y/N, or DEFER if unattended"]
-    SAFE1 -->|no| EXEC[Execute Tool / Worker Format]
-    GATE -->|approved| EXEC
-    GATE -->|denied| CANCEL[Cancelled]
-    EXEC --> DEDUPE{Outbound send?}
-    DEDUPE -->|duplicate recipient this turn| SKIP[Skipped]
-    DEDUPE -->|no| HEAL{Error?}
-    HEAL -->|yes, fixable| RETRY[Self-Healing retry]
-    HEAL -->|no| MID{Email / report body?}
-    RETRY --> MID
-    MID -->|yes| MW["Middleware Finalizer<br/>fail-open review"]
-    MID -->|no| RESP[Response]
-    MW --> RESP
-    CHAT --> RESP
-    RESP --> UPDATE["Update Active Subject<br/>for next turn"]
-    UPDATE -.next turn.-> SUBJECT
-    RESP --> MEM[Chat/RAG Memory Update]
-    RESP -.optional TTS.-> SPK[Speak reply aloud]
+flowchart LR
+    U[User / Telegram / UI] --> C[Bounded context]
+    C --> B[Brain / Router]
+    B --> V[Plan validator]
+    V --> P[Permission policy]
+    P --> T[Tool execution]
+    T --> R[Recovery and evaluation]
+    R --> W[Worker response]
+    W --> M[Memory and active-subject update]
+    S[Scheduler] --> N[Notifier]
+    N --> TG[Telegram / live channel]
 ```
 
-Every box above is a real module — `core/router.py`, `core/active_subject.py`,
-`agent_system/models/worker.py`, `core/middleware.py`, `core/recovery_manager.py`. See
-[instructionAI/architecture.md](instructionAI/architecture.md) for the file-by-file
-breakdown.
+The model plans and composes; deterministic Python enforces plan structure,
+permissions, budgets, cancellation boundaries, delivery deduplication, context limits,
+and notification cooldowns.
 
----
+### Core capabilities
 
-## Status (Level B)
+| Area | Implementation |
+|---|---|
+| Routing and execution | `core/llm_connector.py`, `core/router.py`, `core/parallel.py` |
+| Conditional continuation | `core/continuation.py`, `core/task_state.py` |
+| Plan safety | `core/plan_validation.py`, `core/permissions.py` |
+| Context and follow-ups | `core/context.py`, `core/active_subject.py` |
+| Memory | ChromaDB RAG, `facts.json`, `user_model.json` |
+| Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
+| Monthly/weekly planning | `core/planner_store.py`, `core/planner_triggers.py` |
+| Interfaces | CLI, FastAPI/WebSocket, Telegram, React/Tauri UI |
+| Tool extension | Auto-discovered `skills/**/*_ops.py` packs |
 
-The current personal-agent pass bar is **Level B (Core Green)** — see
-[`improve.md`](improve.md) for the living checklist, evidence, and next upgrade.
+## Requirements
 
-| Area | State |
-|------|--------|
-| **Level A** (daily CLI) | PASS — boot, unit suites, ~10 daily tools, unattended DEFER |
-| **Level B** (core green) | PASS — live integration baseline, real email quality, bounded follow-up context |
-| **P0 foundation** | PASS |
-| **P1.1** honest tool failures / **P1.4** outbound sanitize | PASS |
-| **P1.5** deterministic multi-tool plan validation | PASS — unit + live search to Gmail smoke verified |
-| **Telegram** files + plain text + **HTML document** attach | Working in the container deployment |
-| **Search follow-up grounding** | Working — “làm đi” / “mở đi” executes only a single fresh grounded URL; several links require a choice unless explicitly requested together |
-| **Level C** portable / **P1.2–P1.3** formal / **P2–P3** | Open (roadmap) |
+- Python 3.12+
+- At least one supported LLM provider or OpenAI-compatible endpoint
+- Docker for container deployment
+- Node.js 18+ only for the UI
+- Optional Google OAuth credentials for Gmail
+- Optional Telegram bot token and numeric chat ID for Telegram mode
 
-**For AI assistants upgrading Ciel:** start at
-[`instructionAI/SKILL.md`](instructionAI/SKILL.md) then [`improve.md`](improve.md) —
-do not re-open finished P0 items unless something regressed.
+Long-term RAG uses ChromaDB, sentence-transformers, and PyTorch. If that stack cannot
+initialize, Ciel disables RAG rather than taking down the assistant.
 
----
+## Installation
 
-## Prerequisites
-
-| Requirement | Needed for | Notes |
-|---|---|---|
-| **Python 3.12+** | Core backend | `pandas-ta` requires Python >=3.12 with no PyPI distribution for older versions. Use a fresh virtualenv on a new clone. |
-| **pip** | Dependency install | `pip install -r requirements.txt` |
-| **At least one LLM provider API key** | Brain / Worker (optional Middleware reuses Worker) | Any OpenAI-compatible endpoint via `custom` (`API_KEY`+`BASE_URL`), or Gemini/DeepSeek/Vilao directly. Ollama works fully offline. |
-| **Node.js 18+ and npm** | UI only | Only needed if you run `ui/`. Skip for CLI-only use. |
-| **Rust + MSVC C++ Build Tools** | Desktop (Tauri) build only | Only for `npm run tauri dev/build`. WebView2 ships with Windows 11 already. |
-| **Google OAuth credentials** | Gmail tools | `credentials.json` + token. Missing it disables *only* Gmail tools. |
-| **Microphone + internet** | Voice I/O only | Default STT/TTS backends are free and need no key, but do need a network connection. |
-| **TwelveData / Telegram tokens** | Trading tools, proactive digest, Telegram bot front-end | Optional for trading/digest (degrades gracefully). Required for `main_telegram.py`: `TELEGRAM_BOT_TOKEN` + a real numeric `TELEGRAM_CHAT_ID` (not any of your other API keys). |
-| **Docker** | Container deployment only | Only needed for `docker/` — see [Docker Deployment](#docker-deployment). Skip for a bare CLI/UI run. |
-
-> **Note on `torch`/RAG:** long-term memory (ChromaDB + `sentence-transformers`) needs a
-> working PyTorch install. If `c10.dll` fails to initialize (missing VC++
-> Redistributable, or a CPU without AVX), Ciel disables RAG gracefully rather than
-> crashing — you lose long-term memory, not the whole system.
-
----
-
-## Quick Start
-
-### 1. Clone and install
-
-**Bash / Zsh**
 ```bash
-git clone <your-repo-url> ciel-2.0
+git clone <repository-url> ciel-2.0
 cd ciel-2.0
 python -m venv myenv
-source myenv/bin/activate
-pip install -r requirements.txt
 ```
 
-**PowerShell**
+PowerShell:
+
 ```powershell
-git clone <your-repo-url> ciel-2.0
-cd ciel-2.0
-python -m venv myenv
 myenv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 2. Configure `.env`
+Bash:
 
-Create a `.env` file in the repo root (no example is checked in — build it from the
-keys below). This is the **minimum to run** — every one of the seven agent-capability
-tiers (loop, task state, permissions, context budget, cancellation, proactivity, user
-model) defaults **off** or to safe pre-tier behaviour, so nothing below is required
-beyond providers and safety. Every tier's own knobs are in the
-[Customization](#customization) table, not duplicated here.
-
-```dotenv
-# --- Providers ---
-# One custom OpenAI-compatible endpoint powers the two standard model roles below.
-# Brain owns routing/evaluation; Worker owns generation/formatting. Optional roles are
-# disabled and reuse one of these model IDs if enabled, so they cannot add a third model.
-BRAIN_PROVIDER=custom          # custom | vilao | deepseek | gemini | ollama
-BRAIN_MODEL=<router-model>
-WORKER_PROVIDER=custom
-CODER_MODEL=<worker-model>    # NOT "WORKER_MODEL" — see gotcha below
-API_KEY=...                    # your OpenAI-compatible endpoint's key
-BASE_URL=https://your-provider.example/v1
-# Only needed if a tier uses one of the OTHER providers instead of "custom":
-GEMINI_API_KEY=...
-DEEPSEEK_API_KEY=...
-VILAO_API_KEY=...
-
-# --- Safety (two INDEPENDENT flags — do not couple them) ---
-SAFETY_OPEN=true              # relaxes Brain CONTENT filtering only
-VILAO_SAFETY_BYPASS=true
-DISABLE_SAFETY_GATE=false     # keeps the destructive-tool Y/N gate ACTIVE (recommended default)
-
-# --- Optional integrations (each degrades gracefully if left blank) ---
-# Standard topology is two models. These stay off; if enabled for an experiment,
-# assign Router Assistant=BRAIN_MODEL and Middleware=CODER_MODEL explicitly because
-# python-dotenv does not expand model aliases portably across every deployment.
-ROUTER_ASSISTANT_ENABLED=false
-ROUTER_ASSISTANT_PROVIDER=custom
-ROUTER_ASSISTANT_MODEL=<same-router-model>
-MIDDLEWARE_ENABLED=false
-MIDDLEWARE_PROVIDER=custom
-MIDDLEWARE_MODEL=<same-worker-model>
-TWELVEDATA_API_KEY=...
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...           # numeric — message @userinfobot to find yours, not another key
-DISABLED_SKILL_MODULES=       # e.g. vision_ops — skip a whole skill module at load (Docker)
-# Real Google results for stealth_search, via SerpApi. WITHOUT this, search still works
-# but silently drops to the weaker DuckDuckGo/News-RSS tier — it never errors, so a
-# missing key looks exactly like a working one. API_ENDPOINT has a code default.
-SEARCH_API_KEY=...
-API_ENDPOINT=https://serpapi.com/search?engine=google
+```bash
+source myenv/bin/activate
+pip install -r requirements.txt
 ```
 
-> **Gotcha:** `agent_system/config.py` reads the Worker model from `CODER_MODEL`, not
-> `WORKER_MODEL`. A `.env` entry literally named `WORKER_MODEL` is silently ignored.
+Create a private `.env` in the repository root. Do not commit it.
 
-Everything else — the Tier-1 agent loop, parallel execution, Tier-4 context budgets,
-Tier-6 proactivity (9 triggers), Tier-7 user model, permissions lists, the email-bypass
-escape hatch, voice I/O backends — has its own `.env` knob(s), all off or safely
-defaulted until you opt in. Full list: the [Customization](#customization) table below,
-or grep `agent_system/config.py` for every `os.getenv(...)` call.
+```dotenv
+# Standard two-model topology
+BRAIN_PROVIDER=custom
+BRAIN_MODEL=<brain-model>
+WORKER_PROVIDER=custom
+CODER_MODEL=<worker-model>
+API_KEY=<provider-key>
+BASE_URL=https://provider.example/v1
 
-### 3. Run the CLI
+# Optional roles remain off
+ROUTER_ASSISTANT_ENABLED=false
+MIDDLEWARE_ENABLED=false
+
+# Content filtering and destructive-tool confirmation are independent
+SAFETY_OPEN=true
+DISABLE_SAFETY_GATE=false
+
+# Optional Telegram interface
+TELEGRAM_BOT_TOKEN=<bot-token>
+TELEGRAM_CHAT_ID=<numeric-chat-id>
+
+# Disable capabilities unavailable on a headless server
+DISABLED_SKILL_MODULES=vision_ops
+```
+
+`CODER_MODEL` is the Worker model variable. `WORKER_MODEL` is not read from `.env`.
+Provider-specific options and all feature flags are defined in
+`agent_system/config.py`.
+
+## Run
+
+### CLI
 
 ```bash
 python main.py
+python main.py --voice --speak
 ```
 
-Type a request at the `Master:` prompt. High-risk actions (file delete, shell exec,
-sending email, etc.) ask for a `Y/N` confirmation unless `DISABLE_SAFETY_GATE=true`.
-Ctrl+C during a request cancels **that request** (Tier 5); Ctrl+C at the prompt exits.
-
-**Talk to it (optional):**
-```bash
-python main.py --voice --speak     # speak requests, hear replies
-```
-- `--voice`: press Enter on an empty line to speak, or type to override; `:v` does a
-  one-off voice capture in any mode.
-- `--speak`: Ciel reads each reply aloud (the printed transcript is unchanged).
-- Test each modality standalone first: `python -m core.voice_input` (mic → text) and
-  `python -m core.speech_output "Xin chào Master"` (text → speech).
-
-### Windows UTF-8
-
-The normal CLI, API, and Telegram paths handle Unicode. A Windows PowerShell pipeline
-can still replace Vietnamese characters with `?` before Python receives them. Set UTF-8
-before piping a script such as `@' ... '@ | python -`:
-
-```powershell
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
-$OutputEncoding = [Console]::OutputEncoding
-$env:PYTHONUTF8 = "1"
-```
-
-If `?` is already visible in Ciel's `execute_tool` log, the shell damaged the input;
-it is not a Gmail subject-encoding failure.
-
-### 4. (Optional) Run the API server + UI
-
-**Bash / Zsh**
-```bash
-python main_api.py &                    # backend: ws://localhost:8000/ws + REST
-cd ui && npm install && npm run dev     # browser UI: http://localhost:1420
-```
-
-**PowerShell**
-```powershell
-Start-Process python main_api.py
-cd ui; npm install; npm run dev
-```
-
-Click the 🔇 → 🔊 button beside the input box to have Ciel read replies aloud (same
-neural voice as the CLI). For the wrapped desktop app instead of the browser tab:
-`cd ui && npm run tauri dev` — see [ui/README.md](ui/README.md).
-
-### 5. Regression tests
-
-From the project root with `myenv` active:
+### API and UI
 
 ```bash
-# Fast unit path (no/minimal live LLM for pure suites; quality_guards inits core once)
-python -m backtest.run_all --unit-only
-
-# Unit + live integration suites (needs API keys; costs tokens)
-python -m backtest.run_all --skip-exploratory
-
-# Single unit pack (sanitize, write-intent, HTML builder, TG upload protect)
-python -m backtest.test_quality_guards
-
-# Multi-tool structure, dependency, schema, and duplicate-delivery checks
-python -m backtest.test_plan_validation
-
-# Conversation boundaries, explicit lookup follow-ups, and tool-promise guard
-python -m backtest.test_conversation_bugs
+python main_api.py
+cd ui
+npm install
+npm run dev
 ```
 
-Maintained suites live under `backtest/test_*.py` and `backtest/run_all.py`.  
-Ephemeral `_smoke_*.py` one-offs were removed — do not reintroduce them for every feature.
+The backend exposes `GET /health`, `GET /skills`, `POST /tts`, and `WS /ws`.
 
-### 6. (Optional) Run as a Telegram bot
-
-A third front-end, independent of the CLI/UI — same core underneath. Requires
-`TELEGRAM_BOT_TOKEN` and a real numeric `TELEGRAM_CHAT_ID` in `.env` (message
-`@userinfobot` on Telegram, or hit `getUpdates` after messaging your own bot, to find
-it — it's a number, not any of your other API keys).
+### Telegram
 
 ```bash
 python main_telegram.py
 ```
 
-Every message is checked against `TELEGRAM_CHAT_ID` before it reaches Ciel — anyone
-else messaging the bot is ignored. High-risk actions arrive as an inline Yes/No
-keyboard instead of a CLI prompt; `/cancel` interrupts whatever is currently running
-(Tier 5). Don't run this alongside `main_api.py`/`main.py` against the same `ciel_data/`
-at the same time (see the Docker section below) — pick one front-end at a time until
-that's addressed.
+Only the configured `TELEGRAM_CHAT_ID` is accepted. High-risk actions use an inline
+confirmation keyboard, and `/cancel` requests cooperative cancellation at the next
+tool boundary.
 
-### 6. (Optional) Run in Docker
+### Docker
 
 ```bash
-docker compose -f docker/docker-compose.api.yml up -d --build        # main_api.py, Vercel-facing
-docker compose -f docker/docker-compose.telegram.yml up -d --build   # main_telegram.py
-```
-
-Same image, split into separate compose files so either can be built/started/stopped
-independently. Full details — required host files, the shared-`ciel_data/` caveat, why
-not to run both at once yet: [docker/README.md](docker/README.md).
-
----
-
-## Feature Overview
-
-### Routing & Execution
-- **Brain/Router → Worker** — the maintained two-model topology: Brain owns routing,
-  planning, and evaluation; Worker owns conversation, generation, and formatting.
-  Middleware remains an optional, disabled-by-default, fail-open verifier that reuses
-  the Worker model identity.
-- **Four intent types** — every turn is classified as `chat`, `tool`, `code`, or
-  `multi_tool`. For `chat`, the router's own draft `task` is treated as a hint only —
-  the Worker always sees the Master's real words, so a strong Brain pre-writing the
-  final reply (once caught doing exactly that, in the wrong language) can never
-  silently override how or in what language the answer comes out.
-- **Agent loop — observe, re-plan, act** (Tier 1, `core/continuation.py`) — closes the
-  gap where a flat plan can't express "check git status, and if it's clean, commit".
-  Five deterministic signals decide whether another round is warranted; a sixth,
-  higher-priority check — an explicit "chỉ … thôi" / "only …" — vetoes all of them, so
-  the loop never does work a human explicitly bounded against. Zero extra tokens on an
-  ordinary request; every ceiling (rounds, calls, wall-clock) enforced in code.
-- **Parallel tool execution** (`core/parallel.py`) — provably independent steps in one
-  plan run concurrently. Opt-in per tool, since auto-registration means a blacklist
-  would silently parallelise a newly added mutating tool. 9.3× measured on file
-  fan-out.
-- **Durable task state** (Tier 2, `core/task_state.py`) — an interrupted job leaves a
-  resumable record instead of vanishing. `đang làm gì` / `status` answers from it —
-  **0 LLM calls, ~0.1s**.
-- **Bounded, auditable context** (Tier 4, `core/context.py`) — one assembler with a
-  token budget and a log line, replacing scattered string concatenation. Blocks drop
-  **whole, never truncated**. RAG recall is bounded at its source and filtered against
-  recalling its own prior failure on a repeated question.
-- **Recent-turn memory for replies** — the last few turns are injected into the
-  response path (never routing), fixing a real gap where a follow-up like "tại sao lại
-  thế" got answered with no memory of the turn just completed.
-- **Active subject handoff** (`core/active_subject.py`) — one compact RAM-only
-  topic/entities/action record from grounded read-only evidence reaches the next Brain
-  route. It adds no model call, expires after 15 minutes or three unrelated turns, and
-  excludes recipients, paths, URLs, secrets, commands, confirmations, and destructive
-  arguments. Its integration hooks fail open, so subject-state failure cannot break the
-  normal route/tool/response path.
-
-Context is deliberately asymmetric: Brain receives the current request plus bounded
-structured context such as Active Subject; Worker receives recent raw conversation for
-answer continuity. `memory_bank.json` keeps at most 20 messages (about 10 complete
-user/assistant exchanges), while the Worker prompt includes only what fits the separate
-recent-turn token budget. Raw history is not copied into Brain routing because stale
-requests and old action parameters previously contaminated new routes.
-- **Interruptible requests** (Tier 5) — Ctrl+C or the UI's Stop button cancels the
-  in-flight request at the next **step boundary**, never mid-tool. The job closes as
-  `cancelled`, distinguishable from a crash.
-- **Deterministic Workflow Safeguards** — a plan missing its terminal send/write step
-  gets one appended in code, not left to the Brain to remember. Enforces an explicit
-  subject and blocks any unsynthesized placeholder from reaching a file or inbox.
-- **Deterministic plan validation** (`core/plan_validation.py`) runs before a multi-tool
-  plan reaches permission review or execution. It checks loaded tool names, schema-valid
-  arguments, and prior-only `{prev}`/`{step_N}` dependencies. A duplicate delivery is
-  removed only when that cannot change a later dependency; otherwise the plan stops
-  before step one. Continuation plans are checked again.
-- **One delivery per recipient per turn** — two independent mechanisms used to
-  complete a plan's missing send step and could both fire, delivering the same report
-  twice with different subjects. Now deduped by recipient at the single choke point
-  every send passes through.
-- **Dependent multi-tool steps** — `{{prev}}`/`{{step_N}}` substituted deterministically
-  at run time (no LLM).
-- **Self-Healing with a Skip-List** — skips error classes no retry can ever fix instead
-  of burning a guaranteed-to-fail Worker call.
-- **Memory-aware recall fallback** — an inspection tool that comes back empty falls
-  back to recalled long-term context, labeled "unverified from workspace".
-- **Dated, sourced web search** — `stealth_search` hits **real Google** via SerpApi
-  first (the same index a human searching gets), falling back to Google News RSS then
-  DuckDuckGo if no key is set or the call fails; every hit carries a real publication
-  date and outlet, the requested time window is enforced on that real date rather than
-  trusted, and the query is built in **your** language.
-- **It looks things up before saying "I don't know"** — when a reply concedes a
-  knowledge gap, a deterministic Python gate searches the web and re-answers from the
-  results. Costs nothing on an ordinary turn (the gate only fires on an actual
-  admission), skips questions about your own stored data, and keeps the honest "I
-  couldn't find it" rather than inventing an answer when the search comes back empty.
-
-### Proactivity & Personalisation
-- **Ciel speaks first** (Tier 6, `core/notifier.py` + `core/triggers.py`) — nine
-  condition triggers in three groups: watching itself (an abandoned job, a cost spike,
-  a repeatedly failing tool, actions awaiting approval), the clock, and the outside
-  world behind thresholds you set. Every check is plain Python over data already on
-  disk — **an idle Ciel costs zero tokens**. Off by default, opt-in per trigger by name.
-- **Anti-noise, enforced in code, not requested in a prompt** — a notification with no
-  concrete action cannot interrupt; identity comes from the *thing* so a standing
-  condition is announced once; delivery routes by **liveness**, since a running process
-  is not a present human; a daily budget caps interruptions; a finding you keep
-  ignoring goes quiet after N repeats.
-- **Silence is never consent** — a trigger firing at 03:00 has nobody to ask, so risky
-  tools resolve to **`DEFER`**: recorded and raised at your next interaction, never
-  auto-approved. Session grants, plan approvals, even `DISABLE_SAFETY_GATE` are
-  ignored in that context. Deferred actions are **never replayed** automatically.
-- **A model of you** (Tier 7, `core/user_model.py`) — a bounded profile injected only
-  where a preference actually changes the output. What you **said** outranks what
-  Ciel **inferred**; non-stated traits **decay**; a **hard token ceiling** means it
-  costs literally zero until it has learned something.
-- **It learns without being told to remember** — a free deterministic gate skips
-  one-off wording outright; only explicit durable wording buys a single extraction
-  call, on a background thread, so an ordinary turn costs nothing and the reply is
-  never delayed.
-- **Credentials can never enter the injected store** — `facts.json` stays pull-only;
-  `user_model.json` is injected and deterministically refuses anything that looks like
-  a credential. The profile is human-readable and editable on purpose; `forget()`
-  really deletes.
-
-### Safety
-- **Decoupled Safety Model** — content-filter permissiveness and the destructive-action
-  confirmation gate are independent flags on purpose.
-- **Three/four-way permissions** (`core/permissions.py`) — every `(tool, args)`
-  resolves to `AUTO`, `ASK`, `DENY`, or (unattended) `DEFER`.
-- **Approve the plan, not the fragments** — a multi-step plan raises **one** prompt
-  covering every step needing approval, before the first step runs. Approvals are
-  scoped to the exact `(tool + args)` reviewed.
-- **Session grants** — answer `A` at a CLI prompt to stop being asked about that one
-  tool for the rest of the run. In-memory only, refused for deny-listed tools.
-- **High-Risk Tool Gate** — eight tools that touch the outside world require an
-  explicit `Y/N`, plus a content-based gate for destructive patterns in
-  generated code/writes.
-- **Confirmations survive a restart** — a preview tool declares its own follow-up; a
-  later bare "yes" executes it with zero LLM calls, persisted so a process death
-  doesn't lose it.
-- **Sandboxed Filesystem** — file tools are quarantined to `ciel_workspace/` /
-  `agent_output/`.
-
-### Memory & Data
-- **Hybrid RAG Memory** — short-term chat history plus long-term ChromaDB semantic
-  memory, filtered against recalling a question's own prior failure as "context".
-- **Bounded lookup continuity** — a successful `stealth_search`/`smart_scrape` retains
-  only its query and up to three public URLs for one explicit follow-up (“scrape that
-  result”). It expires in 15 minutes, clears on a new topic, and is never persisted.
-- **Two memory stores, split by security boundary** — `facts.json` (pull-only, may
-  hold secrets, never injected) vs. `user_model.json` (injected, refuses secrets).
-- **Email Send Pipeline** — market/asset reports, research digests, and document
-  summaries gather real tool data first, then compose; anti-fabrication rules block
-  invented prices and hollow "attached" shells. Internal paths are stripped from
-  outbound bodies; real tool numbers are kept (P1.4).
-- **File → analysis HTML** — `build_analysis_report_html` fills
-  `email_template/analysis_report.html` (prefer `agent_output/*.html`), then
-  `send_telegram_document` or Gmail HTML. Inbound Telegram files are never
-  overwritten by default.
-
-### Voice I/O
-- **Speech-to-Text (CLI)** — `core/voice_input.py` captures the mic and transcribes,
-  feeding the exact same pipeline the keyboard uses.
-- **Text-to-Speech (CLI + UI)** — free neural voices (Vietnamese by default); a
-  deterministic normalizer strips markdown/emojis/tags without touching the persona.
-- **Swappable backends** — selected via `.env`; defaults are free, no API key needed.
-
-### Observability & Cost
-- **Full Audit Trail** — every RAG recall, route decision, tool result, healing
-  attempt, and Middleware review logged to `ciel_data/logs/thoughts.log`.
-- **Token-Precise Cost Tracking** — exact provider token counts per call; live vitals
-  show per-tier tokens and estimated USD; `scripts/cost_report.py` aggregates over time.
-
-### Interface
-- **Desktop/Browser UI** — React + Tauri v2, browser-first and desktop-wrappable with
-  zero code changes between the two. Skills panel (left, 100% backend-driven) and a
-  chat workbench (right) with a stop button, safety-gate dialog, and live vitals.
-- **Telegram bot** (`main_telegram.py`) — a third front-end onto the same core, chat_id
-  allow-listed, with an inline-keyboard safety confirmation dialog and `/cancel`. Accepts
-  photos/documents — downloaded into `ciel_workspace/telegram_uploads/` and handed to
-  Ciel as a normal message (`read_file` / `read_document` / `describe_image_file` — never
-  a forced tool call). Outbound: plain `send_telegram` and `send_telegram_document`
-  (HTML reports as **file attachments**). Uploads are not overwritten by default.
-- **Vision & Screen Control** — PyAutoGUI + Gemini Vision for direct UI interaction
-  when no API/tool exists for a task, plus `describe_image_file` for looking at an
-  existing image FILE (not the live screen) — e.g. one just uploaded via Telegram.
-  Skippable per-deployment via `.env`'s `DISABLED_SKILL_MODULES=vision_ops` — e.g. a
-  headless server has no display for it (this also skips `describe_image_file`, which
-  doesn't strictly need one — a known trade-off, not a bug).
-- **Multi-Provider** — Brain and Worker can use different providers, swappable via
-  `.env` with no code changes. Optional Middleware can be deliberately re-enabled but
-  mirrors Worker in the standard deployment.
-
-### Autonomy
-- **Autonomous MLOps Pipeline** (`autonomous_pipeline/`) — a background daemon that
-  simulates a Master, runs real Ciel tasks, audits them with an independent Judge
-  model, and grows a Worker fine-tuning dataset, including a Chaos Injector for hard
-  edge cases the normal loop never generates.
-- **Proactive Scheduler** — zero-token standby background tasks that call tools
-  directly and never pollute conversational memory.
-
----
-
-## How It Works
-
-1. **User input arrives** at `CielCore.process()` (`core/llm_connector.py`) — from the
-   CLI loop, the WebSocket API, a voice transcript, or the autonomous pipeline.
-2. **Active lookup / RAG context** keeps an in-RAM source anchor only for an explicit
-   immediate search follow-up; separately, RAG searches ChromaDB for relevant past context,
-   filters out a result
-   that is just the current question recalling its own prior failure, and injects a
-   compressed summary — skipped for short/low-relevance queries.
-3. **Context assembly** adds the current request, language, working directory, and one
-   compact **Active Subject** from the prior grounded turn. Brain does not receive raw
-   chat history; Worker retains bounded recent turns for response continuity.
-4. **The Router (Brain)** classifies intent into `chat`, `tool`, `code`, or
-   `multi_tool` and returns a structured plan. For `chat`, its own `task` field is
-   never handed to the Worker as the request — only as a labelled hint.
-5. **Workflow safeguards** run before execution: a missing send/write step is appended
-   deterministically.
-6. **The Safety Gate** intercepts high-risk calls and dangerous-pattern writes,
-   blocking until approved — or, if nobody is present, deferring rather than assuming
-   consent.
-7. **Execution** happens via `ToolManager`. Errors trigger **Self-Healing**, which
-   retries with an escalating strategy but skips error classes it knows it can't fix.
-   An outbound send is deduped against this turn's earlier sends by recipient.
-8. **The Worker** formats the raw tool result into the final response — with recent
-   conversation turns in view — always instructed to report only what the tool
-   actually returned.
-9. **Middleware** (if enabled) reviews outbound email/report bodies, catching
-   mismatches a regex sanitizer can't, editing in place and failing open on any error.
-10. **The response returns** and successful read-only evidence updates Active Subject
-    once for the next turn. The reply is optionally spoken aloud, saved to memory with
-    overflow archived into the vector store, and the Tier-2 task record closes.
-
-### What makes this different
-
-Most agent frameworks treat "the LLM decided to do X" as sufficient. Ciel treats the
-LLM's decision as a *proposal* checked at multiple points: a workflow safeguard
-verifies the plan is complete, a safety gate verifies risky actions are approved (or
-defers them when nobody is present to ask), a duplicate-send guard verifies a report
-isn't mailed twice, a self-healing skip-list verifies retries aren't wasted on
-unfixable errors, and a Middleware tier verifies the final output doesn't contradict
-itself — all *before* anything is written to disk or sent to a real inbox. None of
-these checks are another LLM call pretending to be certain; almost all are
-deterministic code, and the one LLM-based check (Middleware) is scoped narrowly and
-fails open specifically so it can never become the single point of failure for a send.
-
----
-
-## Voice I/O
-
-Voice is a modality layer, not a rewrite — a spoken sentence becomes text and flows
-through the same `run_step()` the keyboard uses, and a reply is spoken *after* a
-deterministic normalizer cleans it. The prompts and persona are never changed to be
-"speech-friendly"; text, HUD, and email keep their rich formatting.
-
-### Speech-to-Text (`core/voice_input.py`)
-
-Mic capture uses `sounddevice`. Energy-based endpointing auto-calibrates ambient noise
-and stops on silence.
-
-| `STT_BACKEND` | Engine | Notes |
-|---|---|---|
-| `whisper` *(default)* | `faster-whisper`, local CPU | Offline, no key, good Vietnamese accuracy — chosen to avoid depending on a free cloud endpoint |
-| `google` | SpeechRecognition → free Google Web Speech | No API key, supports vi-VN, needs internet |
-| `gemini` | google-genai | Needs `GEMINI_API_KEY` |
-
-### Text-to-Speech (`core/speech_output.py`)
-
-`to_speech()` strips markdown, emojis, `[TAG]`-style headers, code blocks, and URLs
-(numbers preserved) before synthesis.
-
-| `TTS_BACKEND` | Engine | Notes |
-|---|---|---|
-| `edge` *(default)* | edge-tts (Microsoft neural voices) | Free, no key, vi-VN neural; unofficial endpoint — backoff retry handles sporadic failures |
-| `pyttsx3` | Offline OS/SAPI voices | No internet; weaker Vietnamese |
-| `space` / `rvc` | mikuTTS HF Space (RVC character voice) | Experimental; ~25s/utterance, may sleep — not a default |
-
-Prosody knobs: `TTS_VOICE`, `TTS_RATE`, `TTS_PITCH`, `TTS_VOLUME`. RVC-only (only for
-`TTS_BACKEND=space`): `RVC_MODEL`, `RVC_TTS_VOICE`, `RVC_F0_UP`, `RVC_F0_METHOD`,
-`RVC_INDEX_RATE`, `RVC_PROTECT`, `RVC_SPACE`.
-
-### In the UI
-
-Voice **output** is wired end-to-end: the 🔊 toggle subscribes to the reply event,
-POSTs the text to `POST /tts` (the same `to_speech()` + edge-tts as the CLI), and plays
-the returned MP3. Voice **input** in the UI uses the browser's native Web Speech API —
-a separate, intentional engine from the CLI's server-side STT.
-
-> **GPU note:** none of the default voice backends use your local GPU — edge-tts and
-> the RVC Space run on remote servers, `pyttsx3`/`faster-whisper` are light CPU
-> workloads.
-
----
-
-## Observability & Cost
-
-Ciel is designed to be inspectable — you can always answer "what did it do and what
-did it cost?"
-
-- **`thoughts.log`** (`ciel_data/logs/thoughts.log`) — the full raw audit trail: RAG
-  recalls, route decisions, tool results, healing attempts, Middleware reviews, and one
-  `[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` line per real model call.
-  `scripts/format_thoughts_log.py` renders a readable view for a specific turn.
-- **Live cost in vitals** — the API's vitals feed reports real per-tier call counts,
-  exact token totals, and an estimated USD cost, live for the session. Prices live in
-  `core/cost.py`, overridable via `ciel_data/model_pricing.json` with no code change.
-- **Cumulative report** — `python -m scripts.cost_report [--since-days N] [--json]`
-  aggregates usage and estimated spend by tier, model, and day.
-- **Prompt harness** — `python -m scripts.prompt_harness --min-count 3` mines the log
-  for recurring failure patterns and points at what's actually worth patching —
-  deterministic, never auto-edits.
-
----
-
-## Backend API
-
-`python main_api.py` serves a FastAPI app (default `http://localhost:8000`). The UI
-talks to it; you can too.
-
-| Endpoint | Purpose |
-|---|---|
-| `WS /ws` | Main channel — chat messages, streamed thoughts, live vitals, `Y/N` safety confirmations, and cancellation. |
-| `GET /health` | Liveness/readiness probe (`ready` flips true once the agent boots). |
-| `GET /skills` | Dynamic manifest of loaded skill modules + tools — the UI renders its skill panels from this. |
-| `POST /tts` | `{ "text": "..." }` → normalized edge-tts MP3 (`audio/mpeg`). `204` when there's nothing speakable. |
-
-### WebSocket messages
-
-| Direction | `type` | Meaning |
-|---|---|---|
-| server → client | `thought` | one entry tailed live from `thoughts.log` (not rendered by the current UI) |
-| server → client | `vitals` | per-tier call counts, exact tokens, estimated USD |
-| server → client | `response` | the final reply for a turn |
-| server → client | `status` | transient state |
-| server → client | `error` | failure surfaced to the user |
-| server → client | `confirm_request` | safety gate needs a decision |
-| client → server | `confirm_response` | `{"approved": true\|false}` |
-| client → server | `cancel` | Tier-5 interrupt — wired both sides |
-| client → server | *(raw text)* | a user message |
-
-`confirm_request` carries **two different cases**: `tool_name` = a real tool means one
-risky action, while `tool_name == "plan"` is the Tier-3 plan-level approval — one
-question covering every step, asked *before anything runs*, where "no" means
-**nothing ran**.
-
-### Telegram bot (`main_telegram.py`)
-
-A third front-end (`core/telegram_interface.py`), independent of the WebSocket/UI pair
-above. Long-polls the Telegram Bot API directly — no extra dependency, same raw-`requests`
-style as `skills/external/telegram_ops.py`. Every inbound message is checked against a
-single allow-listed `TELEGRAM_CHAT_ID` **before** it reaches `core.process()`; safety
-confirmations arrive as an inline Yes/No keyboard (same `confirm_callback` contract as
-the CLI prompt and the WebSocket dialog, auto-declining after 60s); `/cancel` wires
-Tier 5. See *Run as a Telegram bot* above.
-
----
-
-## Docker Deployment
-
-Two front-ends, one shared image (`docker/Dockerfile`), split into separate compose
-files so each can be built/started/stopped independently:
-
-| File | Service | Runs |
-|---|---|---|
-| `docker/docker-compose.api.yml` | `ciel-api` | `main_api.py` — the Vercel-facing WebSocket/REST backend |
-| `docker/docker-compose.telegram.yml` | `ciel-telegram` | `main_telegram.py` — the Telegram bot |
-
-```bash
+# API service
 docker compose -f docker/docker-compose.api.yml up -d --build
-docker compose -f docker/docker-compose.telegram.yml up -d --build   # separately, not together yet
+
+# Telegram service
+docker compose -f docker/docker-compose.telegram.yml up -d --build
 ```
 
-`docker/requirements-docker.txt` is a slimmed dependency set: no `pyautogui`/`pyperclip`
-(no display in a container — pair with `.env`'s `DISABLED_SKILL_MODULES=vision_ops`, which
-skips loading `vision_ops.py` entirely before `ToolManager` ever imports it), no
-`sounddevice`/`faster-whisper`/`SpeechRecognition` (no mic — `core/voice_input.py` stays
-CLI-only, lazily imported so its absence never blocks startup). `edge-tts` is kept (cloud
-TTS, no hardware). `sentence-transformers` IS kept — the real `ciel_data/vector_memory/`
-collection was created with it, and ChromaDB persists that choice in the collection
-itself, so a different embedding function at runtime doesn't migrate it, it just fails
-the moment the collection is queried. The Dockerfile installs a CPU-only `torch` wheel
-first (see its comment) so this stays ~3.5GB instead of the ~10GB a default GPU build
-would pull in.
+The services share bind-mounted `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
+Run only one Ciel front end against that state at a time; the current JSON/SQLite state
+is designed for one process.
 
-Both compose files mount the **same** `ciel_data/`/`agent_output/`/`ciel_workspace/`, so
-whichever front-end the Master used, the other sees the same facts, chat history, and
-long-term memory — but that also means the two services shouldn't run **at the same
-time** yet: two independent `CielCore` processes writing the same JSON/SQLite-backed
-state concurrently is a real race condition. Treat them as alternatives to pick one from
-for now. Full instructions: [`docker/README.md`](docker/README.md).
-
-For an existing Telegram deployment, rebuild after dependency or Dockerfile changes;
-otherwise recreate the service after Python/config changes:
+For every source, dependency, or Dockerfile change, rebuild and recreate:
 
 ```bash
-docker compose -f docker/docker-compose.telegram.yml up -d --build
-docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100
+docker compose -f docker/docker-compose.telegram.yml up -d --build --force-recreate
+docker compose -f docker/docker-compose.telegram.yml ps
+docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100 ciel-telegram
 ```
 
-Keep the server `.env`, OAuth files, and persistent `ciel_data/` outside version control.
+The Telegram service intentionally has no HTTP health endpoint. Verify it with Compose
+status and the `[Telegram] Bot online` log. See [docker/README.md](docker/README.md) for
+the complete deployment contract.
 
-### Daily CI jobs (`.github/workflows/health_check.yml`)
+## Monthly and weekly planning
 
-Builds this same image and runs it daily (cron, 07:00 Vietnam time) — not a bare
-`pip install` on the runner, so this also proves the image itself still builds:
+Plans are durable structured data, not chat history:
 
-1. `scripts/health_check.py` — boots CielCore, makes exactly one real Brain call,
-   reports PASS/FAIL to Telegram.
-2. `scripts/daily_digest.py` (only if step 1 passed) — asks Ciel, through real Brain
-   routing (not a hand-rolled call), to summarize Gmail + today's news, reports the
-   result to Telegram. Splits "cần chú ý" (summarized in full) from "tự động/định kỳ"
-   (job-alerts/marketing — listed by sender+count only, not summarized), since Gmail's
-   own `category:primary` doesn't reliably exclude those senders.
+- Monthly outcomes: `ciel_data/planner.db::monthly_goals`
+- Weekly actions: `ciel_data/planner.db::weekly_tasks`
+- Immediate loose tasks: `ciel_workspace/todos.json`
 
-Needs these repo secrets (Settings → Secrets and variables → Actions): `API_KEY`,
-`BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SEARCH_API_KEY`, and — now that
-the digest genuinely calls `search_gmail` — `GOOGLE_CREDENTIALS_B64`/`GOOGLE_TOKEN_B64`
-(base64 of `credentials.json`/`ciel_data/gmail_token.json`).
+Available planner tools:
 
-> A secret in `.env` is **not** enough: the workflow passes env explicitly via
-> `docker run -e`, so anything missing from `health_check.yml` is simply absent in the
-> container. `SEARCH_API_KEY` is the one that fails quietly — search degrades to the
-> weaker source and the digest still looks correct.
+| Monthly | Weekly |
+|---|---|
+| `add_monthly_goal` | `add_weekly_task` |
+| `list_monthly_goals` | `list_weekly_plan` |
+| `update_monthly_goal` | `update_weekly_task` |
+| `complete_monthly_goal` | `complete_weekly_task` |
 
----
+Automatic summaries are opt-in:
 
-## Rebuilding the UI
+```dotenv
+PROACTIVE_ENABLED=true
+PROACTIVE_TRIGGERS=monthly_plan,weekly_plan
+PLANNER_TIMEZONE=Asia/Ho_Chi_Minh
+PLANNER_MONTHLY_DAY=1
+PLANNER_MONTHLY_HOUR=8
+PLANNER_MONTHLY_MINUTE=0
+PLANNER_WEEKLY_WEEKDAY=0
+PLANNER_WEEKLY_HOUR=8
+PLANNER_WEEKLY_MINUTE=0
+```
 
-The backend has capabilities that a frontend written against an older protocol would
-silently miss. Two are finished and simply not surfaced in the current UI yet:
+Successful deliveries use stable month/week keys in `ciel_data/state/notify.json`, so
+container restarts and repeated trigger polls do not resend the same summary. Failed
+deliveries remain retryable.
 
-| Gap | Backend is ready | What the UI needs |
-|---|---|---|
-| **Proactive notifications** | `core/notifier.py` routes app → CLI → Telegram; `AppChannel` is first in priority | `main_api.py` never constructs an `AppChannel`, so a Tier-6 notification falls through to Telegram even with the UI open. |
-| **Deferred approvals** | `DeferredStore` records background actions blocked because nobody was present | surface `core.deferred.pending()` as a queue; offer **"re-issue this request"**, never "approve and run it now". |
+## Safety model
 
-Cancellation (Tier 5) is already wired end-to-end — see below — so it is not in this
-list.
+- `SAFETY_OPEN` controls Brain content filtering only.
+- `DISABLE_SAFETY_GATE` controls destructive-tool confirmation only.
+- Unknown or malformed multi-tool plans stop before execution.
+- Risky unattended actions are deferred; silence is never consent.
+- Outbound sends are deduplicated per recipient and turn.
+- File tools are sandboxed to `ciel_workspace/` and `agent_output/`.
+- `.env`, `credentials.json`, OAuth tokens, and runtime data must stay untracked.
 
-New read-only surfaces worth building panels for: `core.tasks.recent()` (durable job
-history — `interrupted` jobs are resumable), `core.user_model.live_traits()` +
-`explain(key)` (**let the Master see, question, and delete what Ciel believes about
-them**), and `notifier.peek_digest()` (things it chose not to interrupt for).
+See [instructionAI/safety_and_risk.md](instructionAI/safety_and_risk.md) for the full
+contract.
 
-> **Known-open:** `main_api.py` auto-approves a confirmation when no socket is
-> attached. That predates the Tier-6 unattended ceiling and is the one remaining place
-> where silence still means consent — route it through `core.unattended = True` so
-> risky steps `DEFER` instead.
+## Tests
 
-Full detail, including the current UI layout and every wiring trap: **[`instructionAI/voice_and_interface.md`](instructionAI/voice_and_interface.md)**.
+```bash
+# Maintained unit regression path
+python -m backtest.run_all --unit-only
 
----
+# Unit and live integration tests; requires provider credentials
+python -m backtest.run_all --skip-exploratory
 
-## File Structure
+# Planner-only deterministic suite
+python -m backtest.test_planner
+
+# Focused safety and routing suites
+python -m backtest.test_quality_guards
+python -m backtest.test_plan_validation
+python -m backtest.test_conversation_bugs
+```
+
+Keep durable tests under `backtest/test_*.py`; do not accumulate one-off smoke-test
+modules. Live deployment checks should use isolated temporary state and must leave
+production planner and notifier data unchanged.
+
+## State and repository layout
 
 ```text
-Ciel 2.0/
-├── main.py                    # CLI entry point (text + voice)
-├── main_api.py                 # FastAPI + WebSocket server for the UI (+ /skills, /health, /tts)
-├── main_telegram.py             # Telegram bot entry point (see core/telegram_interface.py)
-├── instructionAI/architecture.md # Full architecture map (start here for deep dives)
-├── note.md                    # Live status / rolling changelog
-├── requirements.txt
-├── docker/                     # Container deployment — Dockerfile + 2 compose files (API, Telegram)
-│
-├── core/                       # Main orchestration — the part every request goes through
-│   ├── llm_connector.py        # CielCore: routes → executes → responds
-│   ├── router.py                # Brain-based intent classification
-│   ├── middleware.py            # Email/report finalizer hookup
-│   ├── recovery_manager.py      # Self-healing with skip-list
-│   ├── rag_manager.py           # ChromaDB long-term memory (sentence-transformers embedding)
-│   ├── tool_manager.py          # Tool registry & execution (honors DISABLED_SKILL_MODULES)
-│   ├── telegram_interface.py    # Telegram bot front-end — long-poll loop + confirm gate
-│   ├── cost.py                  # LLM pricing + cost estimation
-│   │
-│   │  # --- agent capability tiers (see instructionAI/architecture.md) ---
-│   ├── continuation.py          # T1  observe → re-plan → act; scope veto + fan-out etc.
-│   ├── task_state.py            # T2  durable job records; interrupted work survives
-│   ├── permissions.py           # T3  AUTO/ASK/DENY/DEFER, plan approval, deferred store
-│   ├── context.py               # T4  the single prompt assembler + token budget
-│   ├── active_subject.py        # RAM-only topic/entities/action handoff to Brain
-│   ├── notifier.py              # T6  where a proactive message goes, and whether it goes
-│   ├── triggers.py              # T6  the nine condition triggers + engine
-│   ├── user_model.py            # T7  the Master's profile: authority, decay, learning
-│   ├── parallel.py              # independent read-only steps run concurrently
-│   ├── scheduler.py             # background thread: clock tasks + the trigger engine
-│   ├── voice_input.py           # CLI speech-to-text (swappable STT backends)
-│   └── speech_output.py         # CLI/UI text-to-speech (normalizer + swappable TTS backends)
-│
-├── agent_system/               # Brain/Worker models + optional Middleware + LangGraph pipeline
-│   ├── models/                  # brain.py, worker.py, middleware.py
-│   ├── graph/                   # Multi-step structured code-gen pipeline
-│   └── utils/usage.py           # Provider token extraction for cost tracking
-│
-├── skills/                     # Tool packs — the extension surface
-│   ├── internal/                # filesystem, OS/shell, productivity, report_ops, vision, memory
-│   └── external/                # Gmail, trading, Telegram (text+document), GitHub, web search
-│
-├── ui/                         # React + Tauri v2 frontend (optional) — see ui/README.md
-├── autonomous_pipeline/        # Self-running MLOps daemon (optional)
-│
-├── backtest/                   # run_all.py + test_*.py (unit + live)
-│                               #   unit: context · active_subject · user_model · proactive ·
-│                               #         outbound · conversation_bugs · quality_guards · plan_validation
-│                               #   live: integration · hard_special · brain_worker · rag_memory
-├── scripts/                    # format_thoughts_log, cost_report, health_check, daily_digest
-├── email_template/             # market_report · analysis_report · health_report
-├── instructionAI/              # AI hand-off — start with SKILL.md
-├── improve.md                  # Upgrade roadmap (Level A/B/C, P0–P3)
-├── ciel_workspace/             # Sandbox (+ telegram_uploads/ for inbound bot files)
-└── agent_output/               # Generated code + analysis HTML reports
+agent_system/       Model configuration, prompts, and model clients
+core/               Runtime orchestration and deterministic capability tiers
+skills/             Auto-discovered tool packs
+ciel_data/          Persistent private state, RAG, logs, planner database
+ciel_workspace/     Sandboxed working files and immediate todos
+agent_output/       Generated reports and deliverables
+backtest/           Maintained regression and integration suites
+docker/             Dockerfiles, Compose files, deployment notes
+ui/                 React/Tauri interface
+instructionAI/      Stable project memory for future AI sessions
+improve.md          Living roadmap and pass criteria
+note.md             Dated operational journal
 ```
 
----
+## Documentation
 
-## Customization
+- [AI entry point](instructionAI/SKILL.md)
+- [Architecture](instructionAI/architecture.md)
+- [Conventions](instructionAI/conventions.md)
+- [Data and memory](instructionAI/data_pipeline.md)
+- [Safety and risk](instructionAI/safety_and_risk.md)
+- [Voice and interfaces](instructionAI/voice_and_interface.md)
+- [UI details](ui/README.md)
+- [Roadmap](improve.md)
 
-| I want to... | Edit this |
-|---|---|
-| Change Ciel's persona / tone | `persona/official_ciel_personality.txt` |
-| Find which prompt to edit for any behavior | [`PROMPT_INVENTORY.md`](PROMPT_INVENTORY.md) |
-| Add a new tool/capability | New file under `skills/internal/` or `skills/external/` exposing a `get_*_tools()` factory |
-| Continue upgrades (AI or human) | [`improve.md`](improve.md) + [`instructionAI/SKILL.md`](instructionAI/SKILL.md) |
-| Run unit regression | `python -m backtest.run_all --unit-only` |
-| Switch LLM providers | `.env` — `BRAIN_PROVIDER`, `WORKER_PROVIDER`, plus each provider's model name |
-| Add/remove a high-risk tool from the safety gate | `core/llm_connector.py` — `_HIGH_RISK_TOOLS` / `_RISK_DESCRIPTIONS` |
-| Tune what counts as "dangerous code" | `core/llm_connector.py` — `_find_dangerous_code_patterns()` |
-| Adjust RAG recall sensitivity | `core/rag_manager.py` — `MIN_QUERY_LENGTH`, `MIN_RELEVANCE_SCORE` |
-| Enable/scope the Middleware tier | `.env` — `MIDDLEWARE_ENABLED`, `MIDDLEWARE_SCOPE`, `MIDDLEWARE_MAX_PASSES` |
-| Change voice STT/TTS backend or prosody | `.env` — `STT_BACKEND`, `TTS_BACKEND`, `TTS_VOICE`, `TTS_RATE`/`TTS_PITCH` |
-| Set real per-model prices for cost tracking | `ciel_data/model_pricing.json` (no code change) |
-| Add a UI-side voice *input* modality | `ui/src/io/input/VoiceInput.tsx` — see [ui/README.md](ui/README.md) |
-| Turn proactivity on / pick which triggers speak | `.env` — `PROACTIVE_ENABLED`, then `PROACTIVE_TRIGGERS` by name |
-| Add a new condition trigger | `core/triggers.py` — write `check(now) -> Notification \| None`, register in `build_triggers()` |
-| Let a risky tool run with nobody watching | `.env` — `CIEL_UNATTENDED_AUTO_TOOLS` (per-tool, opt-in) |
-| Take the measured 27% saving on planner tokens | `.env` — `ROUTER_PERSONA_MODE=slim` (ships as `full`; see `note.md`) |
-| Cap what the learned profile may cost per call | `.env` — `USER_MODEL_TOKEN_BUDGET`, or `USER_MODEL_ENABLED=false` |
-| Inspect / correct what Ciel believes about you | `ciel_data/user_model.json` — indented, unescaped, safe to hand-edit |
-| Change the autonomous pipeline's task cadence | `autonomous_pipeline/orchestrator.py` |
-| Skip loading a whole capability class (e.g. vision on a headless server) | `.env` — `DISABLED_SKILL_MODULES` (comma-separated module stems, e.g. `vision_ops`) |
-| Restrict the Telegram bot to a different chat | `.env` — `TELEGRAM_CHAT_ID` (numeric; message `@userinfobot` to find yours) |
-| Use real Google results instead of the DuckDuckGo fallback | `.env` — `SEARCH_API_KEY` (SerpApi), optionally `API_ENDPOINT` |
-| Change which instruments resolve a deictic "check it" | `core/llm_connector.py` — `_SYMBOL_CODE` in `_recent_entities_note()`'s regex |
-| Tune the Tier-1 agent loop's rounds/timeout | `.env` — `AGENT_LOOP_ENABLED`, `AGENT_LOOP_MAX_ROUNDS`, `AGENT_LOOP_MAX_SECONDS` |
-| Tune parallel tool execution | `.env` — `AGENT_PARALLEL_ENABLED`, `AGENT_PARALLEL_MAX_WORKERS` |
-| Change Tier-4's context/RAG token budgets | `.env` — `CONTEXT_INPUT_BUDGET`, `CONTEXT_RECALL_BUDGET`, `CONTEXT_RECENT_TURNS_BUDGET` |
-| Tune active-subject lifetime | `.env` — `ACTIVE_SUBJECT_ENABLED`, `ACTIVE_SUBJECT_TTL_SECONDS`, `ACTIVE_SUBJECT_MAX_IDLE_TURNS`, `ACTIVE_SUBJECT_MAX_ENTITIES` |
-| Plan email sends with regex instead of the Brain (provider content-filter workaround) | `.env` — `EMAIL_BYPASS_BRAIN=true` |
-| Deny/auto-approve specific tools outright | `.env` — `CIEL_DENY_TOOLS`, `CIEL_AUTO_TOOLS` (comma-separated tool names) |
+## License and responsibility
 
----
-
-## Tips for Better Results
-
-**Keep the safety gate on unless you mean it.** `DISABLE_SAFETY_GATE=true` is meant for
-fully unattended automation, not everyday CLI use — and it still does not bypass the
-Tier-6 unattended `DEFER` ceiling.
-
-**Give tasks explicit output specs.** The Router produces noticeably better (less
-hallucinated) results when the request states *what* to output, not just *what to
-do* — "report only the closing price value" beats "get me the BTC price."
-
-**Test voice modalities standalone first.** `python -m core.voice_input` and
-`python -m core.speech_output "..."` verify mic and speaker independently before
-`--voice`/`--speak` in a full session.
-
-**Watch `thoughts.log`, not just the console.** `scripts/format_thoughts_log.py`
-renders a readable view for a specific turn; `scripts/cost_report.py` tells you what a
-run actually cost. Several real bugs this project fixed were found this way, not by a
-failing test.
-
-**Run `prompt_harness.py` before hand-editing a prompt.**
-`python -m scripts.prompt_harness --min-count 3` mines `thoughts.log` for recurring
-failure patterns instead of guessing from a handful of anecdotal bad responses.
-
-**Run the no-LLM suites before anything else.** `backtest/test_context.py`,
-`test_active_subject.py`, `test_outbound.py`, `test_proactive.py`, `test_user_model.py`, and
-`test_conversation_bugs.py`, `test_quality_guards.py`, and `test_plan_validation.py`
-are maintained deterministic regression suites. Run them before spending a real model
-call to diagnose a change.
-
-**Don't skip the RAG dependency check.** If you see `[WinError 1114] ... c10.dll` on
-boot, that's PyTorch failing to initialize — not a code bug. Ciel disables RAG
-gracefully and keeps running.
-
----
-
-## Contributing
-
-This is currently an internal/experimental project without a formal contribution
-process. If you fork it: keep the safety-flag separation intact, prefer deterministic
-checks over trusting the Brain to "remember" a rule, and read
-[`instructionAI/conventions.md`](instructionAI/conventions.md) plus
-[`instructionAI/architecture.md`](instructionAI/architecture.md) before touching
-`core/llm_connector.py` — most of its logic exists because of a specific,
-previously-observed failure.
-
-## Acknowledgements
-
-Built on [LangChain](https://github.com/langchain-ai/langchain) /
-[LangGraph](https://github.com/langchain-ai/langgraph),
-[ChromaDB](https://github.com/chroma-core/chroma),
-[sentence-transformers](https://github.com/UKPLab/sentence-transformers),
-[FastAPI](https://github.com/tiangolo/fastapi),
-[Tauri](https://github.com/tauri-apps/tauri),
-[edge-tts](https://github.com/rany2/edge-tts), and
-[SpeechRecognition](https://github.com/Uberi/speech_recognition) — with Gemini,
-DeepSeek, and Vilao as the LLM providers exercised in production.
-
-## License / Notes
-
-No formal license is attached — this is an internal research/experimental project.
-Use at your own risk: the safety mechanisms are configurable, and the AI can perform
-real, powerful actions (sending email, running shell commands, writing/deleting files)
-when gates are open. Review `core/llm_connector.py`'s safety-gate logic before
-pointing this at any account or machine you care about.
-
-For detailed architecture and instructions aimed specifically at AI assistants working
-on this codebase, see [instructionAI/](instructionAI/) (start with `SKILL.md`).
+This repository is an experimental personal project. The operator is responsible for
+provider usage, credentials, automated messages, shell commands, filesystem changes,
+and any external actions performed through configured tools.

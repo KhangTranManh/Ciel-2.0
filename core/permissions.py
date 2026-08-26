@@ -84,6 +84,7 @@ _AUTO_TOOLS = frozenset({
     "git_status", "git_diff", "git_list_repos",
     "search_gmail", "get_gmail_message", "get_gmail_thread",
     "get_weather", "calculate", "get_current_time", "get_fact", "list_todos",
+    "list_monthly_goals", "list_weekly_plan",
     "build_market_report_html",
 })
 

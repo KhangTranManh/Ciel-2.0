@@ -108,8 +108,8 @@ AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 # answering. OFF by default, and opt-in per trigger by name: this list will grow, and a
 # default-on trigger added later would start talking without anyone choosing it.
 # Known names — A (Ciel watching itself): unfinished_task, daily_cost, repeated_failure,
-# deferred_approval | B (clock): digest, morning_digest | C (outside world, each needs its
-# threshold set below or it is silently skipped): price_alert, important_email, stale_todo.
+# deferred_approval | B (clock): digest, morning_digest, monthly_plan, weekly_plan |
+# C (outside world, each needs a threshold below): price_alert, important_email, stale_todo.
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
 PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
 # Hard ceiling on interruptions per day. Beyond it, findings still survive — they drop to
@@ -139,6 +139,22 @@ PROACTIVE_DIGEST_MINUTE = int(os.getenv("PROACTIVE_DIGEST_MINUTE", "0"))
 # The Master has evidently decided not to act on it, and repeating only teaches them to
 # ignore the channel. Muting is per finding, not per trigger.
 PROACTIVE_REPEAT_LIMIT = int(os.getenv("PROACTIVE_REPEAT_LIMIT", "4"))
+
+# --- Monthly/weekly planner --------------------------------------------------------
+# Structured plans live in one SQLite file. They are separate from conversational
+# memory and from ciel_workspace/todos.json (the immediate checklist). Planner tools
+# are always available; automatic overviews remain opt-in through PROACTIVE_TRIGGERS
+# using the names `monthly_plan` and/or `weekly_plan`.
+_planner_path = Path(os.getenv("PLANNER_DB_PATH", "ciel_data/planner.db")).expanduser()
+PLANNER_DB_PATH = (_planner_path if _planner_path.is_absolute()
+                   else Path(__file__).resolve().parent.parent / _planner_path)
+PLANNER_TIMEZONE = os.getenv("PLANNER_TIMEZONE", "Asia/Ho_Chi_Minh").strip() or "Asia/Ho_Chi_Minh"
+PLANNER_MONTHLY_DAY = int(os.getenv("PLANNER_MONTHLY_DAY", "1"))
+PLANNER_MONTHLY_HOUR = int(os.getenv("PLANNER_MONTHLY_HOUR", "8"))
+PLANNER_MONTHLY_MINUTE = int(os.getenv("PLANNER_MONTHLY_MINUTE", "0"))
+PLANNER_WEEKLY_WEEKDAY = int(os.getenv("PLANNER_WEEKLY_WEEKDAY", "0"))  # Monday=0
+PLANNER_WEEKLY_HOUR = int(os.getenv("PLANNER_WEEKLY_HOUR", "8"))
+PLANNER_WEEKLY_MINUTE = int(os.getenv("PLANNER_WEEKLY_MINUTE", "0"))
 
 # --- Tier-7 user model (see core/user_model.py) ---
 # The PUSH side of memory. facts.json is pull-only (the model must guess a key and choose
