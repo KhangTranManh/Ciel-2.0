@@ -23,3 +23,4 @@ autonomous_pipeline/*.log
 # Personal local runbook (machine-specific paths / habits)
 Run.md
 
+backtest/logs/
