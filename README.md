@@ -55,6 +55,7 @@ and notification cooldowns.
 | Memory | ChromaDB RAG, `facts.json`, `user_model.json` |
 | Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
 | Monthly/weekly planning | `core/planner_store.py`, `core/planner_triggers.py` |
+| Prompt improvement harness | `scripts/prompt_harness.py`, `scripts/harness/` |
 | Interfaces | CLI, FastAPI/WebSocket, Telegram, React/Tauri UI |
 | Tool extension | Auto-discovered `skills/**/*_ops.py` packs |
 
@@ -227,6 +228,49 @@ deliveries remain retryable.
 See [instructionAI/safety_and_risk.md](instructionAI/safety_and_risk.md) for the full
 contract.
 
+## Prompt improvement harness
+
+The harness mines recurring failures without giving either model write access to the
+repository. Deterministic attribution first records where the evidence came from,
+whether target ownership is direct or inferred, and whether an optional component is
+currently active. Brain classifies prompt vs code/config/data causes; Worker runs only
+for a supported prompt-only diagnosis. Python enforces the exact file-and-symbol
+allow-list in `scripts/harness_policy.json`.
+
+Windows Command Prompt uses the CLI-only wrapper below; no local web server or
+dashboard is required:
+
+```bat
+cd /d "D:\Program Files\Ciel 2.0\Ciel 2.0"
+
+scripts\harness_cli.cmd audit 2 14
+scripts\harness_cli.cmd targets
+scripts\harness_cli.cmd show-report
+
+scripts\harness_cli.cmd propose "<exact signature>" 2 14
+scripts\harness_cli.cmd list
+scripts\harness_cli.cmd show-candidate "candidate_YYYYMMDD_HHMMSS.json"
+
+REM Complete all-history + static-tool + unit report (no live mutations)
+scripts\harness_cli.cmd full-report
+scripts\harness_cli.cmd show-project-report
+
+scripts\harness_cli.cmd apply "candidate_YYYYMMDD_HHMMSS.json" APPLY
+```
+
+Run `scripts\harness_cli.cmd help` for the same command reference. The final `APPLY`
+word is mandatory; the wrapper accepts only a candidate filename from the harness
+temporary state directory.
+
+See [docs/prompt_harness_cmd.md](docs/prompt_harness_cmd.md) for the complete Windows
+CMD workflow, Gmail-specific finding review, candidate interpretation, and troubleshooting.
+
+Apply mode rejects stale hashes, secret-like output, new response-schema fields, and
+instructions that assume unsupported caller behavior. It changes only one module-level
+string literal and restores the original file if unit tests fail. The harness never
+edits `.env`, credentials, tokens, runtime data, arbitrary source, or Git/deployment
+state. Reports and candidate files default to the operating-system temporary directory.
+
 ## Tests
 
 ```bash
@@ -243,6 +287,7 @@ python -m backtest.test_planner
 python -m backtest.test_quality_guards
 python -m backtest.test_plan_validation
 python -m backtest.test_conversation_bugs
+python -m backtest.test_prompt_harness
 ```
 
 Keep durable tests under `backtest/test_*.py`; do not accumulate one-off smoke-test
@@ -259,6 +304,7 @@ ciel_data/          Persistent private state, RAG, logs, planner database
 ciel_workspace/     Sandboxed working files and immediate todos
 agent_output/       Generated reports and deliverables
 backtest/           Maintained regression and integration suites
+scripts/            Maintenance utilities and bounded prompt harness
 docker/             Dockerfiles, Compose files, deployment notes
 ui/                 React/Tauri interface
 instructionAI/      Stable project memory for future AI sessions

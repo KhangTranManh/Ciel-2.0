@@ -173,6 +173,42 @@ inject significant hidden prompt overhead.
 User-facing logs never print credentials, OAuth tokens, authorization headers, or full
 private `.env` values.
 
+## Prompt harness conventions
+
+`scripts/prompt_harness.py` has four explicit modes:
+
+- `audit` mines recurring signatures deterministically, records whether target ownership
+  is direct or inferred, reports the current feature state, and writes a sanitized report
+  to the operating-system temporary directory by default.
+- `targets` prints the exact `file::symbol` allow-list.
+- `propose` stops before any model call for inactive or known non-prompt targets. Brain
+  then classifies `prompt`, `code`, `configuration`, `data`, external dependency, or
+  insufficient evidence. Worker runs only for a supported prompt-only diagnosis with
+  sufficient confidence. The candidate stays outside the repository by default.
+- `apply` requires a reviewed candidate plus `--yes`; it validates source and old-value
+  hashes, replaces one AST-verified module-level string literal, runs the maintained
+  unit suite, and restores the byte-exact original source when tests fail.
+
+The allow-list lives in `scripts/harness_policy.json`. Code-level private-name and
+path blocks cannot be disabled by a custom policy. Neither model receives a patching
+tool, raw log history, environment variables, credentials, arbitrary file contents, or
+Git/deployment authority. The harness never commits a passing candidate automatically.
+The value validator rejects newly invented JSON response keys and new instructions that
+assign blocking, sending, execution, or regeneration duties to runtime callers. Such
+changes belong to reviewed code and focused contract tests.
+
+The operator interface is CLI-only. `scripts/harness_cli.cmd` provides Windows CMD
+commands for audit, target listing, report/candidate review, proposal, and explicit
+apply. It has no HTTP server, browser UI, environment viewer, Git action, or deployment
+action. Its apply command accepts only a candidate filename from the operating-system
+temporary harness directory and requires the literal confirmation word `APPLY`.
+The operator command reference lives in `docs/prompt_harness_cmd.md`; command details
+remain there instead of expanding the public README.
+`scripts\harness_cli.cmd full-report` combines all-history finding mining, prompt-target
+integrity, static AST tool inventory, and the maintained unit suite in one report under
+`agent_output/`. It never interprets static inventory as live provider verification and
+never executes external or mutating tools as part of the combined run.
+
 ## Interface conventions
 
 - All front ends call the same `AgentLoop` and `CielCore`.
@@ -234,6 +270,7 @@ High-risk changes requiring broad regression and explicit review:
 - context routing boundaries;
 - RAG collection embedding configuration;
 - planner identity/schema rules;
+- prompt-harness policy, sanitizer, apply, or rollback boundaries;
 - Docker mounts and one-writer assumptions;
 - Telegram upload sandbox behavior;
 - automatic execution of deferred work.

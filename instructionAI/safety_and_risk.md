@@ -170,6 +170,12 @@ later is less reliable than excluding it at discovery time.
 - Git tooling excludes known secret paths from automated commits.
 - Missing Gmail credentials disable Gmail capability rather than the whole assistant.
 - `UserModel` rejects secret-like content before storage and prompt injection.
+- The prompt harness sanitizes bounded evidence before Brain/Worker use, hard-blocks
+  private path/name patterns independently of its JSON allow-list, and rejects
+  secret-like candidate values before any source write. Attribution may expose a named
+  boolean feature state such as `MIDDLEWARE_ENABLED=false`, but never its source file or
+  any neighboring environment values. Inactive and non-prompt targets stop before a
+  model call; prompt candidates cannot invent caller contracts or response fields.
 - Logs and documentation never include raw keys, passwords, tokens, private `.env`
   values, or authorization headers.
 

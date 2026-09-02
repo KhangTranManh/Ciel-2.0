@@ -101,6 +101,12 @@ SUITES: list[Suite] = [
         "Deterministic multi-tool structure, dependency, schema, and duplicate-delivery checks",
     ),
     Suite(
+        "prompt_harness",
+        "backtest.test_prompt_harness",
+        "unit",
+        "Prompt value allow-list, private-data sanitize, stale hash, test rollback (0 LLM)",
+    ),
+    Suite(
         "planner",
         "backtest.test_planner",
         "unit",

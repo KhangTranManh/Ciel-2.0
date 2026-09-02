@@ -57,6 +57,12 @@ ciel_data/                     Private persistent state, logs, RAG, planner DB
 ciel_workspace/                Sandboxed working files and immediate todos
 agent_output/                  Generated deliverables
 backtest/                      Maintained regression and integration suites
+scripts/
+  prompt_harness.py            Audit/propose/apply CLI for prompt values
+  harness_cli.cmd              Windows CMD wrapper for audit/review/propose/apply
+  harness/                     Attribution, contract, sanitize, policy, model adapters, AST apply/rollback
+                               and bounded full-project report generation
+  harness_policy.json          Exact editable file::symbol allow-list
 docker/                        Image, dependencies, and separate Compose services
 ui/                            React/Tauri client
 instructionAI/                 Stable project knowledge

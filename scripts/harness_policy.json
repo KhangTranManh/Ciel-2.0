@@ -1,0 +1,25 @@
+{
+  "allowed_targets": [
+    {"file": "core/router.py", "symbol": "CIEL_ROUTER_PROMPT"},
+    {"file": "agent_system/models/brain.py", "symbol": "BRAIN_SYSTEM_PROMPT"},
+    {"file": "agent_system/models/worker.py", "symbol": "WORKER_SYSTEM_PROMPT"},
+    {"file": "agent_system/models/middleware.py", "symbol": "MIDDLEWARE_SYSTEM_PROMPT"},
+    {"file": "skills/external/gmail_ops.py", "symbol": "GMAIL_SYSTEM_PROMPT"},
+    {"file": "skills/external/github_ops.py", "symbol": "GIT_SYSTEM_PROMPT"},
+    {"file": "skills/external/trading_ops.py", "symbol": "TRADING_SYSTEM_PROMPT"},
+    {"file": "skills/external/web_agent_ops.py", "symbol": "WEB_AGENT_SYSTEM_PROMPT"},
+    {"file": "skills/internal/os_ops.py", "symbol": "OS_OPS_PROMPT"},
+    {"file": "skills/internal/system_ops.py", "symbol": "SYSTEM_OPS_PROMPT"},
+    {"file": "skills/internal/productivity_ops.py", "symbol": "PRODUCTIVITY_PROMPT"},
+    {"file": "skills/internal/report_ops.py", "symbol": "REPORT_PROMPT"},
+    {"file": "skills/internal/monthly_plan_ops.py", "symbol": "MONTHLY_PLAN_PROMPT"},
+    {"file": "skills/internal/weekly_plan_ops.py", "symbol": "WEEKLY_PLAN_PROMPT"}
+  ],
+  "blocked_path_parts": [
+    ".git", ".env", ".env.local", "credentials.json", "gmail_token.json",
+    "ciel_data", "logs", "state", "runtime", "secrets"
+  ],
+  "max_value_chars": 30000,
+  "max_growth_chars": 3000,
+  "test_command": ["{python}", "-m", "backtest.run_all", "--unit-only"]
+}

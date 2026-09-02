@@ -216,6 +216,23 @@ Living files outside this directory:
     numbers, provider incidents, and deployment events go to `note.md`; roadmap status
     goes to `improve.md`. `SKILL.md` remains the only complete file index.
 
+33. `scripts/prompt_harness.py` is deny-by-default. Brain sees only sanitized bounded
+    evidence after deterministic attribution records the source event, target relation,
+    and current feature state. Inactive/non-prompt targets stop before model calls;
+    Brain must classify a supported prompt-only cause before Worker may propose one
+    replacement value. Candidates cannot invent JSON fields or caller behavior. Apply
+    requires `--yes`, matching source/value hashes, and a passing unit suite. It never
+    edits private state, arbitrary code, Git, deployment, or more than one prompt
+    literal; failed validation restores the original source.
+
+34. The prompt-harness operator surface is CLI-only through
+    `scripts/harness_cli.cmd` or `python -m scripts.prompt_harness`. It exposes no local
+    HTTP server or dashboard. The CMD apply path accepts only a temporary-state
+    candidate filename and the explicit confirmation word `APPLY`. Its `full-report`
+    command combines all-history mining, prompt integrity, static tool inventory, and
+    maintained unit regression under `agent_output/`; live external or mutating tools
+    are listed as excluded coverage and never executed by that command.
+
 ## Safe next-work rule
 
 The next upgrade starts from the first unchecked item in `../improve.md`. Finished P0

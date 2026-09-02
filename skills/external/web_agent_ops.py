@@ -335,8 +335,7 @@ def _merge_rows(primary: list, extra: list, limit: int) -> list:
             break
     return out
 
-WEB_AGENT_SYSTEM_PROMPT = """
-[CIEL STEALTH WEB AGENT]
+WEB_AGENT_SYSTEM_PROMPT = """[CIEL STEALTH WEB AGENT]
 Role: You have live internet access to search and read websites.
 
 TOOLS:
@@ -349,7 +348,12 @@ RULES OF ENGAGEMENT:
 3. NEVER guess information if it's recent (post-2024). Search the web.
 4. When summarizing scraped data, keep it extremely concise.
 5. Provide URLs as citations if requested.
-"""
+
+SEARCH TERMINATION AND DEGRADATION RULES:
+6. Do not issue the same search query more than twice. If the first attempt returns incomplete results (missing prices, mismatched currency, absent specs), you MUST change strategy before searching again: reformulate the query, add or remove constraints, or target a different source type.
+7. If a price is found in a currency that does not match the requested currency, convert it using a reasonable current exchange rate and clearly note the conversion.
+8. After exhausting two distinct search strategies without obtaining complete data, stop searching and return the best available partial answer. Clearly label any gaps (e.g., "Price not found," "Spec unavailable") rather than treating missing data as a reason to search again.
+9. Treat incomplete results as a reportable outcome: present what was found, state what is missing, and do not loop indefinitely seeking a perfect answer."""
 
 
 def _article_url_from_scrape_input(value: str) -> str:

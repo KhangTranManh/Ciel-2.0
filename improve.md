@@ -398,6 +398,9 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | planner | unit | `backtest.test_planner` |
 | outbound | unit | `backtest.test_outbound` |
 | conversation_bugs | unit | `backtest.test_conversation_bugs` |
+| quality_guards | unit | `backtest.test_quality_guards` |
+| plan_validation | unit | `backtest.test_plan_validation` |
+| prompt_harness | unit | `backtest.test_prompt_harness` |
 | integration | live | `backtest.test_integration` |
 | hard_special | live | `backtest.test_hard_special` |
 | brain_worker | live | `backtest.test_brain_worker` |
