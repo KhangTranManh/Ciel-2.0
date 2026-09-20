@@ -20,7 +20,8 @@ Current baseline:
 - P0, P1.1, P1.4, and P1.5 pass.
 - The bounded Active Subject handoff passes.
 - The monthly/weekly planner passes unit, startup, Docker, and live Telegram delivery
-  verification.
+  verification. One-time reminders have deterministic storage/delivery unit coverage;
+  live deployment verification remains separate.
 - P1.2 formal proactive-day observation, P1.3 formal user-model evaluation, Level C,
   P2, and P3 remain roadmap work unless `improve.md` says otherwise.
 
@@ -170,8 +171,9 @@ Living files outside this directory:
     injected. `ciel_data/user_model.json` is bounded push context and rejects secret-like
     keys or values. These stores never merge.
 
-22. Durable tasks, conversational memory, and plans are distinct. Monthly goals and
-    weekly tasks live in `ciel_data/planner.db`; immediate todos remain in
+22. Durable tasks, conversational memory, plans, reminders, and todos are distinct.
+    Monthly goals, weekly tasks, and one-time reminders live in
+    `ciel_data/planner.db`; immediate unscheduled todos remain in
     `ciel_workspace/todos.json`.
 
 ### Proactivity and persistence
@@ -185,38 +187,45 @@ Living files outside this directory:
     `ciel_data/state/notify.json`; restarts do not repeat them, while failed sends remain
     retryable.
 
-25. `thoughts.log` is an immutable-format chronological audit contract. `[LLM_CALL]`
-    keeps `model=` first and space-delimited. Readers normalize CRLF; writers do not
-    redesign the format for a UI.
+25. Timed requests use `add_reminder`, never `add_todo`. Reminders store an absolute
+    UTC deadline plus display timezone and use `reminder:<id>` notification keys. They
+    become delivered only after provider success or persisted cooldown proves a prior
+    send. `reminder_due` must be named in `PROACTIVE_TRIGGERS`; otherwise creation fails
+    honestly instead of storing an undeliverable alert.
 
-26. `core/planner_store.py` is the only planner SQL boundary. SQLite writes are atomic,
+26. `thoughts.log` is an immutable-format chronological audit contract. `[LLM_CALL]`
+    keeps `model=` first and space-delimited. Readers normalize CRLF; writers do not
+    redesign the format for a UI. Trigger actions describe outcomes: delivery and digest
+    are logged, while routine cooldown suppression is not emitted on every poll.
+
+27. `core/planner_store.py` is the only planner/reminder SQL boundary. SQLite writes are atomic,
     adds are idempotent, and completion retains history.
 
 ### Deployment, testing, and documentation
 
-27. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`
+28. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`
     at a time. API and Telegram containers are alternatives until shared-state locking
     is implemented.
 
-28. Docker images copy repository source with `COPY . .`. Source, dependency, or
+29. Docker images copy repository source with `COPY . .`. Source, dependency, or
     Dockerfile changes therefore require `docker compose ... up -d --build
     --force-recreate`. `.env`, credentials, and persistent data stay bind-mounted and
     are never replaced by source deployment.
 
-29. Headless deployments disable `vision_ops` at load time through
+30. Headless deployments disable `vision_ops` at load time through
     `DISABLED_SKILL_MODULES`; runtime denial lists remain a separate control.
 
-30. Regression lives in `backtest/run_all.py` and maintained `backtest/test_*.py`
+31. Regression lives in `backtest/run_all.py` and maintained `backtest/test_*.py`
     modules. Live smokes use isolated temporary state and clean up after themselves.
 
-31. Windows PowerShell is placed in UTF-8 mode before piping Vietnamese source or
+32. Windows PowerShell is placed in UTF-8 mode before piping Vietnamese source or
     subjects to Python. If `?` reaches the tool log, corruption occurred before Ciel.
 
-32. Stable facts update the appropriate topic file in place. Dated results, benchmark
+33. Stable facts update the appropriate topic file in place. Dated results, benchmark
     numbers, provider incidents, and deployment events go to `note.md`; roadmap status
     goes to `improve.md`. `SKILL.md` remains the only complete file index.
 
-33. `scripts/prompt_harness.py` is deny-by-default. Brain sees only sanitized bounded
+34. `scripts/prompt_harness.py` is deny-by-default. Brain sees only sanitized bounded
     evidence after deterministic attribution records the source event, target relation,
     and current feature state. Inactive/non-prompt targets stop before model calls;
     Brain must classify a supported prompt-only cause before Worker may propose one
@@ -225,7 +234,7 @@ Living files outside this directory:
     edits private state, arbitrary code, Git, deployment, or more than one prompt
     literal; failed validation restores the original source.
 
-34. The prompt-harness operator surface is CLI-only through
+35. The prompt-harness operator surface is CLI-only through
     `scripts/harness_cli.cmd` or `python -m scripts.prompt_harness`. It exposes no local
     HTTP server or dashboard. The CMD apply path accepts only a temporary-state
     candidate filename and the explicit confirmation word `APPLY`. Its `full-report`

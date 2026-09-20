@@ -41,8 +41,9 @@ core/
   notifier.py                  Delivery routing, budgets, cooldowns, dedupe
   triggers.py                  Deterministic condition checks and trigger engine
   proactive_setup.py           Shared CLI/API/Telegram trigger wiring
-  planner_store.py             SQLite boundary for monthly and weekly plans
+  planner_store.py             SQLite boundary for plans and one-time reminders
   planner_triggers.py          Monthly/weekly notification generation
+  reminder_triggers.py         Due-reminder notification and delivery closure
   user_model.py                Bounded, secret-rejecting learned profile
   memory.py                    Long-term RAG storage and recall
   telegram_interface.py        Allow-list, uploads, confirmation, cancellation
@@ -90,6 +91,8 @@ flowchart TD
     TRIG --> NOTIFY[Notifier]
     PLANNER[PlannerStore] --> PTRIG[Planner triggers]
     PTRIG --> TRIG
+    PLANNER --> RTRIG[Reminder triggers]
+    RTRIG --> TRIG
     NOTIFY --> CHANNEL[CLI / Telegram / future App channel]
 ```
 
@@ -190,6 +193,10 @@ presence, daily budget, cooldown, repeat muting, and live-channel routing.
 `core/proactive_setup.py` creates the same trigger stack for CLI, API, and Telegram.
 The scheduler marks its execution thread unattended before trigger work.
 
+One-time reminders use a deterministic path: `add_reminder` persists an absolute UTC
+deadline, `reminder_due` emits `reminder:<id>`, and the row closes only after a delivery
+success or persisted notifier cooldown proves that an earlier send succeeded.
+
 ### Tier 7 — user model
 
 `UserModel` holds bounded preferences with provenance and decay. Stated traits outrank
@@ -222,18 +229,23 @@ Planning data is intentionally separate from memory:
 ```text
 Monthly goal ─┐
               ├─> ciel_data/planner.db ─> PlannerStore ─> monthly/weekly tools
-Weekly task ──┘                                  │
-                                                └─> planner triggers ─> Notifier
+Weekly task ──┤                                  │
+Reminder ─────┘                                  ├─> planner triggers ─> Notifier
+                                                └─> reminder trigger ─> Notifier
 Immediate todo ─> ciel_workspace/todos.json ────────────────┘
 ```
 
 `monthly_goals` stores high-level outcomes. `weekly_tasks` stores concrete actions and
-may reference a monthly goal. Adds use unique identities for retry idempotence;
-completion changes status and retains history.
+may reference a monthly goal. `reminders` stores one-time timed notifications separately
+from the unscheduled todo checklist. Adds use unique identities for retry idempotence;
+completion or delivery changes status and retains history.
 
 Monthly and weekly triggers are catch-up checks: once the configured local time has
 passed, they may still announce later in that period. Stable period keys prevent a
 successful message from repeating after a restart.
+
+The due-reminder trigger polls once per minute and remains retryable after a failed
+channel send. Routine cooldown suppression is not written as a repeated trigger event.
 
 ## Memory architecture
 

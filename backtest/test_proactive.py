@@ -328,8 +328,20 @@ def test_engine(tmp):
     eng2 = TriggerEngine(n, [Trigger(name="a2", check=check_a, cooldown_seconds=1.0)],
                          logger=lambda a, b, c: logged.append((a, b, c)))
     eng2.tick(T0 + 200000)
-    check("firings are written to the audit log",
-          any(x[0] == "TRIGGER" and x[1] == "fired" for x in logged))
+    check("deliveries are written to the audit log with honest semantics",
+          any(x[0] == "TRIGGER" and x[1] == "delivered" for x in logged))
+
+    quiet_logs = []
+    fixed = Trigger(name="fixed", check=lambda now: note(key="fixed"),
+                    every_seconds=300.0, cooldown_seconds=3600.0)
+    quiet_engine = TriggerEngine(
+        make_notifier(Path(tmp) / "quiet", [FakeChannel("quiet")]), [fixed],
+        logger=lambda a, b, c: quiet_logs.append((a, b, c)),
+    )
+    quiet_engine.tick(T0)
+    quiet_engine.tick(T0 + 301)
+    check("routine cooldown suppression is not logged as another firing",
+          [item[1] for item in quiet_logs] == ["delivered"], str(quiet_logs))
 
 
 def test_unfinished_task_trigger(tmp):

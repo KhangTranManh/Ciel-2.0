@@ -16,6 +16,7 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
     try:
         from core.notifier import CliChannel, Notifier, Presence, TelegramChannel
         from core.planner_triggers import build_planner_triggers
+        from core.reminder_triggers import build_reminder_triggers
         from core.triggers import TriggerEngine, build_triggers, parse_price_alerts
 
         presence = Presence(idle_threshold=config.PROACTIVE_IDLE_SECONDS) if include_cli else None
@@ -60,6 +61,11 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
             weekly_weekday=config.PLANNER_WEEKLY_WEEKDAY,
             weekly_hour=config.PLANNER_WEEKLY_HOUR,
             weekly_minute=config.PLANNER_WEEKLY_MINUTE,
+        ))
+        triggers.extend(build_reminder_triggers(
+            enabled_names=config.PROACTIVE_TRIGGERS,
+            planner_db=config.PLANNER_DB_PATH,
+            timezone_name=config.PLANNER_TIMEZONE,
         ))
         if not triggers:
             print("[Proactive] No configured trigger could be built; background notifications disabled.")

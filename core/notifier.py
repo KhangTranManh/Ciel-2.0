@@ -413,6 +413,10 @@ class Notifier:
             return True
 
     def _push_digest_locked(self, note: Notification):
+        # A due condition can be re-observed on every poll while no channel is live.
+        # Keep one current copy per stable key instead of filling the digest with the
+        # same reminder or alert dozens of times.
+        self._digest = [item for item in self._digest if item.get("key") != note.key]
         self._digest.append({
             "key": note.key, "title": note.title, "detail": note.detail,
             "action": note.action, "trigger": note.trigger, "at": note.created_at,

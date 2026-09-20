@@ -12,14 +12,15 @@ from langchain_core.tools import StructuredTool
 PRODUCTIVITY_PROMPT = """
 [PRODUCTIVITY ARMORY]
 You have tools for personal productivity, time, info lookup, calculation and file search:
-1. `add_todo`: Add a new task to the todo list.
+1. `add_todo`: Add an unscheduled task to the todo list. It does NOT notify at a time.
 2. `list_todos`: Show all current todos with status.
 3. `complete_todo`: Mark a todo as done by its ID.
 4. `get_current_time`: Get the current date and time.
 5. `get_weather`: Get current weather for a city (uses wttr.in, simple text).
 6. `calculate`: Safely evaluate math expressions (e.g. "2 + 2 * 3").
 7. `grep_in_workspace`: Search for text pattern in workspace files (like grep).
-Use these for planning, reminders, scheduling, quick research, math, and searching code/notes.
+Use these for loose planning, quick research, math, and searching code/notes.
+For an alert at a specific time or after a delay, use `add_reminder` instead of `add_todo`.
 Always confirm changes to the Master.
 """
 
@@ -69,7 +70,10 @@ def get_productivity_tools() -> dict:
         tools.append(StructuredTool.from_function(
             func=add_todo,
             name="add_todo",
-            description="Add a new task to the todo list. Use when user wants to remember or plan something to do."
+            description=(
+                "Add an unscheduled checklist task. This does NOT send a timed notification; "
+                "use add_reminder when the user asks to be alerted at a time or after a delay."
+            )
         ))
 
         def list_todos() -> str:

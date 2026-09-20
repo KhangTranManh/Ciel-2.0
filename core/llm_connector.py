@@ -630,6 +630,14 @@ class CielCore:
             "monthly_goal_id/notes/status and clear_schedule/clear_monthly_goal."
         ),
         "complete_weekly_task": "Complete a weekly task by task_id.",
+        "add_reminder": (
+            "Schedule a ONE-TIME alert. For 'in N minutes', use delay_minutes=N and "
+            "leave due_at empty. For an absolute time, use due_at ISO-8601 and optional "
+            "timezone_name. Put the reminder text in title; message is accepted only as "
+            "a compatibility alias. Never use add_todo for a timed alert."
+        ),
+        "list_reminders": "List pending reminders; optional include_closed=false.",
+        "cancel_reminder": "Cancel a pending reminder by reminder_id.",
     }
 
     # Only call the Worker to format these tools. Others are already readable.
@@ -660,6 +668,7 @@ class CielCore:
         "add_monthly_goal", "list_monthly_goals", "update_monthly_goal",
         "complete_monthly_goal", "add_weekly_task", "list_weekly_plan",
         "update_weekly_task", "complete_weekly_task",
+        "add_reminder", "list_reminders", "cancel_reminder",
     }
 
     def _log_thought(self, actor: str, action: str, content: str):

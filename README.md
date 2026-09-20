@@ -19,6 +19,7 @@ both are disabled by default and reuse one of the two standard model identities.
 - Deterministic multi-tool plan validation: **pass**.
 - Bounded Active Subject handoff for follow-up turns: **pass**.
 - Monthly and weekly planner: **unit-tested, deployed, and live-notification tested**.
+- One-time reminders: **deterministic storage/delivery regression tested**.
 - Telegram, CLI, and API/UI entry points share the same `CielCore` runtime.
 
 The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
@@ -54,7 +55,7 @@ and notification cooldowns.
 | Context and follow-ups | `core/context.py`, `core/active_subject.py` |
 | Memory | ChromaDB RAG, `facts.json`, `user_model.json` |
 | Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
-| Monthly/weekly planning | `core/planner_store.py`, `core/planner_triggers.py` |
+| Planning and reminders | `core/planner_store.py`, `core/planner_triggers.py`, `core/reminder_triggers.py` |
 | Prompt improvement harness | `scripts/prompt_harness.py`, `scripts/harness/` |
 | Interfaces | CLI, FastAPI/WebSocket, Telegram, React/Tauri UI |
 | Tool extension | Auto-discovered `skills/**/*_ops.py` packs |
@@ -180,13 +181,14 @@ The Telegram service intentionally has no HTTP health endpoint. Verify it with C
 status and the `[Telegram] Bot online` log. See [docker/README.md](docker/README.md) for
 the complete deployment contract.
 
-## Monthly and weekly planning
+## Planning and reminders
 
 Plans are durable structured data, not chat history:
 
 - Monthly outcomes: `ciel_data/planner.db::monthly_goals`
 - Weekly actions: `ciel_data/planner.db::weekly_tasks`
-- Immediate loose tasks: `ciel_workspace/todos.json`
+- One-time alerts: `ciel_data/planner.db::reminders`
+- Immediate unscheduled tasks: `ciel_workspace/todos.json`
 
 Available planner tools:
 
@@ -197,11 +199,15 @@ Available planner tools:
 | `update_monthly_goal` | `update_weekly_task` |
 | `complete_monthly_goal` | `complete_weekly_task` |
 
+Timed requests use `add_reminder`, `list_reminders`, and `cancel_reminder`. `add_todo`
+only creates an unscheduled checklist item and never promises a notification. Reminder
+text uses `title`; `message` is accepted as a compatibility alias for provider plans.
+
 Automatic summaries are opt-in:
 
 ```dotenv
 PROACTIVE_ENABLED=true
-PROACTIVE_TRIGGERS=monthly_plan,weekly_plan
+PROACTIVE_TRIGGERS=monthly_plan,weekly_plan,reminder_due
 PLANNER_TIMEZONE=Asia/Ho_Chi_Minh
 PLANNER_MONTHLY_DAY=1
 PLANNER_MONTHLY_HOUR=8
@@ -213,7 +219,9 @@ PLANNER_WEEKLY_MINUTE=0
 
 Successful deliveries use stable month/week keys in `ciel_data/state/notify.json`, so
 container restarts and repeated trigger polls do not resend the same summary. Failed
-deliveries remain retryable.
+deliveries remain retryable. Reminder keys use `reminder:<id>` and the database row is
+closed only after a successful delivery; routine cooldown polls do not flood the audit
+log.
 
 ## Safety model
 
@@ -282,6 +290,9 @@ python -m backtest.run_all --skip-exploratory
 
 # Planner-only deterministic suite
 python -m backtest.test_planner
+
+# Reminder persistence, retry, dedupe, and tool suite
+python -m backtest.test_reminders
 
 # Focused safety and routing suites
 python -m backtest.test_quality_guards

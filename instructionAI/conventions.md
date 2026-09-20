@@ -70,13 +70,17 @@ continuation, or retry. “The model should call it once” is not a valid safeg
 
 ## Planner conventions
 
-Monthly and weekly planning are separate tool packs and one storage boundary:
+Monthly planning, weekly planning, and one-time reminders use separate tool packs and
+one storage boundary:
 
 - `core/planner_store.py` owns all SQL and schema initialization.
 - `skills/internal/monthly_plan_ops.py` owns monthly goal tools.
 - `skills/internal/weekly_plan_ops.py` owns weekly task tools.
+- `skills/internal/reminder_ops.py` owns one-time reminder tools.
 - `core/planner_triggers.py` reads plans and creates notifications; it does not mutate
   plans.
+- `core/reminder_triggers.py` reads due reminders and closes them only from notifier
+  outcomes.
 
 Formats:
 
@@ -85,6 +89,11 @@ Formats:
 - Weekday: `0..6`, Monday through Sunday.
 - Local time: 24-hour `HH:MM`.
 - Status: `active`, `completed`, or `cancelled`.
+- Reminder deadline: ISO-8601; naive values are interpreted in the supplied IANA timezone
+  and stored as UTC.
+- Reminder status: `pending`, `delivered`, or `cancelled`.
+- Reminder text uses canonical argument `title`; `message` is a compatibility alias at
+  the tool boundary because provider plans may use either noun.
 
 Identity and history:
 
@@ -93,7 +102,9 @@ Identity and history:
 - Equivalent adds return the existing row rather than creating duplicates.
 - Completion updates status and keeps the record.
 - Weekly tasks may link to a monthly goal; deletion semantics use `ON DELETE SET NULL`.
-- Immediate loose todos remain in `ciel_workspace/todos.json`.
+- Equivalent reminders use case-insensitive title plus UTC deadline for idempotence.
+- Timed requests use `add_reminder`; immediate unscheduled todos remain in
+  `ciel_workspace/todos.json` and never imply a notification.
 
 ## Router and plan JSON
 
@@ -166,6 +177,10 @@ actor/action fields, and `[LLM_CALL] model=<id> in=<n> out=<n> total=<n>` order 
 stable contracts. Readers normalize CRLF; the writer format does not change for UI
 presentation.
 
+Trigger audit actions describe outcomes, not merely attempted checks. Successful sends
+log `delivered`, digest fallback logs `digested`, unusual suppression may log
+`suppressed`, and ordinary cooldown polling remains silent.
+
 Every provider call records the actual model identity and provider-reported usage when
 available. Model aliases are measured before adoption because compatible gateways may
 inject significant hidden prompt overhead.
@@ -230,7 +245,8 @@ python -m backtest.run_all --skip-exploratory
 ```
 
 Focused suites may run directly. Planner behavior belongs in
-`backtest/test_planner.py`; pure safeguards belong in the closest maintained unit suite.
+`backtest/test_planner.py`; reminder persistence and delivery behavior belongs in
+`backtest/test_reminders.py`; pure safeguards belong in the closest maintained unit suite.
 Do not add permanent `_smoke_*.py` files for one deployment event.
 
 Live tests:

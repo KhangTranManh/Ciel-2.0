@@ -113,6 +113,12 @@ SUITES: list[Suite] = [
         "SQLite monthly/weekly plans, separate tools, catch-up triggers, and dedupe",
     ),
     Suite(
+        "reminders",
+        "backtest.test_reminders",
+        "unit",
+        "SQLite one-time reminders, delivery retry/restart recovery, and quiet cooldown",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",

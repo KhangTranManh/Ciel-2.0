@@ -131,6 +131,9 @@ class Trigger:
     every_seconds: float = 300.0        # how often to look
     cooldown_seconds: float = 3600.0    # how often the SAME finding may interrupt
     enabled: bool = True
+    on_outcome: Optional[Callable[[Notification, object, float], None]] = field(
+        default=None, repr=False
+    )
     _last_run: float = field(default=0.0, repr=False)
     _errors: int = field(default=0, repr=False)
 
@@ -186,9 +189,23 @@ class TriggerEngine:
             note.trigger = note.trigger or trig.name
             outcome = self.notifier.deliver(note, now, cooldown=trig.cooldown_seconds)
             results.append((trig.name, outcome))
-            self._log("fired", f"{trig.name}: {outcome.status}"
-                               f"{' via ' + outcome.channel if outcome.channel else ''}"
-                               f"{' (' + outcome.reason + ')' if outcome.reason else ''}")
+            if trig.on_outcome is not None:
+                try:
+                    trig.on_outcome(note, outcome, now)
+                except Exception as e:
+                    self._log("outcome_error", f"{trig.name}: {type(e).__name__}: {e}")
+
+            message = (f"{trig.name}: {outcome.status}"
+                       f"{' via ' + outcome.channel if outcome.channel else ''}"
+                       f"{' (' + outcome.reason + ')' if outcome.reason else ''}")
+            if outcome.status == "delivered":
+                self._log("delivered", message)
+            elif outcome.status == "digest":
+                self._log("digested", message)
+            elif not str(outcome.reason or "").startswith("cooldown "):
+                # Cooldown is expected steady state. Logging it every poll made almost
+                # half of thoughts.log say FIRED when nothing was actually delivered.
+                self._log("suppressed", message)
         try:
             self.notifier.escalate_stale(now)
         except Exception:

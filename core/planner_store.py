@@ -14,9 +14,11 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 VALID_STATUSES = frozenset({"active", "completed", "cancelled"})
+REMINDER_STATUSES = frozenset({"pending", "delivered", "cancelled"})
 
 
 def _utc_now() -> str:
@@ -60,6 +62,33 @@ def normalize_status(value: str) -> str:
     if status not in VALID_STATUSES:
         raise ValueError("status must be active, completed, or cancelled")
     return status
+
+
+def normalize_reminder_due(value: str, timezone_name: str) -> tuple[str, str]:
+    """Return ``(UTC ISO timestamp, canonical timezone)`` for one reminder.
+
+    Naive timestamps are interpreted in ``timezone_name``. Offset-aware timestamps
+    retain their instant while the named timezone is kept for user-facing rendering.
+    Relative phrases are deliberately not parsed here; the tool converts an explicit
+    minute delay using the real wall clock before calling this storage boundary.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("due_at is required when delay_minutes is not used")
+    zone_name = str(timezone_name or "").strip()
+    if not zone_name:
+        raise ValueError("timezone cannot be empty")
+    try:
+        zone = ZoneInfo(zone_name)
+    except Exception as exc:
+        raise ValueError("timezone must be a valid IANA name, for example Asia/Ho_Chi_Minh") from exc
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("due_at must be ISO-8601, for example 2026-09-05T18:30") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=zone)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds"), zone.key
 
 
 class PlannerStore:
@@ -123,7 +152,22 @@ class PlannerStore:
                         ifnull(local_time, '')
                     );
 
-                PRAGMA user_version = 1;
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    due_at_utc TEXT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'delivered', 'cancelled')),
+                    notified_at TEXT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_reminder_identity
+                    ON reminders(lower(title), due_at_utc);
+
+                PRAGMA user_version = 2;
                 """
             )
 
@@ -359,3 +403,96 @@ class PlannerStore:
         if updated is None:  # defensive; the row was just updated in one transaction
             raise ValueError(f"weekly task #{task_id} was not found")
         return updated
+
+    # ---------------------------------------------------------------- reminders
+    def add_reminder(
+        self,
+        title: str,
+        due_at: str,
+        *,
+        timezone_name: str,
+    ) -> tuple[dict, bool]:
+        """Create one scheduled notification; identical retries are idempotent."""
+        title = self._title(title)
+        due_at_utc, zone_name = normalize_reminder_due(due_at, timezone_name)
+        stamp = _utc_now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO reminders
+                   (title, due_at_utc, timezone, status, notified_at, created_at, updated_at)
+                   VALUES (?, ?, ?, 'pending', NULL, ?, ?)""",
+                (title, due_at_utc, zone_name, stamp, stamp),
+            )
+            created = cur.rowcount == 1
+            row = conn.execute(
+                """SELECT * FROM reminders
+                   WHERE lower(title) = lower(?) AND due_at_utc = ?""",
+                (title, due_at_utc),
+            ).fetchone()
+        return self._row(row), created
+
+    def get_reminder(self, reminder_id: int) -> dict | None:
+        with self._connect() as conn:
+            return self._row(conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (int(reminder_id),)
+            ).fetchone())
+
+    def list_reminders(self, include_closed: bool = False, limit: int = 100) -> list[dict]:
+        sql = "SELECT * FROM reminders"
+        if not include_closed:
+            sql += " WHERE status = 'pending'"
+        sql += " ORDER BY status != 'pending', due_at_utc, id LIMIT ?"
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(sql, (max(1, int(limit)),)).fetchall()]
+
+    def list_due_reminders(self, now_utc: str, limit: int = 10) -> list[dict]:
+        due_at_utc, _ = normalize_reminder_due(now_utc, "UTC")
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(
+                """SELECT * FROM reminders
+                   WHERE status = 'pending' AND due_at_utc <= ?
+                   ORDER BY due_at_utc, id LIMIT ?""",
+                (due_at_utc, max(1, int(limit))),
+            ).fetchall()]
+
+    def cancel_reminder(self, reminder_id: int) -> dict:
+        reminder_id = int(reminder_id)
+        stamp = _utc_now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE reminders SET status = 'cancelled', updated_at = ?
+                   WHERE id = ? AND status = 'pending'""",
+                (stamp, reminder_id),
+            )
+            if cur.rowcount != 1:
+                current = conn.execute(
+                    "SELECT status FROM reminders WHERE id = ?", (reminder_id,)
+                ).fetchone()
+                if current is None:
+                    raise ValueError(f"reminder #{reminder_id} was not found")
+                raise ValueError(f"reminder #{reminder_id} is already {current['status']}")
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+        return self._row(row)
+
+    def mark_reminder_delivered(self, reminder_id: int, notified_at: str | None = None) -> dict:
+        """Close a reminder only after Notifier proves delivery or persisted dedupe."""
+        reminder_id = int(reminder_id)
+        delivered_at, _ = normalize_reminder_due(notified_at or _utc_now(), "UTC")
+        stamp = _utc_now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE reminders
+                   SET status = 'delivered', notified_at = ?, updated_at = ?
+                   WHERE id = ? AND status = 'pending'""",
+                (delivered_at, stamp, reminder_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"reminder #{reminder_id} was not found")
+            if cur.rowcount != 1 and row["status"] != "delivered":
+                raise ValueError(f"reminder #{reminder_id} is {row['status']}")
+        return self._row(row)

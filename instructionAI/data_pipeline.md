@@ -12,8 +12,8 @@ notification state because they have different authority and retention rules.
 | `ciel_data/facts.json` | `skills/internal/memory_ops.py` | Explicit fact vault | Never automatic; pull-only |
 | `ciel_data/user_model.json` | `core/user_model.py` | Preferences with provenance | Bounded, secret-rejecting |
 | `ciel_data/state/tasks.json` | `core/task_state.py` | Durable job lifecycle | Status path, not routing |
-| `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals and weekly actions | Through planner tools/triggers |
-| `ciel_workspace/todos.json` | productivity tools | Immediate loose checklist | Through todo tools/triggers |
+| `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals, weekly actions, and one-time reminders | Through planner/reminder tools and triggers |
+| `ciel_workspace/todos.json` | productivity tools | Immediate unscheduled checklist | Through todo tools/triggers |
 | `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |
 | `ciel_data/state/deferred.json` | `core/permissions.py` | Blocked unattended actions | Summary only; never replayed |
 | `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers |
@@ -133,7 +133,7 @@ recorded only after the tool returns.
 
 ## Planner data
 
-`PlannerStore` owns a SQLite database with two tables:
+`PlannerStore` owns a SQLite database with three tables:
 
 ```text
 monthly_goals
@@ -142,10 +142,15 @@ monthly_goals
 weekly_tasks
   id, week_start, title, weekday, local_time,
   monthly_goal_id, notes, status, created_at, updated_at
+
+reminders
+  id, title, due_at_utc, timezone, status,
+  notified_at, created_at, updated_at
 ```
 
 Monthly goals are high-level outcomes. Weekly tasks are concrete actions and may link
-to a monthly goal. Immediate todos remain a separate lightweight checklist.
+to a monthly goal. Reminders are one-time timed notifications. Immediate todos remain a
+separate lightweight unscheduled checklist.
 
 SQLite settings include foreign keys, a busy timeout, per-operation connections, and
 transactional writes. Unique indexes make equivalent retries idempotent. Completion
@@ -156,7 +161,7 @@ triggers:
 
 ```dotenv
 PROACTIVE_ENABLED=true
-PROACTIVE_TRIGGERS=monthly_plan,weekly_plan
+PROACTIVE_TRIGGERS=monthly_plan,weekly_plan,reminder_due
 ```
 
 `PLANNER_TIMEZONE`, `PLANNER_MONTHLY_*`, and `PLANNER_WEEKLY_*` define local schedule
@@ -171,7 +176,8 @@ Sunday `6`.
 2. one `Notifier` using `ciel_data/state/notify.json`;
 3. general condition triggers from `core/triggers.py`;
 4. planner triggers from `core/planner_triggers.py`;
-5. one `TriggerEngine` attached to `Scheduler`.
+5. reminder triggers from `core/reminder_triggers.py`;
+6. one `TriggerEngine` attached to `Scheduler`.
 
 The scheduler polls Python checks. A trigger returns `None` or a `Notification`; it does
 not decide delivery policy.
@@ -187,6 +193,18 @@ not decide delivery policy.
 
 Successful delivery updates state only after the channel returns success. A provider
 failure therefore remains retryable.
+
+### One-time reminder lifecycle
+
+`add_reminder` accepts either an ISO-8601 deadline or a relative `delay_minutes` value.
+The store normalizes the deadline to UTC while retaining the display timezone. If
+`reminder_due` is disabled, creation fails explicitly rather than saving an alert that
+cannot fire.
+
+The scheduler checks pending due reminders once per minute. Notification identity is
+`reminder:<id>`. The reminder becomes `delivered` only after notifier success; a failed
+send stays pending. Persisted cooldown also repairs the narrow crash window in which the
+provider succeeded but the database status update did not complete.
 
 ### Planner notification identity
 

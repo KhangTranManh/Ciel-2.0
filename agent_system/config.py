@@ -108,7 +108,8 @@ AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 # answering. OFF by default, and opt-in per trigger by name: this list will grow, and a
 # default-on trigger added later would start talking without anyone choosing it.
 # Known names — A (Ciel watching itself): unfinished_task, daily_cost, repeated_failure,
-# deferred_approval | B (clock): digest, morning_digest, monthly_plan, weekly_plan |
+# deferred_approval | B (clock): digest, morning_digest, monthly_plan, weekly_plan,
+# reminder_due |
 # C (outside world, each needs a threshold below): price_alert, important_email, stale_todo.
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
 PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
