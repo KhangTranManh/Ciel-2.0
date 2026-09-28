@@ -130,9 +130,9 @@ Living files outside this directory:
 
 12. High-risk tools and destructive write/code content pass through permissions and the
     confirmation callback. CLI, API, and Telegram each provide that callback; API and
-    Telegram absence/timeouts fail closed. Raw `CielCore` retains a legacy warning plus
-    fail-open default when no callback exists, so it is never used as a front end
-    without wiring one.
+    Telegram absence/timeouts fail closed. Raw `CielCore` with no callback also fails
+    closed: risky calls are denied and a plan needing approval is cancelled before any
+    step runs.
 
 13. An unattended run cannot inherit consent from silence, session grants, plan
     approvals, or `DISABLE_SAFETY_GATE`. Risky work becomes `DEFER`, is recorded, and is

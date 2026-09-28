@@ -1640,10 +1640,11 @@ class CielCore:
                           f"{tool_name}({args_preview})")
 
         if self.confirm_callback is None:
-            # No callback set (e.g. forgot to wire up) — auto-proceed with warning
-            self._log_thought("SAFETY", "confirm_auto_approved",
-                              "No confirm_callback set — auto-approving.")
-            return True
+            # No callback wired means nobody can be asked, and silence is never consent:
+            # a front end that forgot to set one must not auto-run a high-risk tool.
+            self._log_thought("SAFETY", "confirm_denied_no_callback",
+                              f"No confirm_callback set — denied {tool_name}.")
+            return False
 
         try:
             approved = self.confirm_callback(tool_name, preview, tool_args)
@@ -2542,8 +2543,16 @@ class CielCore:
             return (f"[CANCELLED] This plan needs {', '.join(sorted(set(denied)))}, which "
                     f"is on the deny list, Master. Nothing was run.")
 
-        if not asked or self.confirm_callback is None:
-            return ""       # nothing to approve, or no UI to ask through (per-call gate still applies)
+        if not asked:
+            return ""       # nothing to approve
+
+        if self.confirm_callback is None:
+            # Cancel the whole plan up front rather than letting the safe steps run and
+            # the per-call gate deny the risky one halfway through.
+            self._log_thought("SAFETY", "plan_denied_no_callback", f"steps needing approval: {asked}")
+            return (f"[CANCELLED] This plan needs your approval for "
+                    f"{', '.join(sorted(set(asked)))}, but no confirmation channel is "
+                    f"connected, Master. Nothing was run.")
 
         lines = ["This plan needs your approval before anything runs:", ""]
         for i, t in enumerate(tools or [], 1):

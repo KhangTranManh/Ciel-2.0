@@ -64,9 +64,11 @@ confirm_callback(tool_name, preview, tool_args) -> bool
 - API uses a WebSocket `confirm_request`/`confirm_response` exchange.
 - Telegram uses an inline Yes/No keyboard restricted to the configured chat ID.
 
-API and Telegram fail closed when the client disappears or times out. The raw
-`CielCore` compatibility path still warns and auto-approves when no callback exists;
-therefore a new front end must always set one and must not rely on the raw default.
+API and Telegram fail closed when the client disappears or times out. Raw `CielCore`
+with no callback also fails closed: each risky call is denied
+(`confirm_denied_no_callback`), and a plan containing a step that needs approval is
+cancelled before its first step (`plan_denied_no_callback`). A new front end must wire a
+callback before it can run any high-risk tool.
 
 ## Unattended ceiling
 
