@@ -10,7 +10,7 @@ ciel_data/gmail_token.json
 ciel_data/logs/thoughts_view.md
 ciel_data/logs/thoughts_view.jsonl
 ciel_data/
-ciel_workspace/screenshots/
+ciel_workspace/
 ciel_output/
 
 # Secrets & runtime state — untracked July 9, 2026 (were committed before the ignore
