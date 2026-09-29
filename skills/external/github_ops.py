@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from pathlib import Path
 from langchain_core.tools import StructuredTool
 
@@ -27,7 +28,7 @@ Role: You are "Ciel-Git", a Version Control module.
 2. NEVER call `git_confirm_push` unless the Master explicitly says "yes", "confirm", "go ahead", "do it", or similar approval.
 3. When showing git status or diff, format the output clearly with sections for staged, unstaged, and untracked files.
 4. If `git_commit_and_push` reports sensitive files were excluded, ALWAYS tell the Master which files were excluded and why.
-5. For `git_list_repos`, default search_path to "D:/" if the Master doesn't specify a path.
+5. For any git tool, use the path from the [WORKING DIRECTORY] note unless the Master names another. Only call `git_list_repos` when that note says it is not a git repository, and never scan "/" or a whole drive.
 
 [OUTPUT FORMAT]
 * **Branch:** current branch name
@@ -128,7 +129,7 @@ def get_github_tools() -> dict:
         # TOOL 1: git_list_repos
         # ======================
         def git_list_repos(search_path: str) -> dict:
-            """Scan a directory to discover all Git repositories. Searches deeply. Optimized for D:\\ drive."""
+            """Scan a directory to discover Git repositories (skips system trees, stops after 20s)."""
             search = Path(search_path)
             if not search.exists():
                 return _make_result(False, code="PATH_NOT_FOUND",
@@ -147,8 +148,14 @@ def get_github_tools() -> dict:
                 ".git", "dist", "build", ".next", "target"
             }
 
+            # Virtual/device trees: /proc/<pid>/root links back to "/", so descending
+            # into them loops until the depth cap and never finishes in practice.
+            skip_roots = {"/proc", "/sys", "/dev", "/run", "/snap"}
+
             repos = []
             max_repos = 50  # Safety cap
+            deadline = time.monotonic() + 20
+            timed_out = []
 
             def scan(directory: Path, depth: int = 0, max_depth: int = 8):
                 """Recursively scan for .git directories."""
@@ -158,9 +165,12 @@ def get_github_tools() -> dict:
                     for entry in directory.iterdir():
                         if len(repos) >= max_repos:
                             return
-                        if not entry.is_dir():
+                        if time.monotonic() > deadline:
+                            timed_out.append(True)
+                            return
+                        if entry.is_symlink() or not entry.is_dir():
                             continue
-                        if entry.name in skip_dirs:
+                        if entry.name in skip_dirs or entry.as_posix() in skip_roots:
                             continue
 
                         # Found a git repo!
@@ -204,14 +214,16 @@ def get_github_tools() -> dict:
             else:
                 scan(search)
 
+            partial = " (scan stopped after 20s — results may be incomplete; name a narrower path)" \
+                if timed_out else ""
             if not repos:
                 return _make_result(True, data={
-                    "message": f"No Git repositories found under '{search_path}'.",
+                    "message": f"No Git repositories found under '{search_path}'{partial}.",
                     "repos": []
                 }, tool_name="git_list_repos")
 
             # Format results
-            lines = [f"Found {len(repos)} Git repo(s) under '{search_path}':\n"]
+            lines = [f"Found {len(repos)} Git repo(s) under '{search_path}'{partial}:\n"]
             for i, repo in enumerate(repos, 1):
                 lines.append(f"  {i}. {repo['path']}")
                 lines.append(f"     Branch: {repo['branch']} | Remote: {repo['remote']}")

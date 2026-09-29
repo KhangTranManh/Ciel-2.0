@@ -203,6 +203,55 @@ def test_telegram_upload_write_block():
     check("write blocked with SKIPPED", "SKIPPED" in (out or "") or "không ghi đè" in (out or "").lower(), (out or "")[:120])
 
 
+def test_shell_allowlist_matches_host_os():
+    print("\n[7] Shell allowlist follows the host OS (Linux container ≠ Windows)")
+    from skills.internal import os_ops
+
+    original = os_ops.SAFE_COMMANDS
+    try:
+        os_ops.SAFE_COMMANDS = os_ops._POSIX_COMMANDS
+        v = os_ops._validate_shell_command
+        check("linux: which/cat/ls/git are allowed",
+              all(v(c) is None for c in ("which git", "cat /repo/README.md", "ls -la", "git -C /repo log --oneline -10")))
+        check("linux: a pipe between allowed commands is fine", v("git log --oneline | head -5") is None)
+        check("linux: windows-only commands are not offered",
+              v("where git") and v("where git")[0] == "NOT_ALLOWLISTED")
+        check("linux: package installs stay blocked",
+              v("apt-get install -y git")[0] == "NOT_ALLOWLISTED" and v("sudo ls")[0] == "NOT_ALLOWLISTED")
+        check("linux: chaining is still rejected", v("git status && ls")[0] == "UNSAFE_OPERATOR")
+        check("linux: find cannot delete or exec",
+              v("find / -name x -delete")[0] == "BLOCKED_COMMAND"
+              and v("find . -exec ls {} +")[0] == "BLOCKED_COMMAND")
+        os_ops.SAFE_COMMANDS = os_ops._WINDOWS_COMMANDS
+        check("windows: the original list is unchanged",
+              v("where git") is None and v("ipconfig") is None and v("cat x")[0] == "NOT_ALLOWLISTED")
+    finally:
+        os_ops.SAFE_COMMANDS = original
+
+    prompt = os_ops.get_os_tools()["prompt"]
+    check("prompt tells the model which shell it is on", os_ops.HOST_SHELL in prompt, prompt[-300:])
+
+
+def test_git_list_repos_bounded():
+    print("\n[8] git_list_repos finds repos without walking into link loops")
+    import tempfile
+    from skills.external.github_ops import get_github_tools
+
+    tool = next(t for t in get_github_tools()["tools"] if t.name == "git_list_repos")
+    with tempfile.TemporaryDirectory() as root:
+        base = Path(root)
+        (base / "proj" / ".git").mkdir(parents=True)
+        (base / "deep" / "a").mkdir(parents=True)
+        try:
+            os.symlink(base, base / "deep" / "a" / "loop", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pass
+        result = tool.func(str(base))
+        repos = (result.get("data") or {}).get("repos") or []
+        check("finds the repository", any(r["path"].endswith("proj") for r in repos), str(result)[:200])
+        check("does not report the repo again through the link loop", len(repos) == 1, str(repos))
+
+
 def main():
     print("=" * 72)
     print("QUALITY GUARDS (unit — former smoke coverage)")
@@ -213,6 +262,8 @@ def main():
     test_gmail_format_digest()
     test_analysis_html_builder()
     test_telegram_upload_write_block()
+    test_shell_allowlist_matches_host_os()
+    test_git_list_repos_bounded()
     total = _passed + len(_failed)
     print("\n" + "=" * 72)
     print(f"RESULT: {_passed}/{total} passed")

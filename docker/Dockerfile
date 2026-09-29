@@ -7,10 +7,14 @@ FROM python:3.13-slim AS base
 # build-essential: some deps (chromadb's sqlite extensions) need a compiler if
 # no prebuilt wheel matches the image's platform.
 # curl: used by the container HEALTHCHECK to hit /health.
+# git: git tools read the host checkout mounted read-only at /repo; it is owned by
+# the host user, so it must be marked safe or git refuses to open it as root.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
-    && rm -rf /var/lib/apt/lists/*
+        git \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory /repo
 
 WORKDIR /app
 

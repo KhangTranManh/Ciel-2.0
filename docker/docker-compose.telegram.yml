@@ -23,8 +23,13 @@ services:
       disable: true
     env_file:
       - ../.env
+    # Git tools use the host checkout (the image itself has no .git). Read-only,
+    # so Ciel can inspect status/diff/log but cannot commit or push from here.
+    environment:
+      - CIEL_REPO_PATH=/repo
     volumes:
       - ../ciel_data:/app/ciel_data
       - ../agent_output:/app/agent_output
       - ../ciel_workspace:/app/ciel_workspace
       - ../credentials.json:/app/credentials.json:ro
+      - ..:/repo:ro

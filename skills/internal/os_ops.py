@@ -34,7 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 SCREENSHOT_DIR = BASE_DIR / "ciel_workspace" / "screenshots"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-SAFE_COMMANDS = {
+_WINDOWS_COMMANDS = {
     # Basic info
     "echo", "dir", "type", "whoami", "hostname", "ver", "cls", "where",
     # Networking
@@ -52,7 +52,23 @@ SAFE_COMMANDS = {
     "start", "taskkill",
 }
 
+# The Docker deployment runs Linux; offering the Windows list there made the
+# model retry `where`/`winget` and never reach `which`/`cat`.
+_POSIX_COMMANDS = {
+    "echo", "whoami", "hostname", "id", "uname", "uptime", "date", "pwd", "cd",
+    "ls", "cat", "head", "tail", "grep", "wc", "stat", "file", "find", "sort", "tree",
+    "which", "df", "du", "free", "ps",
+    "ping", "curl", "nslookup",
+    "python", "python3", "pip", "git", "node", "npm", "npx",
+}
+
+IS_WINDOWS = os.name == "nt"
+SAFE_COMMANDS = _WINDOWS_COMMANDS if IS_WINDOWS else _POSIX_COMMANDS
+HOST_SHELL = "Windows cmd.exe" if IS_WINDOWS else "Linux /bin/sh"
+
 BLOCKED_COMMAND_PATTERNS = [
+    r"\s-delete\b",
+    r"\s-exec(?:dir)?\b",
     r"\bformat\b",
     r"\bdel\b",
     r"\berase\b",
@@ -152,7 +168,7 @@ def get_os_tools() -> dict:
         tools.append(StructuredTool.from_function(
             func=execute_shell_command, 
             name="execute_shell_command", 
-            description="Execute a CMD, PowerShell, or Bash command on the host OS and return the output. YOU MUST USE THIS TOOL when the Master asks to run a system command, ping, check IP, or interact with the OS."
+            description=f"Execute one allowlisted {HOST_SHELL} command on the host and return the output. YOU MUST USE THIS TOOL when the Master asks to run a system command, ping, check IP, or interact with the OS."
         ))
 
         # 2. Chụp ảnh màn hình (Thị giác)
@@ -193,7 +209,13 @@ def get_os_tools() -> dict:
             description="Open a file, folder, or application executable on the host machine. YOU MUST USE THIS TOOL when the Master asks to open an app, launch a program, or open a specific folder."
         ))
 
-        return {"tools": tools, "prompt": OS_OPS_PROMPT}
+        host_rules = (
+            f"3. HOST SHELL: {HOST_SHELL}. Use only commands for this OS. Allowed: "
+            f"{', '.join(sorted(SAFE_COMMANDS))}. One command per call (a single | pipe is "
+            f"fine); &&, ||, ;, >, <, and backticks are always rejected. Installing packages "
+            f"(apt-get, winget, sudo) is not possible from this tool.\n"
+        )
+        return {"tools": tools, "prompt": OS_OPS_PROMPT + host_rules}
 
     except Exception as e:
         print(f"[Ciel System Error] Failed to arm OS toolkit: {e}")

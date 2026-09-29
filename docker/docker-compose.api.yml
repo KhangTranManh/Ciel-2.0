@@ -9,7 +9,11 @@ services:
       - "${CIEL_PORT:-8000}:8000"
     env_file:
       - ../.env
+    # Read-only host checkout for git tools (the image itself has no .git).
+    environment:
+      - CIEL_REPO_PATH=/repo
     volumes:
+      - ..:/repo:ro
       # Persistent runtime state — facts.json, chat memory, vector_memory,
       # gmail_token.json, thoughts.log, task/deferred stores. Without this the
       # container starts clean (and forgets everything) on every rebuild. Also

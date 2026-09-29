@@ -4091,7 +4091,9 @@ RULES:
             # non-deterministically, for the very same request (observed both live).
             # P_CRITICAL: dropping this brings back a wrong-path failure, so it outranks
             # everything except the request itself.
-            _cwd = self.base_dir.resolve()
+            # In Docker the image has no .git; CIEL_REPO_PATH names the read-only
+            # host checkout mounted for git tools.
+            _cwd = Path(os.getenv("CIEL_REPO_PATH") or self.base_dir).resolve()
             ctx.add("cwd",
                     f"[WORKING DIRECTORY: {_cwd} — "
                     f"{'a git repository' if (_cwd / '.git').exists() else 'not a git repository'}. "

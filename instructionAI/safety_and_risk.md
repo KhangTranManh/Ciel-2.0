@@ -132,6 +132,13 @@ canonical string. Stronger models may paraphrase placeholders.
 File tools operate under `ciel_workspace/` and, for generated outputs,
 `agent_output/`. Resolved paths escaping those roots raise `PermissionError`.
 
+Docker images contain no `.git`. Compose mounts the host checkout read-only at `/repo`
+and sets `CIEL_REPO_PATH=/repo`, which becomes the `[WORKING DIRECTORY]` note, so git
+tools can read status, diff, and log but cannot commit or push from a container. The
+shell allowlist is chosen by host OS: Windows keeps its cmd list, Linux gets read-only
+POSIX commands. Package installs (`apt-get`, `winget`, `sudo`) are never allowlisted;
+system packages belong in the Dockerfile.
+
 Linux containers can receive Windows-style paths from model prompts. Remapping accepts
 only paths containing a recognized sandbox segment and maps the suffix to the current
 host/container root. Arbitrary drive paths remain rejected.
