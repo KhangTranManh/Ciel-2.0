@@ -271,13 +271,45 @@ def test_stale_send_status():
           repr(messy))
 
 
+def test_markdown_email_render():
+    print("\n[7] Markdown in an email body renders as HTML, not raw pipes")
+    from core.outbound import plaintext_to_html as render
+
+    # Shape of the body delivered live on 2026-09-29.
+    body = ("Chào chị Nga,\n\nGửi chị bảng giá vàng miếng SJC 999.9 hôm nay:\n\n"
+            "| | Giá (nghìn đồng/chỉ) |\n|---|--:|\n| **Mua vào** | 13.950 |\n| **Bán ra** | 14.250 |\n\n"
+            "## Yếu tố ảnh hưởng\n\n- Chênh lệch trong nước – thế giới\n- Nhu cầu <mua> tăng\n\n"
+            "1. Theo dõi thêm\n2. Cân nhắc thời điểm\n\n---\n\nTrân trọng.")
+    out = render(body)
+    check("table becomes an HTML table", "<table" in out and out.count("<tr") == 3, out)
+    check("no raw separator row survives", "|---" not in out and "--:" not in out, out)
+    check("no raw pipes survive", "|" not in out, out)
+    check("header cells render as th", "<th" in out and "Giá (nghìn đồng/chỉ)" in out, out)
+    check("right-aligned column honours the separator", "text-align:right\">13.950" in out, out)
+    check("bold inside a cell renders", "<strong>Mua vào</strong>" in out, out)
+    check("heading renders without hashes", "##" not in out and "Yếu tố ảnh hưởng" in out, out)
+    check("bullets become a ul", "<ul" in out and out.count("<li") == 4, out)
+    check("numbered items become an ol", "<ol" in out, out)
+    check("horizontal rule renders", "<hr" in out, out)
+    check("user text is still escaped", "&lt;mua&gt;" in out and "<mua>" not in out, out)
+    check("plain paragraphs keep line breaks",
+          "Chào chị Nga," in render("Chào chị Nga,\nDòng hai.") and
+          "<br>" in render("Chào chị Nga,\nDòng hai."))
+    check("a single pipe line is not mistaken for a table",
+          "<table" not in render("Giá | Mua | Bán"))
+    already = "<p>already html</p>"
+    check("existing HTML passes through untouched", render(already) == already)
+    check("empty body is safe", render("") == "")
+
+
 def main():
     print("=" * 72)
     print("OUTBOUND IDEMPOTENCE SUITE (tool layer stubbed — nothing is sent)")
     print("=" * 72)
     for fn in (test_key_shapes, test_duplicate_suppressed,
                test_direct_success_clears_matching_pending_action, test_scope,
-               test_failure_is_retryable, test_html_and_reply, test_stale_send_status):
+               test_failure_is_retryable, test_html_and_reply, test_stale_send_status,
+               test_markdown_email_render):
         fn()
 
     print("\n" + "=" * 72)
