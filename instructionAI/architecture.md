@@ -39,6 +39,8 @@ core/
   active_subject.py            Compact RAM-only subject passed to Brain
   recovery_manager.py          Tool-error repair strategies
   notifier.py                  Delivery routing, budgets, cooldowns, dedupe
+  outbound.py                  Delivery keys, recipient normalization, Markdown→HTML email
+  redact.py                    Masks tokens/keys in text leaving the process
   triggers.py                  Deterministic condition checks and trigger engine
   proactive_setup.py           Shared CLI/API/Telegram trigger wiring
   planner_store.py             SQLite boundary for plans and one-time reminders
@@ -64,8 +66,12 @@ scripts/
   harness/                     Attribution, contract, sanitize, policy, model adapters, AST apply/rollback
                                and bounded full-project report generation
   harness_policy.json          Exact editable file::symbol allow-list
-docker/                        Image, dependencies, and separate Compose services
-ui/                            React/Tauri client
+docker/                        Image (with git), dependencies, separate Compose services;
+                               host checkout mounted read-only at /repo
+ciel_app/                      Flutter client (Android, iOS, Windows, macOS, web)
+  lib/core/                    protocol, endpoints, socket, REST client, settings
+  lib/state/                   CielController (all app state), local chat history
+  lib/features/                chat, confirm, skills, vitals, settings, voice
 instructionAI/                 Stable project knowledge
 ```
 
@@ -115,7 +121,10 @@ flowchart TD
 10. Tool results are checked for deterministic failure signals. Recovery may retry or
     select another loaded tool within bounded attempts.
 11. Worker composes the final response from the real request and grounded results.
-    Recent turns are available here, on the response side only.
+    Recent turns are available here, on the response side only. When the plan ends in
+    a send or deferred write, data steps skip per-step formatting and one synthesis
+    reads their raw results; the send runs after synthesis, and its status line is
+    built from the provider result plus a Gmail re-check, not from model prose.
 12. The final response updates chat memory, optional user-model learning, and the
     Active Subject snapshot once.
 
@@ -266,11 +275,13 @@ See `data_pipeline.md` for data ownership and lifecycle.
 `main.py` provides interactive confirmation, Ctrl+C cancellation, optional STT/TTS,
 and a live CLI presence channel for proactive messages.
 
-### API/UI
+### API and Flutter app
 
-`main_api.py` exposes REST and WebSocket endpoints. Confirmation uses a bounded
-request/response exchange and fails closed when no client is attached or the response
-times out.
+`main_api.py` exposes REST and WebSocket endpoints for the Flutter app in `ciel_app/`.
+Confirmation uses a bounded request/response exchange and fails closed when no client is
+attached, the request cannot be delivered, or the response times out. `CIEL_API_TOKEN`
+guards every route except `/health`. The app chooses its server and token at runtime,
+so one build serves a local, LAN, or VPS backend. See `voice_and_interface.md`.
 
 ### Telegram
 
@@ -292,3 +303,8 @@ Important constraints:
   health signals.
 - API and Telegram must not write the same state concurrently.
 - Headless containers disable `vision_ops` unless a real display stack is supplied.
+- The image has no `.git`; the host checkout is mounted read-only at `/repo` with
+  `CIEL_REPO_PATH=/repo`, and the image installs `git` for it. Editing the Dockerfile's
+  `apt-get` layer invalidates every later layer, so that rebuild reinstalls PyTorch and
+  takes several minutes; code-only rebuilds reuse the cached layers.
+- The container shell is Linux, so `os_ops` offers the POSIX allowlist there.

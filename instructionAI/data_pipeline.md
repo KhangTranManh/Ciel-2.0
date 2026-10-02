@@ -16,7 +16,9 @@ notification state because they have different authority and retention rules.
 | `ciel_workspace/todos.json` | productivity tools | Immediate unscheduled checklist | Through todo tools/triggers |
 | `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |
 | `ciel_data/state/deferred.json` | `core/permissions.py` | Blocked unattended actions | Summary only; never replayed |
-| `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers |
+| `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers; streamed to API clients only when `CIEL_API_STREAM_THOUGHTS=true` |
+| `ciel_data/gmail_token.json` | `skills/external/gmail_ops.py` | Gmail OAuth access/refresh token | Never; replaced by re-authorizing when it expires |
+| App chat history (device) | `ciel_app` `ChatHistoryStore` | Last 200 turns for display on that device | Never sent back as context |
 
 ## Per-turn context flow
 

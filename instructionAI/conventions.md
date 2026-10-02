@@ -233,6 +233,11 @@ never executes external or mutating tools as part of the combined run.
 - Telegram checks the chat allow-list before routing.
 - UI tool lists come from `GET /skills`; front-end capability lists are not hardcoded.
 - Text-to-speech uses the backend normalizer; the persona is not simplified for voice.
+- The Flutter app (`ciel_app/`) mirrors the wire protocol in `lib/core/protocol.dart`;
+  a backend frame change updates that file and `test/protocol_test.dart` together.
+  Only `CielSocket` touches `/ws`; screens use `CielController`.
+- Server address and API token are runtime settings in a client, never build constants.
+- Error text that leaves the process goes through `core/redact.redact_secrets`.
 
 ## Testing conventions
 
@@ -246,8 +251,15 @@ python -m backtest.run_all --skip-exploratory
 
 Focused suites may run directly. Planner behavior belongs in
 `backtest/test_planner.py`; reminder persistence and delivery behavior belongs in
-`backtest/test_reminders.py`; pure safeguards belong in the closest maintained unit suite.
-Do not add permanent `_smoke_*.py` files for one deployment event.
+`backtest/test_reminders.py`; email rendering, send confirmation, and dedupe belong in
+`backtest/test_outbound.py`; API token checks belong in `backtest/test_api_auth.py`
+(FastAPI `TestClient` without entering its context, so Ciel never starts); pure
+safeguards belong in the closest maintained unit suite. Do not add permanent
+`_smoke_*.py` files for one deployment event.
+
+The Flutter app is checked with `flutter analyze` and `flutter test` in `ciel_app/`
+(fake transport and HTTP client, no network). `ciel_app/test_live/` runs the app's real
+socket and REST code against a running API and is not part of `flutter test`.
 
 Live tests:
 
@@ -289,7 +301,11 @@ High-risk changes requiring broad regression and explicit review:
 - prompt-harness policy, sanitizer, apply, or rollback boundaries;
 - Docker mounts and one-writer assumptions;
 - Telegram upload sandbox behavior;
-- automatic execution of deferred work.
+- automatic execution of deferred work;
+- `main_api.py` auth middleware, WebSocket token check, and confirm callback;
+- `core/redact.py` patterns and the places that call it;
+- the per-step `_skip_format` path and `_email_delivery_note` send confirmation;
+- the shell allowlist (`os_ops.SAFE_COMMANDS`, `BLOCKED_COMMAND_PATTERNS`).
 
 ## Known operational gotchas
 
@@ -302,3 +318,15 @@ High-risk changes requiring broad regression and explicit review:
   configuration must both carry the key when primary search is required.
 - Headless Docker cannot load screen vision reliably; disable `vision_ops` there.
 - PowerShell pipelines require explicit UTF-8 before passing Vietnamese text to Python.
+- A Gmail `invalid_grant` at startup leaves Ciel running with 0 Gmail tools; the fix is a
+  new `ciel_data/gmail_token.json`, not a new `credentials.json` (see
+  `safety_and_risk.md`).
+- Packages cannot be installed from Ciel's shell tool; add them to the Dockerfile.
+  Installing inside a running container is lost at the next recreate.
+- Changing the Dockerfile `apt-get` layer forces a multi-minute rebuild (PyTorch
+  reinstalls); code-only changes rebuild from cache in seconds plus image export.
+- Self-healing rewrites tool arguments even when the failure is environmental (e.g.
+  `git: not found`), and the user sees only the last attempt's error. Check
+  `thoughts.log` `HEALING/DETECT_ERROR` for the first, real error.
+- Async API handlers must not do blocking file or subprocess work; the vitals loop once
+  read the whole multi-MB `thoughts.log` every 2 s per client and stalled confirm frames.

@@ -252,6 +252,54 @@ def test_git_list_repos_bounded():
         check("does not report the repo again through the link loop", len(repos) == 1, str(repos))
 
 
+def test_secrets_never_leave_in_errors():
+    print("\n[9] Credentials are masked in logs, tool results and replies")
+    import contextlib
+    import io
+    import requests
+    from core.redact import redact_secrets
+    from core import telegram_interface
+    from skills.external import telegram_ops
+
+    token = "1234567890:AAFakeTokenForUnitTestsOnly_abcdefghijklmno"
+    url_error = (f"HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "
+                 f"with url: /bot{token}/getUpdates (Caused by NameResolutionError)")
+    saved = {k: os.environ.get(k) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "SOME_API_KEY")}
+    os.environ.update(TELEGRAM_BOT_TOKEN=token, TELEGRAM_CHAT_ID="42", SOME_API_KEY="sk-unit-test-secret-value")
+    original_post = requests.post
+    try:
+        check("a token inside a Bot API URL is masked",
+              token not in redact_secrets(url_error) and "/bot***/getUpdates" in redact_secrets(url_error))
+        check("a bare token is masked even without its env var",
+              "AAFakeToken" not in redact_secrets(f"bad token {token}".replace("1234567890", "9876543210")))
+        check("any *_KEY env value is masked",
+              "sk-unit-test-secret-value" not in redact_secrets("auth failed: sk-unit-test-secret-value"))
+        check("ordinary text and chat ids are untouched",
+              redact_secrets("chat_id=6505479419 ok") == "chat_id=6505479419 ok")
+        check("None and empty are safe", redact_secrets(None) == "" and redact_secrets("") == "")
+
+        def failing_post(url, *a, **k):
+            raise requests.exceptions.ConnectionError(f"Max retries exceeded with url: {url}")
+
+        requests.post = failing_post
+        ok, detail = telegram_ops.send_telegram_message("hi", return_detail=True)
+        check("send_telegram tool result hides the token", not ok and token not in detail, detail)
+
+        bot = telegram_interface.TelegramInterface(ciel_agent=None)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            bot._send_message("hello")
+        check("container log line hides the token",
+              "send failed" in printed.getvalue() and token not in printed.getvalue(), printed.getvalue())
+    finally:
+        requests.post = original_post
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def main():
     print("=" * 72)
     print("QUALITY GUARDS (unit — former smoke coverage)")
@@ -264,6 +312,7 @@ def main():
     test_telegram_upload_write_block()
     test_shell_allowlist_matches_host_os()
     test_git_list_repos_bounded()
+    test_secrets_never_leave_in_errors()
     total = _passed + len(_failed)
     print("\n" + "=" * 72)
     print(f"RESULT: {_passed}/{total} passed")

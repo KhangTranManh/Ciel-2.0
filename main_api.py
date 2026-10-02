@@ -2,12 +2,14 @@ import os
 import sys
 import json
 import asyncio
+import secrets
 import threading
 import traceback
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 
 import langchain
@@ -15,6 +17,7 @@ from langchain_core.globals import set_verbose, set_debug
 from core.agent_loop import AgentLoop
 from core.scheduler import CielScheduler
 from core.proactive_setup import setup_proactive
+from core.redact import redact_secrets
 
 langchain.debug = False
 langchain.verbose = False
@@ -22,6 +25,39 @@ set_debug(False)
 set_verbose(False)
 
 app = FastAPI(title="Ciel API", description="Ciel 2.0 WebSocket Backend")
+
+# Clients on other devices reach this API over the network, and it can run shell
+# commands and send email — so when CIEL_API_TOKEN is set, every route except
+# /health requires it. Unset keeps the old open behaviour for localhost-only use.
+API_TOKEN = os.getenv("CIEL_API_TOKEN", "").strip()
+# Raw thoughts.log lines carry full prompts and email bodies; no shipped client
+# renders them, so they are only streamed when explicitly enabled.
+STREAM_THOUGHTS = os.getenv("CIEL_API_STREAM_THOUGHTS", "false").strip().lower() in ("1", "true", "yes")
+WS_UNAUTHORIZED = 4401
+
+
+def _bearer(value: str | None) -> str | None:
+    if value and value.lower().startswith("bearer "):
+        return value[7:].strip()
+    return None
+
+
+def token_ok(candidate: str | None) -> bool:
+    if not API_TOKEN:
+        return True
+    return bool(candidate) and secrets.compare_digest(candidate, API_TOKEN)
+
+
+# Registered before CORS so CORS stays outermost and a 401 still carries CORS
+# headers — otherwise a browser client reports a CORS error instead of "unauthorized".
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path == "/health":
+        return await call_next(request)
+    if not token_ok(_bearer(request.headers.get("authorization"))):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +75,7 @@ thoughts_log_path = Path(__file__).resolve().parent / "ciel_data" / "logs" / "th
 @app.get("/health")
 async def health():
     """Liveness/readiness probe for the UI to poll before opening the WebSocket."""
-    return {"status": "ok", "ready": ciel_agent is not None}
+    return {"status": "ok", "ready": ciel_agent is not None, "auth_required": bool(API_TOKEN)}
 
 
 @app.get("/skills")
@@ -91,11 +127,16 @@ _confirm_event = threading.Event()
 _confirm_result = {"approved": False}
 _confirm_ws = None       # Active WebSocket for sending confirm requests
 _confirm_lock = None     # asyncio.Lock for WebSocket sends
+_main_loop = None        # server event loop; the confirm callback runs on a worker thread
 
 @app.on_event("startup")
 async def startup_event():
-    global ciel_agent
+    global ciel_agent, _main_loop
+    _main_loop = asyncio.get_running_loop()
     print("[API] Initializing Ciel Core...")
+    if not API_TOKEN:
+        print("[API Security] CIEL_API_TOKEN is not set — anyone who can reach this port "
+              "can control Ciel. Set it before exposing the API beyond localhost.")
     try:
         scheduler = CielScheduler()
         ciel_agent = AgentLoop()
@@ -144,12 +185,14 @@ async def startup_event():
                     except Exception as e:
                         print(f"[API Safety] Failed to send confirm request: {e}")
 
+            # This runs on an executor thread, which has no event loop of its own:
+            # asyncio.get_event_loop() raised here and the old handler approved the
+            # action. Use the server loop captured at startup, and fail closed.
             try:
-                loop = asyncio.get_event_loop()
-                asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
+                asyncio.run_coroutine_threadsafe(_send(), _main_loop).result(timeout=5)
             except Exception as e:
-                print(f"[API Safety] Error scheduling confirm send: {e}")
-                return True  # Auto-approve on send failure
+                print(f"[API Safety] Could not deliver confirm request ({e}) — denying {tool_name}.")
+                return False
 
             # Block this thread until Flutter replies (max 60s)
             approved = _confirm_event.wait(timeout=60)
@@ -210,37 +253,47 @@ async def tail_thoughts_log(websocket: WebSocket, send_lock: asyncio.Lock):
     except Exception as e:
         print(f"[API Error in tail_thoughts_log] {e}")
 
+def _read_gpu_memory() -> tuple[float, float]:
+    """(used_gb, total_gb) from nvidia-smi, or (0, 0) when there is no NVIDIA GPU."""
+    import subprocess
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,nounits,noheader"],
+            text=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        used, total = map(float, output.strip().splitlines()[0].split(','))
+        return round(used / 1024, 1), round(total / 1024, 1)
+    except Exception:
+        return 0.0, 0.0
+
+
+def _thoughts_log_tail(max_bytes: int = 16384) -> str:
+    """Last few KB of thoughts.log. The file grows to many MB; reading it whole every
+    2s per client blocked the event loop and delayed every WebSocket frame."""
+    try:
+        with open(thoughts_log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - max_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
     """Periodically checks system vitals and active tools and sends to frontend."""
-    import subprocess
-    import time
-    
     try:
         while True:
             await asyncio.sleep(2)
-            
-            # 1. Real VRAM via nvidia-smi
-            vram_used = 0.0
-            vram_total = 12.0
-            try:
-                output = subprocess.check_output(
-                    ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,nounits,noheader"],
-                    text=True, creationflags=subprocess.CREATE_NO_WINDOW
-                )
-                used, total = map(float, output.strip().split(','))
-                vram_used = round(used / 1024, 1)
-                vram_total = round(total / 1024, 1)
-            except Exception:
-                vram_used = 3.2 # Fallback mock
-                
+
+            # 1. GPU memory, off the event loop (nvidia-smi takes ~1s).
+            vram_used, vram_total = await asyncio.to_thread(_read_gpu_memory)
+
             # 2. Which loaded skills fired recently — DYNAMIC from the skills manifest,
             #    so any new skill lights up automatically without editing this file.
             skills_activity = []
             try:
-                recent = ""
-                if thoughts_log_path.exists():
-                    with open(thoughts_log_path, "r", encoding="utf-8") as f:
-                        recent = "".join(f.readlines()[-40:]).lower()
+                recent = (await asyncio.to_thread(_thoughts_log_tail)).lower()
                 manifest = ciel_agent.core.tool_manager.get_skills_manifest() if ciel_agent else []
                 for skill in manifest:
                     tool_names = [t["name"].lower() for t in skill.get("tools", [])]
@@ -318,7 +371,7 @@ async def run_agent_in_background(user_input: str, websocket: WebSocket, send_lo
             except Exception:
                 pass
     except Exception as e:
-        error_msg = f"Ciel crashed during processing: {str(e)}"
+        error_msg = f"Ciel crashed during processing: {redact_secrets(e)}"
         async with send_lock:
             try:
                 await websocket.send_json({
@@ -333,14 +386,19 @@ async def run_agent_in_background(user_input: str, websocket: WebSocket, send_lo
 async def websocket_endpoint(websocket: WebSocket):
     global _confirm_ws, _confirm_lock
     await websocket.accept()
+    # Browsers cannot set headers on a WebSocket, so the token may also arrive as ?token=.
+    supplied = websocket.query_params.get("token") or _bearer(websocket.headers.get("authorization"))
+    if not token_ok(supplied):
+        await websocket.send_json({"type": "error", "data": "unauthorized"})
+        await websocket.close(code=WS_UNAUTHORIZED)
+        return
     print("[API] New client connected via WebSocket.")
-    
+
     send_lock = asyncio.Lock()
     _confirm_ws = websocket
     _confirm_lock = send_lock
-    
-    # Start the log tailer as a background task for this connection
-    tail_task = asyncio.create_task(tail_thoughts_log(websocket, send_lock))
+
+    tail_task = asyncio.create_task(tail_thoughts_log(websocket, send_lock)) if STREAM_THOUGHTS else None
     vitals_task = asyncio.create_task(broadcast_vitals(websocket, send_lock))
     
     try:
@@ -396,7 +454,8 @@ async def websocket_endpoint(websocket: WebSocket):
         if _confirm_ws == websocket:
             _confirm_ws = None
             _confirm_lock = None
-        tail_task.cancel()
+        if tail_task:
+            tail_task.cancel()
         vitals_task.cancel()
 
 if __name__ == "__main__":

@@ -19,7 +19,8 @@ ciel_data/
 agent_output/
 ciel_workspace/
 backtest/logs/
-ui/node_modules/
+# The Flutter client is built separately; its build/ and .dart_tool/ caches are large.
+ciel_app/
 
 .env
 credentials.json

@@ -15,6 +15,7 @@ import requests
 from pathlib import Path
 from colorama import Fore, Style
 
+from core.redact import redact_secrets
 from skills.internal.system_ops import WORKSPACE_DIR
 
 API_ROOT = "https://api.telegram.org/bot{token}/{method}"
@@ -64,7 +65,7 @@ class TelegramInterface:
             try:
                 self._call("sendMessage", **params)
             except Exception as e:
-                print(Fore.RED + f"[Telegram] send failed: {e}" + Style.RESET_ALL)
+                print(Fore.RED + f"[Telegram] send failed: {redact_secrets(e)}" + Style.RESET_ALL)
 
     def _send_typing(self):
         try:
@@ -95,7 +96,7 @@ class TelegramInterface:
             dest.write_bytes(resp.content)
             return dest
         except Exception as e:
-            print(Fore.RED + f"[Telegram] file download failed: {e}" + Style.RESET_ALL)
+            print(Fore.RED + f"[Telegram] file download failed: {redact_secrets(e)}" + Style.RESET_ALL)
             return None
 
     # ---------- confirm_callback wired into CielCore ----------
@@ -130,7 +131,7 @@ class TelegramInterface:
             try:
                 data = self._call("getUpdates", offset=self._offset, timeout=LONG_POLL_TIMEOUT)
             except Exception as e:
-                print(Fore.RED + f"[Telegram] poll error: {e}" + Style.RESET_ALL)
+                print(Fore.RED + f"[Telegram] poll error: {redact_secrets(e)}" + Style.RESET_ALL)
                 time.sleep(3)
                 continue
 
@@ -139,7 +140,7 @@ class TelegramInterface:
                 try:
                     self._handle_update(update)
                 except Exception as e:
-                    print(Fore.RED + f"[Telegram] update handling error: {e}" + Style.RESET_ALL)
+                    print(Fore.RED + f"[Telegram] update handling error: {redact_secrets(e)}" + Style.RESET_ALL)
 
     def _handle_update(self, update: dict):
         if "callback_query" in update:
@@ -226,7 +227,7 @@ class TelegramInterface:
             try:
                 response = self.ciel.run_step(text)
             except Exception as e:
-                response = f"[Ciel Fatal] {e}"
+                response = f"[Ciel Fatal] {redact_secrets(e)}"
             # The attachment and its caption are already visible in this chat. Do not
             # repost the synthesized report as a second message below it.
             if getattr(self.ciel.core, "_telegram_delivery_sent_this_turn", False):

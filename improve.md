@@ -19,12 +19,12 @@
 ## Hand-off: what every AI must understand
 
 ### What Ciel is
-- Personal multi-tool agent: files, shell, Gmail, Telegram, trading, web, optional vision/UI.
+- Personal multi-tool agent: files, shell, Gmail, Telegram, trading, web, optional vision, Flutter app.
 - Pipeline: **Brain (route/plan/evaluate) → Worker (compose/format)** + `ToolManager`
   skills. Optional Middleware code is retained but disabled; the maintained deployment
   uses two model identities.
 - **Seven capability tiers** (loop, task state, permissions, context, cancel, proactive, user model): decisions in **deterministic Python**; LLM only plans/composes. See `instructionAI/architecture.md`.
-- Entry: `main.py` (CLI), `main_api.py` (UI), `main_telegram.py` — all via `AgentLoop` / `CielCore`.
+- Entry: `main.py` (CLI), `main_api.py` (Flutter app in `ciel_app/`), `main_telegram.py` — all via `AgentLoop` / `CielCore`.
 
 ### Non-negotiables (detail in `instructionAI/SKILL.md`)
 - Do not break `thoughts.log` format.
@@ -86,7 +86,7 @@ Open at least:
 - Pass date: **2026-08-06**
 
 ### Level C — Portable / hybrid-local ready
-- [ ] Level B  
+- [x] Level B (2026-08-06)  
 - [ ] Minimal `.env` documented (providers, models, keys, base URLs)  
 - [ ] New machine: clone + env + unit `run_all` PASS + 5 live smokes  
 - [ ] If local model: ≥20/20 Brain route JSON parse + live suites not mass-red  
@@ -166,11 +166,16 @@ JSON, tool-use, and live-suite gates above; never declare Level C from a chat-on
 
 ---
 
-### P1.2 — Proactive (useful, not noisy)
-- [ ] Digest/alerts/stale todos: cooldown, budget, safe unattended.  
-- [ ] **Test:** `test_proactive`  
-- [ ] **Pass when:** suite PASS + one real day without spam.  
-- Pass date: ________
+### P1.2 — Proactive (useful, not noisy) — **DONE**
+- [x] Digest/alerts/stale todos: cooldown, budget, safe unattended.  
+- [x] **Test:** `test_proactive`  
+- [x] **Pass when:** suite PASS + one real day without spam.  
+- **Verified:** `test_proactive` 149/149 (2026-10-02). VPS `thoughts.log` 2026-09-06 →
+  2026-10-02: `weekly_plan` delivered once each Monday (09-07, 09-14, 09-21, 09-28),
+  two `reminder_due` deliveries (09-05), no duplicate sends and no per-poll cooldown
+  noise. (The per-poll `TRIGGER FIRED … suppressed` spam seen 08-26 → 09-05 stopped with
+  the quiet-cooldown change.)
+- Pass date: **2026-10-02**
 
 **Planner foundation (implemented 2026-08-26):** monthly goals and weekly actions use
 separate SQLite tables and separate auto-discovered tool packs; immediate todos remain
@@ -179,11 +184,12 @@ use the persistent Notifier key/cooldown path. `backtest.test_planner` is 32/32.
 does not close P1.2 by itself: the existing pass bar still requires a real day without
 spam.
 
-### P1.3 — User model
-- [ ] Preferences only; never inject secrets into `user_model`.  
-- [ ] **Test:** `test_user_model`  
-- [ ] **Pass when:** suite PASS.  
-- Pass date: ________
+### P1.3 — User model — **DONE**
+- [x] Preferences only; never inject secrets into `user_model`.  
+- [x] **Test:** `test_user_model`  
+- [x] **Pass when:** suite PASS.  
+- **Verified:** `test_user_model` 108/108 in `run_all --unit-only` (2026-10-02).
+- Pass date: **2026-10-02**
 
 ### P1.4 — Middleware — **DONE**
 
@@ -274,6 +280,30 @@ No new HTML tool yet; no auto-analyze without user ask; unattended auto-send off
 
 ---
 
+## Open findings (from the 2026-09-29 VPS log review)
+
+Not yet fixed; each needs a focused test before it is closed.
+
+- [ ] **Parallel Gmail reads** fail with `SSL record layer failure`: `search_gmail` /
+  `get_gmail_message` / `get_gmail_thread` are in `core/parallel.py`'s parallel-safe set
+  but share one `googleapiclient` HTTP connection, which is not thread-safe.
+- [ ] **Self-healing hides the real error**: network/SSL, `not found`, and allowlist
+  errors are retried with rewritten args, and only the last error reaches the Master
+  (`git: not found` was reported as "used a full path"). Extend
+  `_HEALING_SKIP_PATTERNS`.
+- [ ] **Failed step feeds the next**: `{prev}` injected `No emails found.` as a Gmail
+  message id, then healing invented ids. Stop a dependent step when its source failed or
+  was empty (`_resolve_step_refs`).
+- [ ] **Silent capability loss**: a tool pack that fails to load at startup (e.g. Gmail
+  `invalid_grant`) should notify the Master on Telegram.
+- [ ] **Proactive messages in the app**: `main_api.py` does not publish notifier output
+  over the WebSocket, so the Flutter app never sees weekly plans or reminders.
+- [ ] **API + Telegram on one host**: the one-writer rule forces a choice; run the
+  Telegram poller inside the API process before deploying the app against the VPS.
+- [ ] **Search quality**: Vietnamese price/news queries return Facebook/TikTok pages.
+- [ ] **Cost**: Brain averages ~14.6k input tokens per routing call (~22k tokens per
+  request); the tool list is the main contributor.
+
 ## P2 — Personal coworker (not IDE agent)
 
 ### P2.1 — Repo-light (only when Master asks)
@@ -331,7 +361,7 @@ No new HTML tool yet; no auto-analyze without user ask; unattended auto-send off
 ## Daily OK checklist (print)
 
 ```
-[x] unit run_all 5/5
+[x] unit run_all 12/12
 [x] live run_all --skip-exploratory full green
 [x] 20/20 Brain JSON parse
 [x] 3 emails: Message Id, no path, no placeholder, no double-send
@@ -352,6 +382,8 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 |------|------|----------------|-------|--------|-------|
 | 2026-08-03 | Baseline | provider-configured | unit 5/5; live 2/4 | Unit OK; hard 15/16; rag partial | improve.md + run_all created |
 | 2026-08-03 | Handoff | — | — | — | Moved into repo; linked from instructionAI/SKILL.md for AI continuity |
+| 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
+| 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
 | 2026-08-03 | P0.1 RAG | provider-configured | smoke + full test diagnose | partial→fix | Self-match ate top-k; over-fetch RAG; shell memory fallback; smoke: Python+Rust OK |
 | 2026-08-04 | P0.1 RAG retest | provider-configured | test_rag_memory full | OPERATIONAL | Python+Rust+Falcon PASS; archive/recall PASS; Brain used get_fact |
 | 2026-08-04 | P0.1 run_all | provider-configured | run_all --skip-exploratory | **9/9 PASS** | unit+live full green; hard 16/16; rag OPERATIONAL; note: gateway 408 once mid hard_special but suite recovered |
@@ -367,10 +399,13 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-08-25 | Active subject handoff | Brain + Worker | unit 8/8 suites; subject 8/8; exact two-turn live smoke | **PASS** | RAM-only grounded topic/entities/action reaches Brain before routing; 15-minute/3-turn expiry; laptop price/used follow-up routed `multi_tool`. |
 | 2026-08-26 | Monthly/weekly planner foundation | Brain + Worker | planner 32/32; unit 9/9; startup wiring smoke | **PASS (foundation)** | Separate monthly/weekly tools over planner.db; JSON todos unchanged; deterministic catch-up triggers and persistent delivery dedupe shared by CLI/Telegram/API. P1.2 still needs a real-day no-spam observation. |
 | 2026-08-27 | Planner VPS delivery smoke | Brain + Worker | planner 32/32 in container; isolated 302s Telegram run | **PASS (deployment smoke)** | Rebuilt/recreated Telegram; one weekly message delivered and repeated polls suppressed using temporary DB/state. Production data unchanged. This is not the formal P1.2 real-day observation. |
-
-| 2026-08-03 | P0.1 Special 7 | sol/luna/5.5 | Special 7 smoke | PASS | Check accepts agent_output OR ciel_workspace fib; require fib_results.txt |
-| 2026-08-03 | P0.1 start | — | hard Special 7 check | in progress | Accept fib under agent_output/ OR ciel_workspace/; require fib_results.txt |
-|  |  |  |  |  |  |
+| 2026-09-29 | Gmail outage (ops) | — | VPS container log | **fixed** | Refresh token expired/revoked (`invalid_grant`) → `gmail_ops` loaded 0 tools and email silently failed. New `gmail_token.json` authorized locally and uploaded; container restarted; 9 Gmail tools loaded. OAuth app should be published (Testing tokens expire in 7 days). |
+| 2026-09-29 | Email Markdown → HTML | Brain + Worker | `test_outbound` 53/53; unit 11/11 | **PASS** | `plaintext_to_html` renders tables (with alignment), headings, lists, rules; a live email to an external recipient had shown raw `|---|` rows. Deployed `dd60899`. |
+| 2026-09-29 | Git on the VPS | Brain + Worker | `quality_guards` 34/34; unit 11/11; live `git -C /repo log` | **PASS** | Image installs git; host checkout mounted read-only at `/repo` (`CIEL_REPO_PATH`); `git_list_repos` no longer loops through `/proc` (scan of `/` hung 8+ min); shell allowlist follows host OS. Deployed `83a5634`. |
+| 2026-10-02 | Verified email send claim | Brain + Worker | `test_outbound` 64/64; unit 11/11 | **PASS** | Data steps of a send plan skip per-step Worker formatting (it wrote “Đã gửi” before the send; seen live 2026-09-29 when the Master then denied the send). Reply now opens with ✅/⚠️/❌ from the Message Id plus a Gmail fetch-back. Deployed `360bc52`. |
+| 2026-10-02 | Secret redaction | — | `quality_guards` 41/41 | **PASS** | Telegram poll errors had printed the bot token (inside the request URL) into the container log 6×. `core/redact.py` masks it and any secret-named env value in logs, tool results, and API/Telegram error replies. Rotate the bot token. |
+| 2026-10-02 | API hardening + Flutter app | Brain + Worker | `api_auth` 13/13; unit 12/12; Flutter analyze clean, 26/26 tests, web build; live app↔API check | **PASS** | API confirm callback had auto-approved every risky action (`get_event_loop()` raised on the executor thread → `return True`); now fails closed. `CIEL_API_TOKEN` on HTTP + WebSocket; raw thought frames opt-in; vitals loop no longer reads the 12 MB log per tick. React/Tauri `ui/` replaced by Flutter `ciel_app/` (Android/iOS/Windows/macOS/web, runtime server + token). |
+| 2026-10-02 | P1.2 + P1.3 | — | `test_proactive` 149/149; `test_user_model` 108/108; VPS log review | **PASS** | See P1.2/P1.3 evidence above. |
 
 ---
 
@@ -383,7 +418,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | How to change code safely | `instructionAI/conventions.md` | — |
 | Safety / unattended / outbound | `instructionAI/safety_and_risk.md` | `core/permissions.py`, `llm_connector` |
 | Memory / user model / cost | `instructionAI/data_pipeline.md` | — |
-| UI / voice | `instructionAI/voice_and_interface.md` | — |
+| App / API / voice | `instructionAI/voice_and_interface.md` | `ciel_app/README.md`, `main_api.py` |
 | **What to upgrade next** | **`improve.md` (this file)** | `backtest/run_all.py` |
 | Dated live status (optional) | `note.md` | not required for hand-off |
 
@@ -401,6 +436,8 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | quality_guards | unit | `backtest.test_quality_guards` |
 | plan_validation | unit | `backtest.test_plan_validation` |
 | prompt_harness | unit | `backtest.test_prompt_harness` |
+| reminders | unit | `backtest.test_reminders` |
+| api_auth | unit | `backtest.test_api_auth` |
 | integration | live | `backtest.test_integration` |
 | hard_special | live | `backtest.test_hard_special` |
 | brain_worker | live | `backtest.test_brain_worker` |

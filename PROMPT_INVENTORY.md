@@ -31,9 +31,12 @@ USER input
   │                        then [Brain] SELF_CORRECTION_PROMPT (evaluate)
   ├─ action = code ....... [Worker]  task + code_guardrail             → script
   ├─ action = multi_tool . tools run → [Worker] persona + format_task(multi, big RULES)
+  │                        (plans ending in a send/write skip the per-step format_task;
+  │                         the multi synthesis reads raw step results)
   │
   ├─ email send .......... [Worker] body_task → body; outbound sanitize;
-  │                        [Middleware] MIDDLEWARE_SYSTEM_PROMPT (review) if enabled
+  │                        [Middleware] MIDDLEWARE_SYSTEM_PROMPT (review) if enabled;
+  │                        status line built in code (_email_delivery_note), not by a prompt
   │
   ├─ tool error .......... [Worker] recovery fix_task / syntax_task (self-healing)
   └─ RAG recall .......... [Worker] compress prompt (only if recalled context is large)
@@ -117,6 +120,13 @@ in the project. So these ~10 detailed manuals are inert: the Brain's actual tool
 comes from `_tool_list_str` (`_TOOL_HINTS` + tool docstrings + arg schemas) instead.
 
 This is the same dead-weight/drift class as the legacy `persona/` fragments (removed July 9).
+
+**Still true 2026-10-02.** The host-shell rules appended to `OS_OPS_PROMPT` and the
+"use the [WORKING DIRECTORY] path" rule in `GIT_SYSTEM_PROMPT` (added 2026-09-29) are
+therefore inert. What actually steers the model there: the `execute_shell_command`
+description ("Execute one allowlisted Linux /bin/sh command…", within the 80-char cut),
+the `NOT_ALLOWLISTED` error that lists the allowed commands, and the
+`[WORKING DIRECTORY: /repo …]` context note.
 
 **Investigated July 9, 2026 (empirical):**
 - What the Brain actually sees per tool = `name` + `tool.description[:80]` (truncated!) + arg schema, plus `_TOOL_HINTS` overrides. `_TOOL_HINTS` (`core/llm_connector.py:227`) currently has exactly **one** entry (`search_gmail`), so 43/44 tools ride on an 80-char docstring snippet + arg names.

@@ -3,6 +3,8 @@ from pathlib import Path
 import requests
 from langchain_core.tools import StructuredTool
 
+from core.redact import redact_secrets
+
 TELEGRAM_SYSTEM_PROMPT = """
 [TELEGRAM NOTIFICATION ARMORY]
 You possess tools to message the Master via Telegram.
@@ -48,9 +50,9 @@ def send_telegram_message(message: str, *, return_detail: bool = False):
                 mid = (data.get("result") or {}).get("message_id", "?")
                 return True, f"ok message_id={mid}"
             desc = data.get("description") or response.text[:200]
-            return False, f"HTTP {response.status_code}: {desc}"
+            return False, redact_secrets(f"HTTP {response.status_code}: {desc}")
         except Exception as e:
-            return False, f"exception: {e}"
+            return False, f"exception: {redact_secrets(e)}"
 
     ok, detail = _post({"chat_id": chat_id, "text": text})
     if not ok:
@@ -117,10 +119,10 @@ def send_telegram_document(filepath: str, caption: str = "", *, return_detail: b
             mid = (body.get("result") or {}).get("message_id", "?")
             return (True, f"ok document message_id={mid} file={resolved.name}") if return_detail else True
         desc = body.get("description") or response.text[:200]
-        detail = f"HTTP {response.status_code}: {desc}"
+        detail = redact_secrets(f"HTTP {response.status_code}: {desc}")
         return (False, detail) if return_detail else False
     except Exception as e:
-        detail = f"exception: {e}"
+        detail = f"exception: {redact_secrets(e)}"
         return (False, detail) if return_detail else False
 
 

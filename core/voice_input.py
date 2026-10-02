@@ -1,7 +1,7 @@
 """Speech-to-text for the CLI (main.py) — the first voice test on the Python side.
 
-Mirrors the UI's "voice seam" idea (ui/src/io/input/VoiceInput.tsx): capture speech,
-turn it into text, then feed that text into the SAME pipeline the keyboard uses
+Same "voice seam" idea as the app's voice button (ciel_app/lib/features/voice/): capture
+speech, turn it into text, then feed that text into the SAME pipeline the keyboard uses
 (`AgentLoop.run_step`). Nothing downstream of the transcript knows or cares that the
 input arrived by voice.
 

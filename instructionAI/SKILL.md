@@ -20,10 +20,12 @@ Current baseline:
 - P0, P1.1, P1.4, and P1.5 pass.
 - The bounded Active Subject handoff passes.
 - The monthly/weekly planner passes unit, startup, Docker, and live Telegram delivery
-  verification. One-time reminders have deterministic storage/delivery unit coverage;
-  live deployment verification remains separate.
-- P1.2 formal proactive-day observation, P1.3 formal user-model evaluation, Level C,
-  P2, and P3 remain roadmap work unless `improve.md` says otherwise.
+  verification. One-time reminders have deterministic storage/delivery unit coverage
+  and were delivered live on the VPS.
+- P1.2 (proactive, real-day observation on the VPS) and P1.3 (user-model suite) pass.
+  Level C, P2, and P3 remain roadmap work unless `improve.md` says otherwise.
+- The Flutter app in `../ciel_app/` is the only graphical client; the React/Tauri `ui/`
+  was removed.
 
 The standard verification command is:
 
@@ -53,7 +55,7 @@ or compose within those boundaries.
 Entry points:
 
 - `main.py` — CLI and optional voice.
-- `main_api.py` — FastAPI, WebSocket, TTS, and the React/Tauri backend.
+- `main_api.py` — FastAPI, WebSocket, and TTS backend for the Flutter app (`ciel_app/`).
 - `main_telegram.py` — allow-listed Telegram long polling.
 
 All three use `core.agent_loop.AgentLoop` and `core.llm_connector.CielCore`.
@@ -76,8 +78,9 @@ Living files outside this directory:
 | File | Responsibility |
 |---|---|
 | `../README.md` | Public overview, setup, operation, and concise project map |
+| `../ciel_app/README.md` | Flutter client: build, server/token settings, tests |
 | `../improve.md` | Roadmap, pass criteria, and upgrade journal |
-| `../note.md` | Dated provider, deployment, and operational observations |
+| `../note.md` | Dated provider, deployment, and operational observations (optional; not in every checkout — when absent, dated entries go to the `improve.md` upgrade journal) |
 | `../backtest/run_all.py` | Unified maintained regression runner |
 
 ## Critical rules
@@ -115,6 +118,11 @@ Living files outside this directory:
 
 8. Real external data is gathered before composing claims, emails, or reports. Undated
    search results remain undated. “Sent” is stated only after a real provider success.
+   In a plan that ends in a send or deferred write, data steps return raw evidence
+   (`execute_tool(_skip_format=True)`) instead of a per-step Worker reply, because that
+   reply saw the whole request and narrated “Đã gửi” before the send ran. After a Gmail
+   send, `_email_delivery_note` fetches the message back by its Message Id and the reply
+   opens with ✅ (re-checked), ⚠️ (accepted but not found), or ❌ (declined/failed).
 
 9. `_self_correct()` replaces a working result only when the corrective attempt is not
    deterministically failed. Guards constrain bad outcomes without disabling recovery
@@ -132,7 +140,8 @@ Living files outside this directory:
     confirmation callback. CLI, API, and Telegram each provide that callback; API and
     Telegram absence/timeouts fail closed. Raw `CielCore` with no callback also fails
     closed: risky calls are denied and a plan needing approval is cancelled before any
-    step runs.
+    step runs. The API callback runs on an executor thread and must use the event loop
+    captured at startup; a confirm request that cannot be delivered is a denial.
 
 13. An unattended run cannot inherit consent from silence, session grants, plan
     approvals, or `DISABLE_SAFETY_GATE`. Risky work becomes `DEFER`, is recorded, and is
@@ -241,6 +250,34 @@ Living files outside this directory:
     command combines all-history mining, prompt integrity, static tool inventory, and
     maintained unit regression under `agent_output/`; live external or mutating tools
     are listed as excluded coverage and never executed by that command.
+
+### Remote clients, secrets, and the container shell
+
+36. When `CIEL_API_TOKEN` is set, every API route except `/health` requires it
+    (`Authorization: Bearer`, or `?token=` on `/ws`); a bad WebSocket token gets an
+    `unauthorized` error frame and close code 4401, which clients treat as final. An API
+    reachable from another device must have the token and, beyond the LAN, HTTPS.
+    Raw `thought` frames are sent only with `CIEL_API_STREAM_THOUGHTS=true`.
+
+37. Text that leaves the process — container log lines, tool results, API `error`
+    frames, Telegram replies — passes through `core/redact.redact_secrets`. Exceptions
+    from `requests` embed the request URL, and the Telegram Bot API puts the bot token
+    in that URL.
+
+38. Outbound Gmail bodies are rendered from Markdown to inline-styled HTML by
+    `core/outbound.plaintext_to_html` (tables, headings, lists, rules, bold). Bodies that
+    already contain HTML pass through unchanged.
+
+39. Docker images contain no `.git`. Compose mounts the host checkout read-only at
+    `/repo` and sets `CIEL_REPO_PATH`, which becomes the `[WORKING DIRECTORY]` note for
+    git tools. `git_list_repos` skips `/proc`, `/sys`, `/dev`, does not follow symlinks,
+    and stops after 20 s. The shell allowlist follows the host OS (`os_ops.SAFE_COMMANDS`);
+    package installs are never allowlisted and belong in the Dockerfile.
+
+40. Per-skill `*_PROMPT` strings returned by tool packs are collected but not sent to any
+    model (`ToolManager.get_dynamic_prompt` is unused). Behaviour the model must know
+    belongs in the tool name/description (first 80 characters reach the Brain), in
+    `_TOOL_HINTS`, in deterministic tool errors, or in the router prompt.
 
 ## Safe next-work rule
 

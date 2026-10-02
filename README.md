@@ -20,7 +20,11 @@ both are disabled by default and reuse one of the two standard model identities.
 - Bounded Active Subject handoff for follow-up turns: **pass**.
 - Monthly and weekly planner: **unit-tested, deployed, and live-notification tested**.
 - One-time reminders: **deterministic storage/delivery regression tested**.
-- Telegram, CLI, and API/UI entry points share the same `CielCore` runtime.
+- Proactivity (P1.2) and user model (P1.3): **pass** — weekly plans delivered every
+  Monday since 2026-09-07 on the VPS with no repeat or cooldown spam.
+- Email: Markdown tables/headings/lists render as HTML; Ciel reports "sent" only after
+  Gmail returns a Message Id **and** the message is fetched back by that id.
+- Telegram, CLI, and the Flutter app (via the API) share the same `CielCore` runtime.
 
 The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
 engineering rules live in [instructionAI/SKILL.md](instructionAI/SKILL.md).
@@ -57,7 +61,7 @@ and notification cooldowns.
 | Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
 | Planning and reminders | `core/planner_store.py`, `core/planner_triggers.py`, `core/reminder_triggers.py` |
 | Prompt improvement harness | `scripts/prompt_harness.py`, `scripts/harness/` |
-| Interfaces | CLI, FastAPI/WebSocket, Telegram, React/Tauri UI |
+| Interfaces | CLI, FastAPI/WebSocket, Telegram, Flutter app (`ciel_app/`) |
 | Tool extension | Auto-discovered `skills/**/*_ops.py` packs |
 
 ## Requirements
@@ -119,6 +123,9 @@ TELEGRAM_CHAT_ID=<numeric-chat-id>
 
 # Disable capabilities unavailable on a headless server
 DISABLED_SKILL_MODULES=vision_ops
+
+# Required before the API is reachable from another device (Flutter app)
+CIEL_API_TOKEN=<long-random-string>
 ```
 
 `CODER_MODEL` is the Worker model variable. `WORKER_MODEL` is not read from `.env`.
@@ -134,16 +141,20 @@ python main.py
 python main.py --voice --speak
 ```
 
-### API and UI
+### API and app
 
 ```bash
 python main_api.py
-cd ui
-npm install
-npm run dev
+cd ciel_app
+flutter run -d chrome        # or windows / macos / an Android or iOS device
 ```
 
-The backend exposes `GET /health`, `GET /skills`, `POST /tts`, and `WS /ws`.
+The Flutter app in `ciel_app/` is the only graphical client (it replaced the
+React/Tauri `ui/`). The backend exposes `GET /health`, `GET /skills`, `POST /tts`, and
+`WS /ws`. Set `CIEL_API_TOKEN` in `.env` before the API is reachable from any other
+device; every route except `/health` then requires it (`Authorization: Bearer …`, or
+`?token=` on the WebSocket). The app's server address and token are set in its
+Settings screen. See [ciel_app/README.md](ciel_app/README.md).
 
 ### Telegram
 
@@ -168,6 +179,10 @@ docker compose -f docker/docker-compose.telegram.yml up -d --build
 The services share bind-mounted `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
 Run only one Ciel front end against that state at a time; the current JSON/SQLite state
 is designed for one process.
+
+The image contains no `.git`. Compose mounts the host checkout read-only at `/repo` and
+sets `CIEL_REPO_PATH=/repo`, so git tools can show status, diff, and log on the server
+but cannot commit or push from the container.
 
 For every source, dependency, or Dockerfile change, rebuild and recreate:
 
@@ -229,8 +244,14 @@ log.
 - `DISABLE_SAFETY_GATE` controls destructive-tool confirmation only.
 - Unknown or malformed multi-tool plans stop before execution.
 - Risky unattended actions are deferred; silence is never consent.
-- Outbound sends are deduplicated per recipient and turn.
+- Outbound sends are deduplicated per recipient and turn; an email is reported as sent
+  only after Gmail confirms it.
 - File tools are sandboxed to `ciel_workspace/` and `agent_output/`.
+- The API requires `CIEL_API_TOKEN` (when set) on every route except `/health`, and
+  denies any risky action whose confirmation cannot be delivered.
+- Error text leaving the process (container log, tool results, API/Telegram replies)
+  passes through `core/redact.py`, which masks the Telegram bot token and any
+  `*_KEY` / `*_TOKEN` / `*SECRET*` / `*PASSWORD*` environment value.
 - `.env`, `credentials.json`, OAuth tokens, and runtime data must stay untracked.
 
 See [instructionAI/safety_and_risk.md](instructionAI/safety_and_risk.md) for the full
@@ -299,6 +320,11 @@ python -m backtest.test_quality_guards
 python -m backtest.test_plan_validation
 python -m backtest.test_conversation_bugs
 python -m backtest.test_prompt_harness
+python -m backtest.test_outbound        # email render, send re-check, dedupe
+python -m backtest.test_api_auth        # API token on HTTP + WebSocket
+
+# Flutter app (offline fakes; see ciel_app/README.md for the live check)
+cd ciel_app && flutter analyze && flutter test
 ```
 
 Keep durable tests under `backtest/test_*.py`; do not accumulate one-off smoke-test
@@ -317,7 +343,7 @@ agent_output/       Generated reports and deliverables
 backtest/           Maintained regression and integration suites
 scripts/            Maintenance utilities and bounded prompt harness
 docker/             Dockerfiles, Compose files, deployment notes
-ui/                 React/Tauri interface
+ciel_app/           Flutter client (Android, iOS, Windows, macOS, web)
 instructionAI/      Stable project memory for future AI sessions
 improve.md          Living roadmap and pass criteria
 note.md             Dated operational journal
@@ -331,7 +357,7 @@ note.md             Dated operational journal
 - [Data and memory](instructionAI/data_pipeline.md)
 - [Safety and risk](instructionAI/safety_and_risk.md)
 - [Voice and interfaces](instructionAI/voice_and_interface.md)
-- [UI details](ui/README.md)
+- [Flutter app](ciel_app/README.md)
 - [Roadmap](improve.md)
 
 ## License and responsibility

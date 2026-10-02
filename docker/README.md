@@ -5,9 +5,9 @@ Runs Ciel in a container. Two independent front-ends, same image, same
 started, stopped, or deployed to a different host without touching the other:
 
 - `docker-compose.api.yml` → `ciel-api` — `main_api.py` (FastAPI + WebSocket
-  backend). The Vercel frontend talks to this over HTTP/WS; CORS is already
-  open (`allow_origins=["*"]`), so no backend change is needed to point a
-  Vercel deployment at it.
+  backend) for the Flutter app in `ciel_app/`. CORS is open (`allow_origins=["*"]`) so
+  the web build can call it from another origin; access is controlled by
+  `CIEL_API_TOKEN`, not by CORS.
 - `docker-compose.telegram.yml` → `ciel-telegram` — `main_telegram.py`, a
   Telegram bot front-end (see below).
 
@@ -45,8 +45,16 @@ started, stopped, or deployed to a different host without touching the other:
    `TELEGRAM_CHAT_ID` (message `@userinfobot` on Telegram, or hit `getUpdates`
    after messaging your own bot, to find it — it's a number, not any of your
    other API keys).
+5. For the API specifically: `CIEL_API_TOKEN` (a long random string) before the port is
+   reachable from any other device, and HTTPS in front of it (a Caddy/nginx reverse
+   proxy) before it is reachable from the internet. Without the token the API logs a
+   warning and accepts anyone who can reach the port.
+6. `ciel_data/gmail_token.json` must be a valid, unexpired Gmail token. It cannot be
+   created inside a headless container: authorize on a machine with a browser (delete
+   the old token, run `python main.py`, approve in the browser), then copy the new file
+   to `ciel_data/` on the server and restart the service.
 
-## Run — API (Vercel-facing)
+## Run — API (Flutter app backend)
 
 ```
 docker compose -f docker/docker-compose.api.yml up -d --build
@@ -85,6 +93,13 @@ docker compose -f docker/docker-compose.telegram.yml ps
 docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100 ciel-telegram
 ```
 
+A Dockerfile change to the `apt-get` layer (for example adding `git`) invalidates every
+later layer, so PyTorch and all requirements reinstall: expect 5–10 minutes. Code-only
+changes rebuild from cache; most of the time is exporting the image.
+
+`docker compose … restart` is enough after replacing a mounted file such as
+`ciel_data/gmail_token.json`; it needs no rebuild.
+
 Do not place the server address, SSH password, bot token, OAuth credentials, or copied
 `.env` values in this repository. The server keeps those files privately alongside the
 checked-out project; persistent `ciel_data/` remains mounted across recreations.
@@ -99,6 +114,15 @@ JSON-file / SQLite-backed, built for one writer, and two independent processes
 touching it concurrently is a real race condition, not a theoretical one.
 Treat them as alternatives to pick one from for now, not a pair to run
 together — until that's addressed with a proper shared store or a lock.
+
+## Git inside the container
+
+The image installs `git` but copies no `.git` (`.dockerignore`). Both compose files mount
+the host checkout read-only at `/repo` and set `CIEL_REPO_PATH=/repo`, so Ciel's git
+tools and `git -C /repo log` show the deployed code's status, diff, and history. The
+mount is read-only: Ciel cannot commit, pull, or push from the container. It does expose
+the host `.env` to the container read-only; its values are already in the container
+environment, and reading it still requires an approved shell command.
 
 ## Notes
 

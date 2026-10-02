@@ -119,6 +119,12 @@ SUITES: list[Suite] = [
         "SQLite one-time reminders, delivery retry/restart recovery, and quiet cooldown",
     ),
     Suite(
+        "api_auth",
+        "backtest.test_api_auth",
+        "unit",
+        "API access token on HTTP + WebSocket for remote clients; /health stays open",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",

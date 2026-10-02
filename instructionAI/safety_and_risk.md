@@ -64,7 +64,11 @@ confirm_callback(tool_name, preview, tool_args) -> bool
 - API uses a WebSocket `confirm_request`/`confirm_response` exchange.
 - Telegram uses an inline Yes/No keyboard restricted to the configured chat ID.
 
-API and Telegram fail closed when the client disappears or times out. Raw `CielCore`
+API and Telegram fail closed when the client disappears or times out. The API callback
+runs on an executor thread, so it schedules the confirm request on the server loop
+captured at startup; before this was fixed, `asyncio.get_event_loop()` raised on that
+thread and the handler returned `True`, auto-approving every risky API action. A confirm
+request that cannot be delivered is now a denial. Raw `CielCore`
 with no callback also fails closed: each risky call is denied
 (`confirm_denied_no_callback`), and a plan containing a step that needs approval is
 cancelled before its first step (`plan_denied_no_callback`). A new front end must wire a
@@ -118,8 +122,16 @@ Outbound email passes through:
    placeholders, false sent-status prose, and internal paths;
 2. optional Middleware semantic review for relevance and internal consistency;
 3. final exact-subject enforcement when the user specified one;
-4. the confirmation preview using the final body;
-5. provider delivery and Message ID verification.
+4. the confirmation preview using the final (plain/Markdown) body;
+5. Markdown → inline-styled HTML rendering (`core/outbound.plaintext_to_html`), so
+   tables, headings and lists do not reach the recipient as raw `|` and `---`;
+6. provider delivery and Message ID verification;
+7. a re-check that fetches the sent message back by that Message Id before the Master
+   is told “✅ Đã gửi”. A missing Message Id or a failed re-check is reported as ❌/⚠️.
+
+In a plan that ends in a send, the data steps are not formatted individually by the
+Worker. A per-step reply sees the whole request (“gửi email…”) and wrote “Đã gửi” before
+the send had run; one synthesis now reads the raw step results.
 
 Middleware is bounded and fail-open. It may identify contradictions inside the body,
 but cannot reject grounded tool data merely because the model considers it unfamiliar.
@@ -178,6 +190,20 @@ later is less reliable than excluding it at discovery time.
 - Docker bind-mounts private files instead of baking them into the image.
 - Git tooling excludes known secret paths from automated commits.
 - Missing Gmail credentials disable Gmail capability rather than the whole assistant.
+  An expired or revoked refresh token (`invalid_grant`) does the same and is visible only
+  in the container log (`gmail_ops returned 0 tools`). Replacing `credentials.json` does
+  not fix it: delete `ciel_data/gmail_token.json`, authorize again on a machine with a
+  browser, and copy the new token to the server. An OAuth app left in "Testing" issues
+  refresh tokens that expire after 7 days; publish it to avoid that.
+- `core/redact.redact_secrets` masks the Telegram bot token (inside `/bot<token>/` URLs or
+  bare) and every environment value whose name looks secret (`*_KEY`, `*_TOKEN`,
+  `*SECRET*`, `*PASSWORD*`). It is applied to Telegram poll/send/download errors, the
+  `send_telegram*` tool results (which reach `thoughts.log` and the models), Telegram
+  fatal replies, and the API `error` frame. `requests` exceptions embed the full URL, so
+  without it a network error printed the bot token into the container log.
+- `CIEL_API_TOKEN` guards the API for remote clients; the Flutter app keeps it in the OS
+  keychain. A token compiled into a client build would be extractable, so the app takes
+  it at runtime only.
 - `UserModel` rejects secret-like content before storage and prompt injection.
 - The prompt harness sanitizes bounded evidence before Brain/Worker use, hard-blocks
   private path/name patterns independently of its JSON allow-list, and rejects

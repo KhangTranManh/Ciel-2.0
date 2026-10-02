@@ -86,7 +86,7 @@ có 7 tier chạy phía sau.
 
 ```
 main.py          → CLI, input() chặn, --voice/--speak
-main_api.py       → FastAPI + WebSocket, phục vụ UI React/Tauri + frontend Vercel
+main_api.py       → FastAPI + WebSocket, phục vụ app Flutter (ciel_app/: điện thoại, máy tính, web)
 main_telegram.py  → Bot Telegram, long-poll trực tiếp Bot API
 ```
 
@@ -106,7 +106,7 @@ trong tool hay prompt.
 
 ```
 docker/Dockerfile                    → 1 image dùng chung
-docker/docker-compose.api.yml        → service ciel-api (main_api.py, cho Vercel)
+docker/docker-compose.api.yml        → service ciel-api (main_api.py, cho app Flutter; cần CIEL_API_TOKEN)
 docker/docker-compose.telegram.yml   → service ciel-telegram (main_telegram.py)
 ```
 

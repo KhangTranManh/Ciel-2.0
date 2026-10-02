@@ -78,7 +78,22 @@ operator choice, not the default safety behavior.
 
 The WebSocket carries one user turn at a time and streams structured events. If a risky
 step needs confirmation while no WebSocket is attached, the action is recorded as
-deferred and denied. Confirmation timeout also fails closed.
+deferred and denied. Confirmation timeout also fails closed, and so does a confirm
+request that cannot be delivered: the callback runs on an executor thread and uses the
+server event loop captured at startup, because `asyncio.get_event_loop()` raises on
+that thread (the earlier handler approved the action on that error).
+
+`CIEL_API_TOKEN`, when set, is required on every route except `/health`
+(`Authorization: Bearer …`, or `?token=` on the WebSocket because browsers cannot set
+WebSocket headers). An invalid WebSocket token receives an `error` frame `unauthorized`
+and close code `4401`; clients stop reconnecting on that code. Unset keeps the
+localhost-only open behaviour and prints a startup warning. `/health` reports
+`auth_required`.
+
+`thought` frames (raw `thoughts.log` lines with full prompts and email bodies) are sent
+only when `CIEL_API_STREAM_THOUGHTS=true`. The vitals loop reads only the log tail and
+runs `nvidia-smi` off the event loop; reading the whole multi-MB log every 2 s per
+client stalled every frame, including confirm requests.
 
 ### WebSocket frames
 
@@ -88,7 +103,7 @@ deferred and denied. Confirmation timeout also fails closed.
 | Server → client | `response` | Final user-facing response |
 | Server → client | `error` | Surfaced runtime failure |
 | Server → client | `vitals` | Model calls, token totals, estimated cost |
-| Server → client | `thought` | Audit event; current UI does not render it |
+| Server → client | `thought` | Audit event; opt-in, no shipped client renders it |
 | Server → client | `confirm_request` | Tool or whole-plan approval request |
 | Client → server | `confirm_response` | Boolean confirmation decision |
 | Client → server | `cancel` | Request cancellation at next step boundary |
@@ -97,42 +112,33 @@ deferred and denied. Confirmation timeout also fails closed.
 `tool_name == "plan"` means approval covers all displayed risky steps before anything
 runs. A normal tool name means one per-call decision.
 
-## Browser and desktop UI
+## Flutter app (`ciel_app/`)
 
-The React/Tauri UI uses a two-region workbench:
+One Flutter codebase targets Android, iOS, Windows, macOS and web. The server address
+and token are runtime settings (token in the OS keychain via `flutter_secure_storage`),
+so one build connects to a local, LAN or VPS backend. `CielEndpoints` derives REST and
+WebSocket URLs from any entered form, including a reverse-proxy path prefix.
 
 ```text
 ┌──────────────┬──────────────────────────────────┐
-│ Skills rail  │ Session header and status       │
-│ from /skills │ Transcript                      │
-│              │ Input, voice, stop, read-aloud  │
+│ Skills rail  │ App bar: status, usage, TTS     │
+│ from /skills │ Connection banner · Transcript  │
+│ (drawer on   │ Input, voice, Stop              │
+│  phones)     │                                 │
 └──────────────┴──────────────────────────────────┘
 ```
 
-`VitalsBar` reports usage; `ConnectionBanner` reports connectivity;
-`ConfirmDialog` handles safety decisions. The raw thought stream is intentionally not
-rendered. `thoughts.log` is an audit format, not a UI model.
+Only `CielSocket` (behind the `CielTransport` interface) touches `/ws`; all screens read
+and act through `CielController`, the Flutter counterpart of the old bus seam. The
+confirm view is non-dismissible, counts down from 60 s and denies at 0; a lost
+connection clears a pending approval rather than leaving a dialog whose answer cannot
+arrive. Chat history (last 200 turns) persists on the device. Voice input uses
+`speech_to_text`; read-aloud plays backend `POST /tts` audio. Offline tests use a fake
+transport and HTTP client; `test_live/` exercises a real server.
 
-The UI communicates through `ui/src/core/bus.ts`. Text input, browser voice input,
-WebSocket responses, TTS, and optional visual components subscribe to that seam instead
-of calling each other directly.
-
-### Voice in the UI
-
-- Input uses browser `SpeechRecognition` with Vietnamese locale when available. Tauri
-  WebView2 builds without that API disable the microphone control gracefully.
-- Output calls backend `POST /tts`, preserving the same normalizer and voice used by
-  CLI. The client plays returned audio rather than reimplementing speech formatting.
-
-### Orb and widget
-
-`ui/src/orb.ts` and `ui/src/components/Orb.tsx` remain compilable but are not mounted by
-the current dashboard. Restoring the orb is a component change, not a frontend rewrite.
-
-`ui/src/Widget.tsx` is a separate Tauri window surface using the same bus and `useCiel`
-hook. Window selection is based on the Tauri window label, not URL parameters. The
-widget force-expands for confirmation and exposes the same cancellation boundary as the
-main dashboard.
+The React/Tauri client (`ui/`) was removed after the Flutter app reached parity; it is
+recoverable from git history (commit `360bc52`). Its always-on-top desktop widget has no
+Flutter equivalent yet.
 
 ## Telegram
 
@@ -187,8 +193,11 @@ termination. Killing a tool mid-write or mid-send is not supported.
 
 - Tool lists remain backend-driven through `GET /skills`.
 - Every new front end wires confirmation before it can invoke tools.
-- The bus remains the UI modality seam.
+- One controller/bus remains the UI modality seam; only the transport touches `/ws`.
 - TTS normalization remains server-side and shared.
 - Raw audit logs remain outside the user-facing transcript.
 - Active Subject, recent turns, and Telegram file metadata remain core contracts; an
-  interface does not implement its own conversational memory.
+  interface does not implement its own conversational memory. The Flutter app's local
+  chat history is display-only and is never sent back as context.
+- An API reachable from another device requires `CIEL_API_TOKEN` and, beyond the
+  home network, HTTPS.
