@@ -360,6 +360,8 @@ def _has_unsynthesized_placeholder(text: str) -> bool:
 # (recovery_manager.py's "other tools" branch) could ever fix. Deliberately narrow: genuine
 # format issues ("Could not find price for BTCUSDT... Ensure format is correct") are LEFT
 # eligible, since a corrected symbol format is a real, observed fix for those.
+_RAW_STEP_RESULT_CHARS = 12000
+
 _HEALING_SKIP_PATTERNS = re.compile(
     r"library is not installed|service unavailable from a restricted location|"
     r"max retries exceeded|read timed out|\[winerror|forbidden by its",
@@ -1667,7 +1669,7 @@ class CielCore:
         return delivery_key(tool_name, tool_args)
 
     def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "", user_input: str = "",
-                     _raw_out: list = None) -> str:
+                     _raw_out: list = None, _skip_format: bool = False) -> str:
         """Execute a Ciel tool and format the result.
 
         `_raw_out`, if given a list, gets the pre-Worker-formatting result_text
@@ -2038,6 +2040,13 @@ class CielCore:
         confirm_spec = result.get("confirm") if isinstance(result, dict) else None
         if confirm_spec and not result_text.startswith(("[TOOL_ERROR", "[CANCELLED")):
             self._set_pending_action(confirm_spec["tool"], confirm_spec.get("args", {}), source=tool_name)
+
+        # A data step inside a plan that ends in a send/write: the plan's single
+        # synthesis reads the raw evidence. Formatting each step against the whole
+        # request let the Worker narrate "Đã gửi email" before the send had run.
+        if _skip_format:
+            raw = self._compact_email_result(result_text) if "gmail" in tool_name.lower() else result_text
+            return raw[:_RAW_STEP_RESULT_CHARS]
 
         if tool_name in {"get_fact", "save_fact", "delete_fact"}:
             return self._format_fact_result(tool_name, result_text, user_input)
@@ -2610,7 +2619,8 @@ class CielCore:
         return checked
 
     def _run_steps(self, steps: list, response_hint: str, user_input: str,
-                   results: list, step_outputs: list, records: list, label: str = "") -> bool:
+                   results: list, step_outputs: list, records: list, label: str = "",
+                   skip_format: bool = False) -> bool:
         """Execute `steps` in order, running provably-independent ones concurrently.
 
         Returns False if execution should stop early (a step was cancelled).
@@ -2656,7 +2666,8 @@ class CielCore:
                     return err, err
                 raw_box = []
                 formatted = self.execute_tool(name, args, response_hint=response_hint,
-                                              user_input=user_input, _raw_out=raw_box)
+                                              user_input=user_input, _raw_out=raw_box,
+                                              _skip_format=skip_format)
                 # Bug found live: a plan chaining search_gmail -> get_gmail_message via
                 # {prev} got the WORKER'S HUMAN-READABLE SUMMARY ("Email từ Khang Trần,
                 # tiêu đề ...") injected as message_id, instead of the real Gmail id —
@@ -2690,7 +2701,8 @@ class CielCore:
         return True
 
     def _continue_until_done(self, user_input: str, response_hint: str, records: list,
-                             results: list, step_outputs: list, model_requested: bool = False):
+                             results: list, step_outputs: list, model_requested: bool = False,
+                             skip_format: bool = False):
         """TIER-1 AGENT LOOP: observe → re-plan → act, in place.
 
         Appends any follow-up steps' output to `records`/`results`/`step_outputs`, so
@@ -2797,7 +2809,8 @@ class CielCore:
                     return
                 if not self._run_steps(batch, response_hint, user_input, results,
                                        step_outputs, records,
-                                       label=f"[loop {budget.rounds_used}/{budget.max_rounds}] "):
+                                       label=f"[loop {budget.rounds_used}/{budget.max_rounds}] ",
+                                       skip_format=skip_format):
                     self._log_thought("LOOP", "cancelled", "a follow-up step was declined — stopping.")
                     return
                 # A follow-up step that staged a confirmation hands control back to the
@@ -2891,7 +2904,9 @@ class CielCore:
         # Execute non-send tools first. Dependent chains ({{prev}}/{{step_N}}) are
         # resolved per step inside _run_steps, which also batches provably-independent
         # steps to run concurrently.
-        self._run_steps(other_tools, response_hint, user_input, results, step_outputs, records)
+        delivers = bool(send_tool or telegram_tool or deferred_write)
+        self._run_steps(other_tools, response_hint, user_input, results, step_outputs, records,
+                        skip_format=delivers)
 
         # TIER-1 AGENT LOOP — observe what actually came back and, only when a
         # deterministic signal says the plan could not have been complete, plan again
@@ -2899,7 +2914,7 @@ class CielCore:
         # step was separated out above and still runs once, after synthesis, so extra
         # rounds can enrich the data a report is built from but can never double-send.
         self._continue_until_done(user_input, response_hint, records, results, step_outputs,
-                                  model_requested=model_requested)
+                                  model_requested=model_requested, skip_format=delivers)
 
         combined_results = "\n\n".join(results)
 
@@ -2983,9 +2998,7 @@ RULES:
                 # already known from the tool result — never by asking the model to
                 # remember not to mention it.
                 formatted = self._strip_stale_send_status(formatted)
-                formatted = formatted.rstrip() + "\n\n[EMAIL] Sent successfully (Message Id in tool log)."
-            else:
-                formatted = formatted.rstrip() + "\n\n[EMAIL] Report prepared but NOT confirmed sent (no Message Id returned)."
+            formatted = self._email_delivery_note(send_args, send_res, user_input) + "\n\n" + formatted.rstrip()
 
         # Telegram: same synthesize-then-send as email (plain text, capped length).
         if telegram_tool:
@@ -3030,6 +3043,61 @@ RULES:
         r"|unable\s+to\s+confirm\s+(?:the\s+)?send)"
         r"[^.!?\n]*[.!?]?",
         re.IGNORECASE)
+
+    _MESSAGE_ID_RE = re.compile(r"Message Id:\s*([0-9A-Za-z]+)")
+
+    def _verify_sent_email(self, message_id: str):
+        """Fetch the just-sent message back from Gmail by id.
+
+        True: Gmail returned it. False: the lookup failed. None: no reader is loaded.
+        """
+        if "get_gmail_message" not in self._tool_map:
+            return None
+        try:
+            res = self.tool_manager.execute_tool("get_gmail_message", {"message_id": message_id})
+        except Exception:
+            return False
+        if isinstance(res, dict) and res.get("success") is False:
+            return False
+        return message_id in self.tool_manager.format_tool_result(res)
+
+    def _email_delivery_note(self, send_args: dict, send_res: str, user_input: str) -> str:
+        """The only place the Master is told an email went out — built from the real
+        send result and a Gmail re-check, never from model prose."""
+        to = send_args.get("to")
+        to = ", ".join(map(str, to)) if isinstance(to, list) else str(to or "").strip()
+        subject = str(send_args.get("subject") or "").strip()
+        vi = self._detect_language(user_input) == "Vietnamese"
+        send_res = send_res or ""
+
+        match = self._MESSAGE_ID_RE.search(send_res)
+        if not match:
+            if send_res.lstrip().startswith("[CANCELLED]"):
+                return (f"❌ Chưa gửi email tới {to} — Master đã từ chối." if vi
+                        else f"❌ Email to {to} was not sent — you declined it.")
+            reason = send_res.strip().splitlines()[0][:200] if send_res.strip() else "no Message Id"
+            return (f"❌ Email tới {to} CHƯA được gửi: {reason}" if vi
+                    else f"❌ Email to {to} was NOT sent: {reason}")
+
+        mid = match.group(1)
+        verified = self._verify_sent_email(mid)
+        self._log_thought("TOOL", "email_send_verified", f"{mid}: {verified}")
+        subj = ((f" — tiêu đề “{subject}”" if vi else f' — subject "{subject}"') if subject else "")
+        label = "Nội dung đã gửi:" if vi else "Content sent:"
+        if verified:
+            note = (f"✅ Đã gửi email tới {to}{subj}. Đã kiểm tra lại trong Gmail (Message Id: {mid})."
+                    if vi else f"✅ Email sent to {to}{subj}. Re-checked in Gmail (Message Id: {mid}).")
+        elif verified is None:
+            note = (f"✅ Gmail đã nhận email tới {to}{subj} (Message Id: {mid}); chưa kiểm tra lại được "
+                    f"vì công cụ đọc Gmail không khả dụng." if vi else
+                    f"✅ Gmail accepted the email to {to}{subj} (Message Id: {mid}); it could not be "
+                    f"re-checked because the Gmail reader is unavailable.")
+        else:
+            note = (f"⚠️ Gmail báo đã gửi email tới {to}{subj} (Message Id: {mid}), nhưng kiểm tra lại "
+                    f"không thấy thư. Master nên xem lại mục Đã gửi." if vi else
+                    f"⚠️ Gmail reported the email to {to}{subj} as sent (Message Id: {mid}), but the "
+                    f"re-check could not find it. Please check your Sent folder.")
+        return f"{note}\n\n{label}"
 
     def _strip_stale_send_status(self, text: str) -> str:
         """Remove "not sent yet" claims from a report whose send has since succeeded.

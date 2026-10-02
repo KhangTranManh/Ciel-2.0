@@ -53,7 +53,8 @@ def _stub_gmail_factory():
     return {
         "tools": [
             StructuredTool.from_function(_stub_gmail_tool, name=name, description="Unit-test Gmail stub")
-            for name in ("send_gmail_message", "send_gmail_html_message", "reply_to_email")
+            for name in ("send_gmail_message", "send_gmail_html_message", "reply_to_email",
+                         "search_gmail", "get_gmail_message")
         ],
         "prompt": "",
     }
@@ -302,6 +303,75 @@ def test_markdown_email_render():
     check("empty body is safe", render("") == "")
 
 
+def _email_plan_core(verify_ok=True):
+    """A core running search → send, whose Worker WOULD claim 'sent' if asked to
+    format a step — so any early claim in the output proves per-step formatting ran."""
+    c = make_core()
+    c.prompts = []
+
+    def fake_exec(name, args):
+        c.sent.append((name, dict(args or {})))
+        if name == "search_gmail":
+            return {"success": True, "result": "[1] message_id: m1  subject: Giá vàng SJC 13.950"}
+        if name == "get_gmail_message":
+            if not verify_ok:
+                return {"success": False, "result": "EXECUTION_ERROR: Max retries exceeded"}
+            return {"success": True, "result": '{"id": "%s"}' % args.get("message_id")}
+        return {"success": True, "result": "Message sent. Message Id: abc123"}
+
+    def fake_generate(prompt, *a, **k):
+        c.prompts.append(prompt)
+        if "Raw result:" in prompt:
+            return "Đã gửi email tới kxctran@gmail.com rồi nha."
+        return "Chào bạn,\n\nGiá vàng SJC hôm nay: 13.950."
+
+    c.tool_manager.execute_tool = fake_exec
+    c.worker.generate = fake_generate
+    return c
+
+
+EMAIL_PLAN = [{"tool_name": "search_gmail", "tool_args": {}},
+              {"tool_name": "send_gmail_message", "tool_args": dict(MAIL)}]
+EMAIL_REQUEST = "gửi email giá vàng tới kxctran@gmail.com"
+
+
+def test_sent_claim_only_after_verified_send():
+    print("\n[8] 'Sent' is claimed only after a real send that Gmail confirms")
+    c = _email_plan_core()
+    out = c.execute_multi_tool([dict(s) for s in EMAIL_PLAN], "", user_input=EMAIL_REQUEST)
+    names = [n for n, _ in c.sent]
+    check("no per-step Worker formatting while a send is pending",
+          not any("Raw result:" in p for p in c.prompts), str(len(c.prompts)))
+    check("the synthesis read the raw evidence", any("13.950" in p for p in c.prompts))
+    check("data step ran before the send", names[:2] == ["search_gmail", "send_gmail_message"], str(names))
+    check("the sent message is fetched back by its Message Id",
+          ("get_gmail_message", {"message_id": "abc123"}) in c.sent, str(c.sent))
+    check("the reply opens with a verified confirmation",
+          out.startswith("✅ Đã gửi email tới kxctran@gmail.com") and "abc123" in out
+          and "kiểm tra lại" in out, out[:200])
+    check("no early 'sent' sentence from a step survives", "rồi nha" not in out, out)
+    check("the content that was sent is shown after the confirmation",
+          out.index("Nội dung đã gửi") < out.index("Giá vàng SJC hôm nay"), out)
+
+    c2 = _email_plan_core()
+    c2.confirm_callback = lambda n, p, a: n == "plan"     # approve the plan, decline the send
+    out2 = c2.execute_multi_tool([dict(s) for s in EMAIL_PLAN], "", user_input=EMAIL_REQUEST)
+    check("a declined send is reported as not sent",
+          out2.startswith("❌ Chưa gửi email tới kxctran@gmail.com"), out2[:160])
+    check("a declined send is never 're-checked'",
+          not any(n == "get_gmail_message" for n, _ in c2.sent), str(c2.sent))
+
+    c3 = _email_plan_core(verify_ok=False)
+    out3 = c3.execute_multi_tool([dict(s) for s in EMAIL_PLAN], "", user_input=EMAIL_REQUEST)
+    check("a failed re-check is a warning, not a confirmation",
+          out3.startswith("⚠️") and "abc123" in out3, out3[:200])
+
+    c4 = _email_plan_core()
+    out4 = c4.execute_multi_tool([dict(s) for s in EMAIL_PLAN], "",
+                                 user_input="send the gold price email to kxctran@gmail.com")
+    check("English request gets an English confirmation", out4.startswith("✅ Email sent to"), out4[:120])
+
+
 def main():
     print("=" * 72)
     print("OUTBOUND IDEMPOTENCE SUITE (tool layer stubbed — nothing is sent)")
@@ -309,7 +379,7 @@ def main():
     for fn in (test_key_shapes, test_duplicate_suppressed,
                test_direct_success_clears_matching_pending_action, test_scope,
                test_failure_is_retryable, test_html_and_reply, test_stale_send_status,
-               test_markdown_email_render):
+               test_markdown_email_render, test_sent_claim_only_after_verified_send):
         fn()
 
     print("\n" + "=" * 72)
