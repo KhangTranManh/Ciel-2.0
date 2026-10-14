@@ -1,0 +1,65 @@
+# Ciel deployment: one process owns ciel_data/ and serves every front end.
+#
+#   docker compose -f docker/docker-compose.yml up -d --build                     # Ciel only
+#   docker compose -f docker/docker-compose.yml --profile tunnel up -d --build    # + Cloudflare Tunnel
+#
+# See docker/README.md for first-time setup, the Cloudflare hostname, and updates.
+name: ciel
+
+services:
+  ciel:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ciel:latest
+    container_name: ciel
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # Telegram runs inside this process, so no second container writes ciel_data/.
+      CIEL_API_TELEGRAM: "true"
+      # Git tools read the host checkout below (the image itself has no .git).
+      CIEL_REPO_PATH: /repo
+    # Loopback only: the public path is the tunnel, which reaches this service over
+    # the compose network. Nothing is exposed on the VPS's public IP.
+    ports:
+      - "127.0.0.1:${CIEL_PORT:-8000}:8000"
+    volumes:
+      # Persistent runtime state (memory, planner, Gmail token, thoughts.log).
+      # Without it the container forgets everything on every rebuild.
+      - ../ciel_data:/app/ciel_data
+      # Files Ciel writes for/reads from the Master (reports, generated docs).
+      - ../agent_output:/app/agent_output
+      - ../ciel_workspace:/app/ciel_workspace
+      # Google OAuth client — gitignored, must exist on the host before `up`.
+      - ../credentials.json:/app/credentials.json:ro
+      # Read-only: Ciel can inspect status/diff/log but cannot commit or push.
+      - ..:/repo:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Outbound-only connection to Cloudflare: HTTPS at your hostname with no open
+  # inbound port. The public hostname -> http://ciel:8000 mapping lives in the
+  # Cloudflare dashboard; the only local secret is the tunnel token.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    container_name: ciel-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    # Its own file, so the tunnel container never receives Ciel's API keys.
+    env_file:
+      - path: tunnel.env
+        required: false
+    depends_on:
+      ciel:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

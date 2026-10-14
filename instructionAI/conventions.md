@@ -310,8 +310,15 @@ High-risk changes requiring broad regression and explicit review:
 ## Known operational gotchas
 
 - Docker source changes require `--build`; recreation alone keeps the previous image.
-- Telegram has no API health route; use container state and the bot-online log.
-- API and Telegram cannot safely write the same mounted state concurrently.
+- Never run `main_telegram.py` or a second container next to the `ciel` container:
+  the bot would poll twice (Telegram 409 Conflict) and two processes would write
+  `ciel_data/`. `CIEL_API_TELEGRAM` is set in the compose file, not `.env`, so a local
+  `python main_api.py` sharing the VPS `.env` does not start a second poller.
+- Migrating from the old layout: `docker rm -f ciel-telegram ciel-api` before the first
+  `docker compose -f docker/docker-compose.yml up`.
+- The dashboard build defaults its server to the page origin only with
+  `CIEL_SAME_ORIGIN=true`; `flutter run -d chrome` in development keeps the
+  `CIEL_SERVER_URL` default because its page origin is the dev server.
 - `category:primary` improves Gmail queries but cannot perfectly classify marketing
   mail; presentation logic handles the remaining curation.
 - Missing `SEARCH_API_KEY` silently falls back to weaker web sources. CI and runtime

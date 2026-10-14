@@ -1,133 +1,140 @@
-# Ciel 2.0 — Docker
+# Ciel 2.0 — Docker deployment
 
-Runs Ciel in a container. Two independent front-ends, same image, same
-`Dockerfile` — kept as **separate compose files** so each can be built,
-started, stopped, or deployed to a different host without touching the other:
+One container, `ciel`, runs everything that writes Ciel's state:
 
-- `docker-compose.api.yml` → `ciel-api` — `main_api.py` (FastAPI + WebSocket
-  backend) for the Flutter app in `ciel_app/`. CORS is open (`allow_origins=["*"]`) so
-  the web build can call it from another origin; access is controlled by
-  `CIEL_API_TOKEN`, not by CORS.
-- `docker-compose.telegram.yml` → `ciel-telegram` — `main_telegram.py`, a
-  Telegram bot front-end (see below).
-
-## Layout
-
-- `Dockerfile` — server image, shared by both services. Build context is the
-  **repo root** (not this folder), so it can `COPY . .` the whole project.
-- `docker-compose.api.yml` / `docker-compose.telegram.yml` — one service each.
-- `requirements-docker.txt` — slimmed dependency set. Drops `pyautogui` /
-  `pyperclip` (vision control — no display in a container) and
-  `sounddevice` / `faster-whisper` / `SpeechRecognition` (mic capture — no
-  input device in a container). `edge-tts` is kept: it's cloud TTS, no
-  hardware needed, and `main_api.py` does use it. `sentence-transformers` is
-  KEPT (tried dropping it in favor of ChromaDB's ONNX embedding function, but
-  the real `ciel_data/vector_memory/` collection was created with
-  sentence-transformers and ChromaDB persists that choice in the collection
-  itself — a different embedding function at runtime doesn't migrate it, it
-  just fails at query time). The `Dockerfile` installs a CPU-only `torch`
-  wheel first specifically so this doesn't balloon into the ~10GB a default
-  GPU build pulls in — expect ~3.5GB.
-
-## Before first run
-
-1. `.env` at the repo root must exist and be filled in (API keys, etc.) — both
-   compose files load it via `env_file`. `DISABLED_SKILL_MODULES=vision_ops`
-   is already set there, matching the requirements above (keep both in sync if
-   you ever re-enable vision for a deployment that has a real display).
-2. `credentials.json` (Google OAuth client secret, gitignored) must exist at
-   the repo root — it's bind-mounted read-only into the container.
-3. `ciel_data/`, `agent_output/`, `ciel_workspace/` at the repo root are
-   bind-mounted so state (facts, memory, gmail token, logs, generated files)
-   survives rebuilds. They don't need to pre-exist with content — an empty
-   `ciel_data/` is fine, the app creates what it needs.
-4. For the Telegram bot specifically: `TELEGRAM_BOT_TOKEN` and a real numeric
-   `TELEGRAM_CHAT_ID` (message `@userinfobot` on Telegram, or hit `getUpdates`
-   after messaging your own bot, to find it — it's a number, not any of your
-   other API keys).
-5. For the API specifically: `CIEL_API_TOKEN` (a long random string) before the port is
-   reachable from any other device, and HTTPS in front of it (a Caddy/nginx reverse
-   proxy) before it is reachable from the internet. Without the token the API logs a
-   warning and accepts anyone who can reach the port.
-6. `ciel_data/gmail_token.json` must be a valid, unexpired Gmail token. It cannot be
-   created inside a headless container: authorize on a machine with a browser (delete
-   the old token, run `python main.py`, approve in the browser), then copy the new file
-   to `ciel_data/` on the server and restart the service.
-
-## Run — API (Flutter app backend)
-
-```
-docker compose -f docker/docker-compose.api.yml up -d --build
-curl http://localhost:8000/health
-docker compose -f docker/docker-compose.api.yml logs -f
-docker compose -f docker/docker-compose.api.yml down
+```text
+                 Cloudflare (HTTPS, your hostname)
+                         │  outbound-only tunnel
+   ┌─────────────────────┼──────────────────────────────────────────┐
+   │ VPS                 ▼                                          │
+   │   ciel-tunnel ──► ciel:8000                                    │
+   │                    ├─ /            dashboard (Flutter web)     │
+   │                    ├─ /ws, /skills, /tts   API (token)         │
+   │                    ├─ Telegram bot (long polling, in-process)  │
+   │                    └─ scheduler (planner, reminders)           │
+   │   127.0.0.1:8000 ─► ciel  (local checks only)                  │
+   └────────────────────────────────────────────────────────────────┘
 ```
 
-## Run — Telegram bot
+The phone/desktop app connects to the same hostname as the dashboard.
 
+## Files
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Two stages: `dashboard` compiles `ciel_app/` for the web (Flutter 3.35.4); `runtime` is Python + the compiled dashboard at `/app/web`. Build context is the repo root. |
+| `docker-compose.yml` | The deployment: `ciel`, plus `cloudflared` under the `tunnel` profile. |
+| `tunnel.env.example` | Shape of `docker/tunnel.env` (gitignored): the Cloudflare tunnel token only. |
+| `requirements-docker.txt` | Server dependency set without desktop-only packages (screen control, microphone). |
+
+Why one container: Ciel's state (`ciel_data/`) is JSON/SQLite built for one writer.
+API and Telegram used to be separate containers that could not run together; now the
+bot runs inside the API process (`CIEL_API_TELEGRAM=true`, set in the compose file) and
+turns from all front ends run one at a time.
+
+`sentence-transformers` stays in the requirements: the existing
+`ciel_data/vector_memory/` collection was created with it, and ChromaDB does not
+migrate a collection to a different embedding function. A CPU-only `torch` is installed
+first so the image stays around 3.5 GB instead of a ~10 GB GPU build.
+
+## First-time setup
+
+On the server, in the checked-out repository:
+
+1. **`.env`** at the repo root, filled in (model keys, `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_CHAT_ID`, `DISABLED_SKILL_MODULES=vision_ops`) and:
+   ```dotenv
+   CIEL_API_TOKEN=<long random string>     # python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+   Every route except `/health` and the dashboard files requires it.
+2. **`credentials.json`** (Google OAuth client) at the repo root.
+3. **`ciel_data/gmail_token.json`**: a valid Gmail token. It cannot be created inside a
+   headless container. Authorize on a PC with a browser (delete the old token, run
+   `python main.py`, approve), copy the file to `ciel_data/` on the server, then
+   `docker compose -f docker/docker-compose.yml restart ciel`.
+4. **Cloudflare Tunnel** (for the public HTTPS address):
+   1. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel** →
+      *Cloudflared* → name it (e.g. `ciel`).
+   2. From the shown install command, copy only the token (the long string after
+      `--token`) into `docker/tunnel.env`:
+      ```bash
+      cp docker/tunnel.env.example docker/tunnel.env && nano docker/tunnel.env
+      chmod 600 docker/tunnel.env
+      ```
+   3. In the tunnel → **Public Hostname → Add**: subdomain + your domain (e.g.
+      `ciel.example.com`), **Service** `HTTP` `ciel:8000`. WebSockets need no extra
+      setting.
+   4. Recommended: **Zero Trust → Access → Applications → Self-hosted** for the same
+      hostname, policy "emails = yours". The browser then logs in with Cloudflare before
+      the dashboard loads. The phone app talks to the API with `CIEL_API_TOKEN`; if you
+      enable Access, add a bypass (or service token) policy for `/ws`, `/skills`,
+      `/tts`, `/health` so the app is not sent to a login page.
+
+## Run
+
+```bash
+# with the tunnel (production)
+docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
+
+# without the tunnel (local machine, or before Cloudflare is set up)
+docker compose -f docker/docker-compose.yml up -d --build
+
+docker compose -f docker/docker-compose.yml --profile tunnel ps
+docker compose -f docker/docker-compose.yml logs -f --tail=100 ciel
+docker compose -f docker/docker-compose.yml logs -f --tail=50 cloudflared
+curl -s http://127.0.0.1:8000/health
 ```
-docker compose -f docker/docker-compose.telegram.yml up -d --build
-docker compose -f docker/docker-compose.telegram.yml logs -f
-docker compose -f docker/docker-compose.telegram.yml down
+
+Healthy means: `ciel` is `healthy`, its log shows `Dashboard served from /app/web`,
+`Loaded gmail_ops: 9 tool(s)` and `[Telegram] Bot online`, and the `cloudflared` log
+shows `Registered tunnel connection`.
+
+Then open `https://<your hostname>/`, go to **Settings**, paste `CIEL_API_TOKEN`, save.
+The server address is already filled in (the page's own address). On the phone app,
+enter `https://<your hostname>` and the same token.
+
+## Update
+
+```bash
+git pull
+docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
 ```
 
-The Telegram compose deliberately disables the shared image's `GET /health` check:
-that endpoint belongs to the API entry point and a long-polling bot has no listener on
-port 8000. Judge the Telegram deployment from `docker compose ... ps` and the
-`[Telegram] Bot online` log instead.
+| What changed | What the rebuild does |
+|---|---|
+| Python code only | reuses cached layers; mostly image export |
+| `ciel_app/` | recompiles the dashboard stage (~1–2 min), Python layers cached |
+| `requirements-docker.txt` or the `apt-get` line | reinstalls PyTorch and all packages: 5–10 min |
+| only `.env` | no rebuild: `docker compose -f docker/docker-compose.yml up -d --force-recreate ciel` |
+| a mounted file (Gmail token) | `docker compose -f docker/docker-compose.yml restart ciel` |
 
-### Update an existing Telegram deployment
+The dashboard is served with `Cache-Control: no-cache`, so a reload after a deploy
+picks up the new version.
 
-The Dockerfile uses `COPY . .`, so every Python/source, dependency, or Dockerfile
-change requires an image rebuild. An `.env`-only change needs recreation but not a
-rebuild:
+## Migrating from the old two-container layout
 
+The old `ciel-telegram` / `ciel-api` containers must be stopped first, or the bot polls
+twice and two processes write `ciel_data/`:
+
+```bash
+sudo docker rm -f ciel-telegram ciel-api 2>/dev/null
+docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
 ```
-# Source, dependencies, or Dockerfile changed
-docker compose -f docker/docker-compose.telegram.yml up -d --build --force-recreate
-
-# Only .env changed
-docker compose -f docker/docker-compose.telegram.yml up -d --force-recreate
-
-docker compose -f docker/docker-compose.telegram.yml ps
-docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100 ciel-telegram
-```
-
-A Dockerfile change to the `apt-get` layer (for example adding `git`) invalidates every
-later layer, so PyTorch and all requirements reinstall: expect 5–10 minutes. Code-only
-changes rebuild from cache; most of the time is exporting the image.
-
-`docker compose … restart` is enough after replacing a mounted file such as
-`ciel_data/gmail_token.json`; it needs no rebuild.
-
-Do not place the server address, SSH password, bot token, OAuth credentials, or copied
-`.env` values in this repository. The server keeps those files privately alongside the
-checked-out project; persistent `ciel_data/` remains mounted across recreations.
-
-## Shared memory, and why not to run both yet
-
-Both files mount the SAME `ciel_data/agent_output/ciel_workspace` on purpose —
-whichever front-end the Master used, the other one sees the same facts, chat
-history, and long-term (RAG) memory. That's also the reason **not** to run
-`ciel-api` and `ciel-telegram` at the same time yet: CielCore's state is
-JSON-file / SQLite-backed, built for one writer, and two independent processes
-touching it concurrently is a real race condition, not a theoretical one.
-Treat them as alternatives to pick one from for now, not a pair to run
-together — until that's addressed with a proper shared store or a lock.
 
 ## Git inside the container
 
-The image installs `git` but copies no `.git` (`.dockerignore`). Both compose files mount
-the host checkout read-only at `/repo` and set `CIEL_REPO_PATH=/repo`, so Ciel's git
-tools and `git -C /repo log` show the deployed code's status, diff, and history. The
-mount is read-only: Ciel cannot commit, pull, or push from the container. It does expose
-the host `.env` to the container read-only; its values are already in the container
+The image installs `git` but copies no `.git`. The compose file mounts the host
+checkout read-only at `/repo` and sets `CIEL_REPO_PATH=/repo`, so Ciel's git tools show
+the deployed code's status, diff and history; it cannot commit, pull or push. The mount
+includes the host `.env` read-only; its values are already in the container
 environment, and reading it still requires an approved shell command.
 
 ## Notes
 
-- Change the API's host port with `CIEL_PORT` (e.g. `CIEL_PORT=8080 docker
-  compose -f docker/docker-compose.api.yml up -d`) instead of editing the file.
-- Both services are verified working end-to-end against a real Docker daemon
-  (build, `/health`, `/skills`, container logs, and a live Telegram round-trip)
-  — not just written blind.
+- Port 8000 is bound to `127.0.0.1` only. Public access goes through the tunnel; do
+  not open 8000 in the VPS firewall. Change the local port with `CIEL_PORT`.
+- Container logs rotate at 3 × 10 MB.
+- Do not commit the server address, SSH password, bot token, tunnel token, OAuth files,
+  or `.env` values. `docker/tunnel.env` and `.env` are gitignored.
+- Building the dashboard stage needs roughly 1.5 GB of free memory; on a small VPS,
+  build while the server is otherwise quiet.

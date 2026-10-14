@@ -406,6 +406,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-10-02 | Secret redaction | — | `quality_guards` 41/41 | **PASS** | Telegram poll errors had printed the bot token (inside the request URL) into the container log 6×. `core/redact.py` masks it and any secret-named env value in logs, tool results, and API/Telegram error replies. Rotate the bot token. |
 | 2026-10-02 | API hardening + Flutter app | Brain + Worker | `api_auth` 13/13; unit 12/12; Flutter analyze clean, 26/26 tests, web build; live app↔API check | **PASS** | API confirm callback had auto-approved every risky action (`get_event_loop()` raised on the executor thread → `return True`); now fails closed. `CIEL_API_TOKEN` on HTTP + WebSocket; raw thought frames opt-in; vitals loop no longer reads the 12 MB log per tick. React/Tauri `ui/` replaced by Flutter `ciel_app/` (Android/iOS/Windows/macOS/web, runtime server + token). |
 | 2026-10-02 | P1.2 + P1.3 | — | `test_proactive` 149/149; `test_user_model` 108/108; VPS log review | **PASS** | See P1.2/P1.3 evidence above. |
+| 2026-10-08 | One-container deployment + dashboard | — | `api_server` 26/26; unit 13/13; Flutter analyze clean, 28/28 tests; compose config (with/without tunnel); served-build smoke in headless Chrome | **PASS (local)** | `main_api.py` serves the Flutter web build at `/` (public static, API still token-gated by routing) and runs Telegram in-process (`CIEL_API_TELEGRAM`), so one process owns `ciel_data/`. `AgentLoop` turn lock; approvals per WebSocket connection (`api/confirm.py`). Multi-stage Dockerfile (Flutter 3.35.4 → Python), single `docker/docker-compose.yml` with `cloudflared` (profile `tunnel`), port 8000 on loopback. Replaces `docker-compose.api.yml`/`.telegram.yml`. VPS image build not yet verified. |
 
 ---
 
@@ -438,6 +439,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | prompt_harness | unit | `backtest.test_prompt_harness` |
 | reminders | unit | `backtest.test_reminders` |
 | api_auth | unit | `backtest.test_api_auth` |
+| api_server | unit | `backtest.test_api_server` |
 | integration | live | `backtest.test_integration` |
 | hard_special | live | `backtest.test_hard_special` |
 | brain_worker | live | `backtest.test_brain_worker` |

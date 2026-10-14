@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -58,6 +59,19 @@ class SettingsStore {
   static const defaultServerUrl =
       String.fromEnvironment('CIEL_SERVER_URL', defaultValue: 'http://localhost:8000');
 
+  /// The Docker image builds the web app with `--dart-define=CIEL_SAME_ORIGIN=true`:
+  /// the dashboard is served by Ciel itself, so "this page's address" is the server.
+  static const sameOrigin = bool.fromEnvironment('CIEL_SAME_ORIGIN');
+
+  /// [pageUri] is injectable for tests; defaults to the page the app was loaded from.
+  static String initialServerUrl({Uri? pageUri}) {
+    final page = pageUri ?? Uri.base;
+    if (sameOrigin && kIsWeb && (page.scheme == 'http' || page.scheme == 'https')) {
+      return page.origin;
+    }
+    return defaultServerUrl;
+  }
+
   static const _serverKey = 'server_url';
   static const _speakKey = 'speak_replies';
   static const _localeKey = 'voice_locale';
@@ -74,7 +88,7 @@ class SettingsStore {
       // Keychain unavailable (e.g. locked); the app still runs and asks again.
     }
     return CielSettings(
-      serverUrl: prefs.getString(_serverKey) ?? defaultServerUrl,
+      serverUrl: prefs.getString(_serverKey) ?? initialServerUrl(),
       token: token,
       speakReplies: prefs.getBool(_speakKey) ?? false,
       voiceLocale: prefs.getString(_localeKey) ?? 'vi_VN',

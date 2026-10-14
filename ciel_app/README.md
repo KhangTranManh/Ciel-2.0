@@ -30,7 +30,7 @@ flutter run --dart-define=CIEL_SERVER_URL=https://ciel.example.com
    ```
 
    ```bash
-   python main_api.py            # or docker compose -f docker/docker-compose.api.yml up -d
+   python main_api.py            # or docker compose -f docker/docker-compose.yml up -d --build
    ```
 
 2. In the app open **Settings** → enter the server address and token →
@@ -39,6 +39,11 @@ flutter run --dart-define=CIEL_SERVER_URL=https://ciel.example.com
 Accepted addresses: `192.168.1.10:8000`, `http://host:8000`,
 `https://ciel.example.com`, `https://example.com/ciel` (reverse-proxy prefix), or a
 pasted `wss://…/ws`. The app derives the REST and WebSocket URLs itself.
+
+**Served dashboard.** The Docker image compiles this app for the web with
+`--dart-define=CIEL_SAME_ORIGIN=true` and `main_api.py` serves it at `/`. That build
+defaults the server address to the page's own address, so on the deployed dashboard
+only the token needs entering. Other builds keep the `CIEL_SERVER_URL` default.
 
 Use `https://` for anything outside your home network — the token and your
 messages travel over this connection. Plain `http://` is allowed only so a LAN

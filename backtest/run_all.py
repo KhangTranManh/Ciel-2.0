@@ -125,6 +125,12 @@ SUITES: list[Suite] = [
         "API access token on HTTP + WebSocket for remote clients; /health stays open",
     ),
     Suite(
+        "api_server",
+        "backtest.test_api_server",
+        "unit",
+        "Served dashboard, per-connection approvals, one turn at a time, Telegram in-process",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",

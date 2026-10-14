@@ -1,150 +1,150 @@
-name: Ciel Health Check
+# name: Ciel Health Check
 
 
 
-on:
-  schedule:
-    - cron: '0 0 * * *'   # 00:00 UTC = 07:00 Vietnam (UTC+7)
-  workflow_dispatch: {}    # manual "Run workflow" button in the Actions tab
+# on:
+#   schedule:
+#     - cron: '0 0 * * *'   # 00:00 UTC = 07:00 Vietnam (UTC+7)
+#   workflow_dispatch: {}    # manual "Run workflow" button in the Actions tab
 
-jobs:
-  health-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+# jobs:
+#   health-check:
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
 
-      - name: Build Ciel image
-        run: docker build -f docker/Dockerfile -t ciel-health-check .
+#       - name: Build Ciel image
+#         run: docker build -f docker/Dockerfile -t ciel-health-check .
 
-      # Same directory scripts/health_check.py's own comments assume: gitignored,
-      # absent on a fresh checkout, so CielCore's bootup-cleanse check (which only
-      # fires on a STALE memory_bank.json) never triggers here — no volume needed for
-      # that. Mounted anyway so thoughts.log survives the container for the
-      # upload-on-failure step below (the container itself is removed after --rm).
-      - name: Prepare state dir
-        run: mkdir -p ciel_data/logs
+#       # Same directory scripts/health_check.py's own comments assume: gitignored,
+#       # absent on a fresh checkout, so CielCore's bootup-cleanse check (which only
+#       # fires on a STALE memory_bank.json) never triggers here — no volume needed for
+#       # that. Mounted anyway so thoughts.log survives the container for the
+#       # upload-on-failure step below (the container itself is removed after --rm).
+#       - name: Prepare state dir
+#         run: mkdir -p ciel_data/logs
 
-      # Gmail is OPTIONAL for this check (search_gmail isn't tested here, only that
-      # ToolManager can load the skill pack). Only written if the secrets are actually
-      # set — writing an empty/garbage file would turn a clean "not configured" skip
-      # into a real, confusing error inside gmail_ops.py.
-      - name: Decode Gmail credentials (optional)
-        env:
-          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
-          GOOGLE_TOKEN_B64: ${{ secrets.GOOGLE_TOKEN_B64 }}
-        run: |
-          if [ -n "$GOOGLE_CREDENTIALS_B64" ]; then
-            echo "$GOOGLE_CREDENTIALS_B64" | base64 -d > credentials.json
-            if [ -n "$GOOGLE_TOKEN_B64" ]; then
-              echo "$GOOGLE_TOKEN_B64" | base64 -d > ciel_data/gmail_token.json
-            fi
-          else
-            echo "Gmail credentials not configured on this repo — skipping (expected unless you added GOOGLE_CREDENTIALS_B64)."
-          fi
+#       # Gmail is OPTIONAL for this check (search_gmail isn't tested here, only that
+#       # ToolManager can load the skill pack). Only written if the secrets are actually
+#       # set — writing an empty/garbage file would turn a clean "not configured" skip
+#       # into a real, confusing error inside gmail_ops.py.
+#       - name: Decode Gmail credentials (optional)
+#         env:
+#           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+#           GOOGLE_TOKEN_B64: ${{ secrets.GOOGLE_TOKEN_B64 }}
+#         run: |
+#           if [ -n "$GOOGLE_CREDENTIALS_B64" ]; then
+#             echo "$GOOGLE_CREDENTIALS_B64" | base64 -d > credentials.json
+#             if [ -n "$GOOGLE_TOKEN_B64" ]; then
+#               echo "$GOOGLE_TOKEN_B64" | base64 -d > ciel_data/gmail_token.json
+#             fi
+#           else
+#             echo "Gmail credentials not configured on this repo — skipping (expected unless you added GOOGLE_CREDENTIALS_B64)."
+#           fi
 
-      - name: Run health check inside the container
-        env:
-          # --- Providers — must match .env's real shape: one custom OpenAI-compatible
-          # endpoint for every tier (see agent_system/config.py's API_KEY/BASE_URL note) ---
-          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
-          CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
-          MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
-          API_KEY: ${{ secrets.API_KEY }}
-          BASE_URL: ${{ secrets.BASE_URL }}
-          # --- Safety (content-filter permissiveness only — this workflow never
-          # executes a tool, so the destructive-action gate is never touched) ---
-          SAFETY_OPEN: 'true'
-          VILAO_SAFETY_BYPASS: 'true'
-          # --- Trading / Telegram (all optional; check just reports if missing) ---
-          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          GMAIL_CREDENTIALS_VOLUME=""
-          if [ -f credentials.json ]; then
-            GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
-          fi
-          docker run --rm \
-            --name ciel-health-check \
-            -e BRAIN_PROVIDER=custom \
-            -e BRAIN_MODEL \
-            -e WORKER_PROVIDER=custom \
-            -e CODER_MODEL \
-            -e MIDDLEWARE_ENABLED=true \
-            -e MIDDLEWARE_PROVIDER=custom \
-            -e MIDDLEWARE_MODEL \
-            -e API_KEY \
-            -e BASE_URL \
-            -e SAFETY_OPEN \
-            -e VILAO_SAFETY_BYPASS \
-            -e DISABLE_SAFETY_GATE=false \
-            -e DISABLED_SKILL_MODULES=vision_ops \
-            -e TWELVEDATA_API_KEY \
-            -e TELEGRAM_BOT_TOKEN \
-            -e TELEGRAM_CHAT_ID \
-            -v "$PWD/ciel_data:/app/ciel_data" \
-            $GMAIL_CREDENTIALS_VOLUME \
-            ciel-health-check \
-            python -m scripts.health_check
+#       - name: Run health check inside the container
+#         env:
+#           # --- Providers — must match .env's real shape: one custom OpenAI-compatible
+#           # endpoint for every tier (see agent_system/config.py's API_KEY/BASE_URL note) ---
+#           BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
+#           CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
+#           MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
+#           API_KEY: ${{ secrets.API_KEY }}
+#           BASE_URL: ${{ secrets.BASE_URL }}
+#           # --- Safety (content-filter permissiveness only — this workflow never
+#           # executes a tool, so the destructive-action gate is never touched) ---
+#           SAFETY_OPEN: 'true'
+#           VILAO_SAFETY_BYPASS: 'true'
+#           # --- Trading / Telegram (all optional; check just reports if missing) ---
+#           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+#           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+#           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+#         run: |
+#           GMAIL_CREDENTIALS_VOLUME=""
+#           if [ -f credentials.json ]; then
+#             GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
+#           fi
+#           docker run --rm \
+#             --name ciel-health-check \
+#             -e BRAIN_PROVIDER=custom \
+#             -e BRAIN_MODEL \
+#             -e WORKER_PROVIDER=custom \
+#             -e CODER_MODEL \
+#             -e MIDDLEWARE_ENABLED=true \
+#             -e MIDDLEWARE_PROVIDER=custom \
+#             -e MIDDLEWARE_MODEL \
+#             -e API_KEY \
+#             -e BASE_URL \
+#             -e SAFETY_OPEN \
+#             -e VILAO_SAFETY_BYPASS \
+#             -e DISABLE_SAFETY_GATE=false \
+#             -e DISABLED_SKILL_MODULES=vision_ops \
+#             -e TWELVEDATA_API_KEY \
+#             -e TELEGRAM_BOT_TOKEN \
+#             -e TELEGRAM_CHAT_ID \
+#             -v "$PWD/ciel_data:/app/ciel_data" \
+#             $GMAIL_CREDENTIALS_VOLUME \
+#             ciel-health-check \
+#             python -m scripts.health_check
 
-      - name: Upload thoughts.log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ciel-health-check-log
-          path: ciel_data/logs/thoughts.log
-          if-no-files-found: ignore
+#       - name: Upload thoughts.log on failure
+#         if: failure()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: ciel-health-check-log
+#           path: ciel_data/logs/thoughts.log
+#           if-no-files-found: ignore
 
-      # Runs only if the health check step above succeeded (default GitHub Actions
-      # behavior — no explicit `if:` needed). Reuses the exact same image; no rebuild.
-      - name: Daily digest (email + news) via Telegram
-        # A Telegram/provider outage must not reclassify a healthy core as unhealthy.
-        continue-on-error: true
-        env:
-          BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
-          CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
-          MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
-          API_KEY: ${{ secrets.API_KEY }}
-          BASE_URL: ${{ secrets.BASE_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Real Google results via SerpApi (skills/external/web_agent_ops.py's primary
-          # source). Easy to miss: _serpapi_search() returns [] rather than raising when
-          # the key is absent, so WITHOUT this the CI digest silently degrades to the
-          # DuckDuckGo/RSS fallback and looks like it worked — just with the older,
-          # thinner results this replaced. API_ENDPOINT is not a secret; it has a code
-          # default, and lives here only so the endpoint can change without a code edit.
-          SEARCH_API_KEY: ${{ secrets.SEARCH_API_KEY }}
-          API_ENDPOINT: ${{ vars.API_ENDPOINT || 'https://serpapi.com/search?engine=google' }}
-        run: |
-          GMAIL_CREDENTIALS_VOLUME=""
-          if [ -f credentials.json ]; then
-            GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
-          fi
-          docker run --rm \
-            --name ciel-daily-digest \
-            -e BRAIN_PROVIDER=custom \
-            -e BRAIN_MODEL \
-            -e WORKER_PROVIDER=custom \
-            -e CODER_MODEL \
-            -e MIDDLEWARE_ENABLED=true \
-            -e MIDDLEWARE_PROVIDER=custom \
-            -e MIDDLEWARE_MODEL \
-            -e API_KEY \
-            -e BASE_URL \
-            -e SAFETY_OPEN=true \
-            -e VILAO_SAFETY_BYPASS=true \
-            -e DISABLE_SAFETY_GATE=false \
-            -e AGENT_PARALLEL_ENABLED=false \
-            -e DISABLED_SKILL_MODULES=vision_ops \
-            -e TELEGRAM_BOT_TOKEN \
-            -e TELEGRAM_CHAT_ID \
-            -e SEARCH_API_KEY \
-            -e API_ENDPOINT \
-            -v "$PWD/ciel_data:/app/ciel_data" \
-            $GMAIL_CREDENTIALS_VOLUME \
-            ciel-health-check \
-            python -m scripts.daily_digest
+#       # Runs only if the health check step above succeeded (default GitHub Actions
+#       # behavior — no explicit `if:` needed). Reuses the exact same image; no rebuild.
+#       - name: Daily digest (email + news) via Telegram
+#         # A Telegram/provider outage must not reclassify a healthy core as unhealthy.
+#         continue-on-error: true
+#         env:
+#           BRAIN_MODEL: ${{ vars.BRAIN_MODEL || 'gpt-5.6-sol' }}
+#           CODER_MODEL: ${{ vars.CODER_MODEL || 'gpt-5.6-luna' }}
+#           MIDDLEWARE_MODEL: ${{ vars.MIDDLEWARE_MODEL || 'gpt-5.5' }}
+#           API_KEY: ${{ secrets.API_KEY }}
+#           BASE_URL: ${{ secrets.BASE_URL }}
+#           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+#           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+#           # Real Google results via SerpApi (skills/external/web_agent_ops.py's primary
+#           # source). Easy to miss: _serpapi_search() returns [] rather than raising when
+#           # the key is absent, so WITHOUT this the CI digest silently degrades to the
+#           # DuckDuckGo/RSS fallback and looks like it worked — just with the older,
+#           # thinner results this replaced. API_ENDPOINT is not a secret; it has a code
+#           # default, and lives here only so the endpoint can change without a code edit.
+#           SEARCH_API_KEY: ${{ secrets.SEARCH_API_KEY }}
+#           API_ENDPOINT: ${{ vars.API_ENDPOINT || 'https://serpapi.com/search?engine=google' }}
+#         run: |
+#           GMAIL_CREDENTIALS_VOLUME=""
+#           if [ -f credentials.json ]; then
+#             GMAIL_CREDENTIALS_VOLUME="-v $PWD/credentials.json:/app/credentials.json:ro"
+#           fi
+#           docker run --rm \
+#             --name ciel-daily-digest \
+#             -e BRAIN_PROVIDER=custom \
+#             -e BRAIN_MODEL \
+#             -e WORKER_PROVIDER=custom \
+#             -e CODER_MODEL \
+#             -e MIDDLEWARE_ENABLED=true \
+#             -e MIDDLEWARE_PROVIDER=custom \
+#             -e MIDDLEWARE_MODEL \
+#             -e API_KEY \
+#             -e BASE_URL \
+#             -e SAFETY_OPEN=true \
+#             -e VILAO_SAFETY_BYPASS=true \
+#             -e DISABLE_SAFETY_GATE=false \
+#             -e AGENT_PARALLEL_ENABLED=false \
+#             -e DISABLED_SKILL_MODULES=vision_ops \
+#             -e TELEGRAM_BOT_TOKEN \
+#             -e TELEGRAM_CHAT_ID \
+#             -e SEARCH_API_KEY \
+#             -e API_ENDPOINT \
+#             -v "$PWD/ciel_data:/app/ciel_data" \
+#             $GMAIL_CREDENTIALS_VOLUME \
+#             ciel-health-check \
+#             python -m scripts.daily_digest

@@ -212,13 +212,20 @@ Living files outside this directory:
 
 ### Deployment, testing, and documentation
 
-28. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`
-    at a time. API and Telegram containers are alternatives until shared-state locking
-    is implemented.
+28. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
+    The Docker deployment is one `ciel` container: `main_api.py` serves the dashboard,
+    the API, and (with `CIEL_API_TELEGRAM=true`) the Telegram bot in-process.
+    `AgentLoop.run_step()` holds a turn lock, so turns from all front ends run one at a
+    time, and each turn passes its own front end's `confirm_callback`; a front end never
+    replaces the core's default callback. Do not add a second container or process that
+    writes this state.
 
-29. Docker images copy repository source with `COPY . .`. Source, dependency, or
-    Dockerfile changes therefore require `docker compose ... up -d --build
-    --force-recreate`. `.env`, credentials, and persistent data stay bind-mounted and
+29. `docker/Dockerfile` has a `dashboard` stage (Flutter 3.35.4 web build with
+    `CIEL_SAME_ORIGIN=true`) and a `runtime` stage that copies source with `COPY . .`.
+    Deploy is `git pull` then `docker compose -f docker/docker-compose.yml --profile
+    tunnel up -d --build`. The `cloudflared` service publishes HTTPS through a
+    Cloudflare Tunnel; its token lives only in gitignored `docker/tunnel.env`, and port
+    8000 is bound to `127.0.0.1`. `.env`, credentials, and persistent data stay bind-mounted and
     are never replaced by source deployment.
 
 30. Headless deployments disable `vision_ops` at load time through
@@ -253,7 +260,8 @@ Living files outside this directory:
 
 ### Remote clients, secrets, and the container shell
 
-36. When `CIEL_API_TOKEN` is set, every API route except `/health` requires it
+36. When `CIEL_API_TOKEN` is set, every API route except `/health` and the served
+    dashboard files requires it
     (`Authorization: Bearer`, or `?token=` on `/ws`); a bad WebSocket token gets an
     `unauthorized` error frame and close code 4401, which clients treat as final. An API
     reachable from another device must have the token and, beyond the LAN, HTTPS.

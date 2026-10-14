@@ -76,12 +76,20 @@ operator choice, not the default safety behavior.
 - `POST /tts`
 - `WS /ws`
 
-The WebSocket carries one user turn at a time and streams structured events. If a risky
-step needs confirmation while no WebSocket is attached, the action is recorded as
-deferred and denied. Confirmation timeout also fails closed, and so does a confirm
-request that cannot be delivered: the callback runs on an executor thread and uses the
-server event loop captured at startup, because `asyncio.get_event_loop()` raises on
-that thread (the earlier handler approved the action on that error).
+`GET /` and the other non-API paths serve the Flutter web build when one is present
+(`/app/web` in the image, `ciel_app/build/web` locally, or `CIEL_WEB_DIR`). Those files
+are public and sent with `Cache-Control: no-cache`; the API routes stay token-protected.
+
+Turns from every front end in the process (dashboard, phone app, Telegram) run one at a
+time through `AgentLoop.run_step()`. Each WebSocket connection has its own
+`api.confirm.WebSocketConfirmer`: a `confirm_request` goes only to the connection whose
+message started the turn, and an answer from another device is ignored. It denies on
+timeout (60 s), on disconnect (immediately), when the request cannot be delivered, and
+for any answer other than JSON `true`. Work that no client started uses the core's
+default callback, which records the action as deferred and denies it. The callback runs
+on an executor thread and posts to the server event loop captured at startup, because
+`asyncio.get_event_loop()` raises on that thread (an earlier handler approved the action
+on that error). A message sent before Ciel finished starting gets an `error` frame.
 
 `CIEL_API_TOKEN`, when set, is required on every route except `/health`
 (`Authorization: Bearer …`, or `?token=` on the WebSocket because browsers cannot set

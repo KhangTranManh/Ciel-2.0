@@ -27,7 +27,8 @@ agent_system/
   utils/usage.py               Provider usage accounting
 
 core/
-  agent_loop.py                Thin request-loop facade used by entry points
+  agent_loop.py                Turn entry for every front end: one turn at a time,
+                               per-turn confirm callback
   llm_connector.py             Central turn coordinator and compatibility bridge
   router.py                    Route parsing and intent normalization
   plan_validation.py           Pure pre-execution multi-tool validation
@@ -50,6 +51,10 @@ core/
   memory.py                    Long-term RAG storage and recall
   telegram_interface.py        Allow-list, uploads, confirmation, cancellation
   scheduler.py                 Background poll loop and legacy clock tasks
+
+api/
+  confirm.py                   WebSocket approval for the connection that started a turn
+  dashboard.py                 Serves the Flutter web build at "/"; routing-based auth exemption
 
 skills/
   _result.py                   Standard tool result envelope
@@ -285,23 +290,41 @@ so one build serves a local, LAN, or VPS backend. See `voice_and_interface.md`.
 
 ### Telegram
 
-`main_telegram.py` uses `core/telegram_interface.py`. The chat ID allow-list is checked
+`main_telegram.py` (standalone) or `main_api.py` with `CIEL_API_TELEGRAM=true` (Docker)
+starts `core/telegram_interface.py`. The chat ID allow-list is checked
 before a request reaches Ciel. Files enter `ciel_workspace/telegram_uploads/`; risky
 tools use inline confirmation; `/cancel` requests step-boundary cancellation.
 
 ## Docker deployment
 
-`docker/Dockerfile` builds one image. Separate Compose files select API or Telegram
-commands and bind-mount private persistent state.
+`docker/Dockerfile` builds one image in two stages: `dashboard` compiles `ciel_app/` for
+the web, `runtime` installs Python and copies that build to `/app/web`.
+`docker/docker-compose.yml` runs one `ciel` container (dashboard + API + in-process
+Telegram + scheduler) and, under the `tunnel` profile, `cloudflared`, which carries a
+Cloudflare hostname to `http://ciel:8000` over an outbound-only connection.
+
+```text
+Cloudflare hostname ─► cloudflared ─► ciel:8000 ─┬─ /          dashboard (public static files)
+                                                 ├─ /ws /skills /tts   API (CIEL_API_TOKEN)
+                                                 └─ Telegram bot, scheduler (in-process)
+```
+
+`api/dashboard.py` mounts the build at `/` after every API route; the auth middleware
+exempts a path only when routing resolves it to that mount, so any API route added later
+is protected by default. `api/confirm.py` delivers an approval to the WebSocket
+connection whose message started the turn and denies on timeout, disconnect, delivery
+failure, or any answer other than JSON `true`.
 
 Important constraints:
 
 - `COPY . .` places source in the image, so source updates require `--build`.
 - `.env`, `credentials.json`, `ciel_data/`, `ciel_workspace/`, and `agent_output/` stay
   outside source deployment and survive recreation.
-- Telegram has no HTTP health endpoint; `compose ps` and the bot-online log are its
-  health signals.
-- API and Telegram must not write the same state concurrently.
+- Health is `GET /health` (the image HEALTHCHECK); the Telegram part is confirmed by the
+  `[Telegram] Bot online` log line.
+- Only the one `ciel` container writes the mounted state; `main_telegram.py` is for
+  running without Docker, never alongside the container.
+- Port 8000 is published on `127.0.0.1` only; public access is the tunnel.
 - Headless containers disable `vision_ops` unless a real display stack is supplied.
 - The image has no `.git`; the host checkout is mounted read-only at `/repo` with
   `CIEL_REPO_PATH=/repo`, and the image installs `git` for it. Editing the Dockerfile's

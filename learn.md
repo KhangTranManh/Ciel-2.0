@@ -102,16 +102,19 @@ trong tool hay prompt.
 
 ---
 
-## 6. Vì sao Docker được cấu trúc thành 2 file compose riêng
+## 6. Vì sao Docker chỉ còn 1 container
 
 ```
-docker/Dockerfile                    → 1 image dùng chung
-docker/docker-compose.api.yml        → service ciel-api (main_api.py, cho app Flutter; cần CIEL_API_TOKEN)
-docker/docker-compose.telegram.yml   → service ciel-telegram (main_telegram.py)
+docker/Dockerfile           → stage 1 build Flutter web, stage 2 Python + bản web đó
+docker/docker-compose.yml   → service ciel (dashboard + API + bot Telegram trong cùng process)
+                              + cloudflared (profile tunnel) → HTTPS qua Cloudflare Tunnel
 ```
 
-Tách 2 file thay vì 1 file có 2 service: để mỗi front-end có **vòng đời độc lập** — build/
-start/stop/deploy cái này không đụng cái kia, có thể đặt trên 2 host khác nhau sau này.
+Trước đây có 2 container (`ciel-api`, `ciel-telegram`) nhưng **không chạy cùng lúc được**:
+cả hai cùng ghi `ciel_data/` (JSON/SQLite chỉ thiết kế cho 1 process). Giờ bot Telegram
+chạy bên trong process API, mỗi lượt (turn) chạy lần lượt qua 1 khoá trong `AgentLoop`,
+và câu hỏi xác nhận quay về đúng front-end đã gửi lệnh. Tunnel đi **ra** từ VPS nên không
+cần mở port nào; port 8000 chỉ nghe trên `127.0.0.1`.
 
 **Vì sao vision bị tắt trong Docker**: `vision_act`/`vision_describe` cần màn hình/chuột
 thật (`pyautogui`) — container Linux không có. `.env`'s `DISABLED_SKILL_MODULES=vision_ops`

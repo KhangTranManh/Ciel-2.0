@@ -19,8 +19,19 @@ ciel_data/
 agent_output/
 ciel_workspace/
 backtest/logs/
-# The Flutter client is built separately; its build/ and .dart_tool/ caches are large.
-ciel_app/
+# The Dockerfile's dashboard stage builds ciel_app for the web; it needs lib/, web/
+# and pubspec.*, not local caches, native platform folders, or tests.
+ciel_app/build/
+ciel_app/.dart_tool/
+ciel_app/android/
+ciel_app/ios/
+ciel_app/macos/
+ciel_app/windows/
+ciel_app/linux/
+ciel_app/test/
+ciel_app/test_live/
+web/
+docker/tunnel.env
 
 .env
 credentials.json

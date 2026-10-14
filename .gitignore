@@ -24,3 +24,6 @@ autonomous_pipeline/*.log
 Run.md
 
 backtest/logs/
+
+# Cloudflare tunnel token (docker/tunnel.env.example shows the shape)
+docker/tunnel.env

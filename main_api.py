@@ -3,7 +3,6 @@ import sys
 import json
 import asyncio
 import secrets
-import threading
 import traceback
 from pathlib import Path
 
@@ -18,6 +17,8 @@ from core.agent_loop import AgentLoop
 from core.scheduler import CielScheduler
 from core.proactive_setup import setup_proactive
 from core.redact import redact_secrets
+from api.confirm import WebSocketConfirmer
+from api.dashboard import find_web_dir, is_dashboard_request, mount_dashboard
 
 langchain.debug = False
 langchain.verbose = False
@@ -33,6 +34,10 @@ API_TOKEN = os.getenv("CIEL_API_TOKEN", "").strip()
 # Raw thoughts.log lines carry full prompts and email bodies; no shipped client
 # renders them, so they are only streamed when explicitly enabled.
 STREAM_THOUGHTS = os.getenv("CIEL_API_STREAM_THOUGHTS", "false").strip().lower() in ("1", "true", "yes")
+# Run the Telegram bot inside this process instead of a second container, so one
+# process owns ciel_data/. Opt-in: a local `python main_api.py` sharing the VPS .env
+# must not start a second poller on the same bot.
+RUN_TELEGRAM = os.getenv("CIEL_API_TELEGRAM", "false").strip().lower() in ("1", "true", "yes")
 WS_UNAUTHORIZED = 4401
 
 
@@ -52,7 +57,8 @@ def token_ok(candidate: str | None) -> bool:
 # headers — otherwise a browser client reports a CORS error instead of "unauthorized".
 @app.middleware("http")
 async def require_token(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path == "/health":
+    if (request.method == "OPTIONS" or request.url.path == "/health"
+            or is_dashboard_request(app, request.scope)):
         return await call_next(request)
     if not token_ok(_bearer(request.headers.get("authorization"))):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -122,16 +128,36 @@ async def tts(payload: dict):
     return Response(content=audio, media_type="audio/mpeg")
 
 
-# SAFETY GATE: shared state for WebSocket confirmation
-_confirm_event = threading.Event()
-_confirm_result = {"approved": False}
-_confirm_ws = None       # Active WebSocket for sending confirm requests
-_confirm_lock = None     # asyncio.Lock for WebSocket sends
-_main_loop = None        # server event loop; the confirm callback runs on a worker thread
+_main_loop = None        # server event loop; approvals are asked from agent worker threads
+_telegram_bot = None
+
+
+def _deny_without_client(tool_name: str, preview: str, tool_args: dict) -> bool:
+    """Default callback for work no client started (e.g. a background trigger):
+    nobody is here to answer, and silence never resolves to "yes"."""
+    try:
+        ciel_agent.core.deferred.add(tool_name, tool_args,
+                                     reason="no client to ask", source="api (no client)")
+        ciel_agent.core._log_thought("SAFETY", "deferred", f"{tool_name}: no client to ask")
+    except Exception as e:
+        print(f"[API Safety] Failed to record deferred action: {e}")
+    return False
+
+
+def _start_telegram(agent):
+    from core.telegram_interface import TelegramInterface
+    try:
+        bot = TelegramInterface(agent)
+    except RuntimeError as e:
+        print(f"[API] Telegram not started: {e}")
+        return None
+    bot.start()
+    return bot
+
 
 @app.on_event("startup")
 async def startup_event():
-    global ciel_agent, _main_loop
+    global ciel_agent, _main_loop, _telegram_bot
     _main_loop = asyncio.get_running_loop()
     print("[API] Initializing Ciel Core...")
     if not API_TOKEN:
@@ -141,76 +167,25 @@ async def startup_event():
         scheduler = CielScheduler()
         ciel_agent = AgentLoop()
         scheduler.cleanse_callback = ciel_agent.core._brain_cleanse
+        # Each turn passes its own front end's callback to run_step; this default
+        # only covers work that no connected client started.
+        ciel_agent.core.confirm_callback = _deny_without_client
 
-        # SAFETY GATE: WebSocket confirmation callback
-        def _ws_confirm(tool_name: str, preview: str, tool_args: dict) -> bool:
-            """Send confirmation request via WebSocket and block until response.
-
-            No active WebSocket (client disconnected mid-run, or never connected for
-            this session) means nobody is here to answer — per the Tier 6 unattended
-            ceiling, silence must never resolve to "yes". Record it in DeferredStore
-            and deny, instead of silently running the risky step. See "Known-open" in
-            instructionAI/safety_and_risk.md — this closes that gap."""
-            global _confirm_event, _confirm_result, _confirm_ws, _confirm_lock
-            if _confirm_ws is None or _confirm_lock is None:
-                try:
-                    ciel_agent.core.deferred.add(
-                        tool_name, tool_args,
-                        reason="no active WebSocket to ask",
-                        source="api (no client)",
-                    )
-                    ciel_agent.core._log_thought(
-                        "SAFETY", "deferred", f"{tool_name}: no active WebSocket to ask")
-                except Exception as e:
-                    print(f"[API Safety] Failed to record deferred action: {e}")
-                print(f"[API Safety] No active WebSocket — deferring {tool_name} "
-                      f"instead of auto-approving.")
-                return False
-
-            _confirm_event.clear()
-            _confirm_result["approved"] = False
-
-            # Schedule the async send from the sync thread
-            async def _send():
-                async with _confirm_lock:
-                    try:
-                        await _confirm_ws.send_json({
-                            "type": "confirm_request",
-                            "data": {
-                                "tool_name": tool_name,
-                                "preview": preview,
-                                "tool_args": tool_args
-                            }
-                        })
-                    except Exception as e:
-                        print(f"[API Safety] Failed to send confirm request: {e}")
-
-            # This runs on an executor thread, which has no event loop of its own:
-            # asyncio.get_event_loop() raised here and the old handler approved the
-            # action. Use the server loop captured at startup, and fail closed.
-            try:
-                asyncio.run_coroutine_threadsafe(_send(), _main_loop).result(timeout=5)
-            except Exception as e:
-                print(f"[API Safety] Could not deliver confirm request ({e}) — denying {tool_name}.")
-                return False
-
-            # Block this thread until Flutter replies (max 60s)
-            approved = _confirm_event.wait(timeout=60)
-            if not approved:
-                print("[API Safety] Confirmation timed out — auto-cancelling.")
-                return False
-            return _confirm_result["approved"]
-
-        ciel_agent.core.confirm_callback = _ws_confirm
-
-        # The browser notification surface is not wired yet; Telegram remains the
-        # fallback for selected Tier-6 and planner triggers in API mode.
+        # Proactive notifications go to Telegram; the WebSocket channel is not wired yet.
         setup_proactive(ciel_agent, scheduler, include_cli=False)
+        if RUN_TELEGRAM:
+            _telegram_bot = _start_telegram(ciel_agent)
         scheduler.start_background()
         print("[API] Ciel Core initialized and ready.")
     except Exception as e:
         print(f"[API Fatal] Failed to initialize Ciel: {e}")
         traceback.print_exc()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if _telegram_bot is not None:
+        _telegram_bot.stop()
 
 async def tail_thoughts_log(websocket: WebSocket, send_lock: asyncio.Lock):
     """Watches the thoughts.log file and streams new lines to the websocket."""
@@ -354,37 +329,24 @@ async def broadcast_vitals(websocket: WebSocket, send_lock: asyncio.Lock):
         print(f"[API Vitals Error] {e}")
 
 
-async def run_agent_in_background(user_input: str, websocket: WebSocket, send_lock: asyncio.Lock):
-    """Runs the synchronous ciel_agent.run_step in the thread pool executor and streams the response back."""
-    global ciel_agent
+async def run_agent_in_background(user_input: str, websocket: WebSocket, send_lock: asyncio.Lock,
+                                  confirmer: WebSocketConfirmer):
+    """Run one turn on a worker thread; its approvals go back to this connection."""
     try:
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(None, ciel_agent.run_step, user_input)
-        
-        # Send the final response
-        async with send_lock:
-            try:
-                await websocket.send_json({
-                    "type": "response",
-                    "data": response
-                })
-            except Exception:
-                pass
+        response = await loop.run_in_executor(None, ciel_agent.run_step, user_input, confirmer)
+        frame = {"type": "response", "data": response}
     except Exception as e:
-        error_msg = f"Ciel crashed during processing: {redact_secrets(e)}"
-        async with send_lock:
-            try:
-                await websocket.send_json({
-                    "type": "error",
-                    "data": error_msg
-                })
-            except Exception:
-                pass
+        frame = {"type": "error", "data": f"Ciel crashed during processing: {redact_secrets(e)}"}
+    async with send_lock:
+        try:
+            await websocket.send_json(frame)
+        except Exception:
+            pass
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global _confirm_ws, _confirm_lock
     await websocket.accept()
     # Browsers cannot set headers on a WebSocket, so the token may also arrive as ?token=.
     supplied = websocket.query_params.get("token") or _bearer(websocket.headers.get("authorization"))
@@ -395,69 +357,63 @@ async def websocket_endpoint(websocket: WebSocket):
     print("[API] New client connected via WebSocket.")
 
     send_lock = asyncio.Lock()
-    _confirm_ws = websocket
-    _confirm_lock = send_lock
 
+    async def send_json(frame: dict):
+        async with send_lock:
+            await websocket.send_json(frame)
+
+    confirmer = WebSocketConfirmer(_main_loop or asyncio.get_running_loop(), send_json)
     tail_task = asyncio.create_task(tail_thoughts_log(websocket, send_lock)) if STREAM_THOUGHTS else None
     vitals_task = asyncio.create_task(broadcast_vitals(websocket, send_lock))
-    
+
     try:
         while True:
-            # Receive message from Flutter Client
             data = await websocket.receive_text()
-            print(f"[API] Received from client: {data}")
-            
             try:
-                # Parse if it's JSON
                 msg_data = json.loads(data)
-
-                # Handle confirmation responses from Flutter
-                if msg_data.get("type") == "confirm_response":
-                    _confirm_result["approved"] = msg_data.get("approved", False)
-                    _confirm_event.set()
-                    continue
-
-                # TIER 5 — the UI's Stop button / Esc key sends this. Wired the same
-                # way main.py binds Ctrl+C: cooperative, lands at the next step
-                # boundary (never mid-tool), and the turn's own `run_agent_in_background`
-                # still sends the normal `response`/`error` frame once it returns — no
-                # separate "cancelled" frame needed, `ciel_agent.core.process()` already
-                # returns a `[CANCELLED] ...` string like any other reply.
-                if msg_data.get("type") == "cancel":
-                    if ciel_agent is not None:
-                        ciel_agent.core.request_cancel("cancelled from UI")
-                    continue
-
-                user_input = msg_data.get("message", "")
             except json.JSONDecodeError:
-                user_input = data
-            
-            if not user_input:
+                msg_data = {"message": data}
+            if not isinstance(msg_data, dict):
                 continue
 
-            # Acknowledge receipt
-            async with send_lock:
-                try:
-                    await websocket.send_json({
-                        "type": "status",
-                        "data": "processing"
-                    })
-                except Exception:
-                    pass
-            
-            # Start Ciel Agent in a background task so the WebSocket loop remains responsive to read confirm answers
-            asyncio.create_task(run_agent_in_background(user_input, websocket, send_lock))
-                
+            if msg_data.get("type") == "confirm_response":
+                confirmer.answer(msg_data.get("approved"))
+                continue
+
+            # TIER 5 — Stop button / Esc. Cooperative: lands at the next step boundary,
+            # and the turn still ends with its normal response frame ("[CANCELLED] ...").
+            if msg_data.get("type") == "cancel":
+                if ciel_agent is not None:
+                    ciel_agent.core.request_cancel("cancelled from UI")
+                continue
+
+            user_input = str(msg_data.get("message") or "").strip()
+            if not user_input:
+                continue
+            if ciel_agent is None:
+                await send_json({"type": "error", "data": "Ciel is still starting — try again shortly."})
+                continue
+
+            await send_json({"type": "status", "data": "processing"})
+            # A background task keeps this loop free to receive the approval answer.
+            asyncio.create_task(run_agent_in_background(user_input, websocket, send_lock, confirmer))
+
     except WebSocketDisconnect:
         print("[API] Client disconnected.")
     finally:
-        if _confirm_ws == websocket:
-            _confirm_ws = None
-            _confirm_lock = None
+        confirmer.close()
         if tail_task:
             tail_task.cancel()
         vitals_task.cancel()
 
+
+# Last, so "/" never shadows an API route.
+_web_dir = find_web_dir()
+if mount_dashboard(app, _web_dir):
+    print(f"[API] Dashboard served from {_web_dir}")
+
+
 if __name__ == "__main__":
-    print("[API] Starting Ciel WebSocket Server on ws://localhost:8000/ws")
-    uvicorn.run("main_api:app", host="0.0.0.0", port=8000, reload=False)
+    port = int(os.getenv("CIEL_PORT", "8000"))
+    print(f"[API] Starting Ciel on http://localhost:{port} (WebSocket /ws)")
+    uvicorn.run("main_api:app", host="0.0.0.0", port=port, reload=False)

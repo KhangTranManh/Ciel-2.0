@@ -164,37 +164,26 @@ python main_telegram.py
 
 Only the configured `TELEGRAM_CHAT_ID` is accepted. High-risk actions use an inline
 confirmation keyboard, and `/cancel` requests cooperative cancellation at the next
-tool boundary.
+tool boundary. Standalone `main_telegram.py` is for running without Docker; the Docker
+deployment runs the bot inside the API process instead.
 
-### Docker
-
-```bash
-# API service
-docker compose -f docker/docker-compose.api.yml up -d --build
-
-# Telegram service
-docker compose -f docker/docker-compose.telegram.yml up -d --build
-```
-
-The services share bind-mounted `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
-Run only one Ciel front end against that state at a time; the current JSON/SQLite state
-is designed for one process.
-
-The image contains no `.git`. Compose mounts the host checkout read-only at `/repo` and
-sets `CIEL_REPO_PATH=/repo`, so git tools can show status, diff, and log on the server
-but cannot commit or push from the container.
-
-For every source, dependency, or Dockerfile change, rebuild and recreate:
+### Docker (server deployment)
 
 ```bash
-docker compose -f docker/docker-compose.telegram.yml up -d --build --force-recreate
-docker compose -f docker/docker-compose.telegram.yml ps
-docker compose -f docker/docker-compose.telegram.yml logs -f --tail=100 ciel-telegram
+docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
 ```
 
-The Telegram service intentionally has no HTTP health endpoint. Verify it with Compose
-status and the `[Telegram] Bot online` log. See [docker/README.md](docker/README.md) for
-the complete deployment contract.
+One container, `ciel`, serves the dashboard (the Flutter web build) at `/`, the API, and
+the Telegram bot, so a single process owns `ciel_data/`. Turns from every front end run
+one at a time, and each turn's approval goes back to the front end that asked. The
+optional `cloudflared` service (profile `tunnel`) publishes it at an HTTPS hostname
+through a Cloudflare Tunnel, with no open inbound port; port 8000 is bound to
+`127.0.0.1` only. The image has no `.git`; the host checkout is mounted read-only at
+`/repo` for git status, diff, and log.
+
+To update: `git pull`, then the same command. Setup (tunnel token, hostname, Cloudflare
+Access), health checks, and migrating from the old `ciel-telegram` container are in
+[docker/README.md](docker/README.md).
 
 ## Planning and reminders
 
@@ -322,6 +311,7 @@ python -m backtest.test_conversation_bugs
 python -m backtest.test_prompt_harness
 python -m backtest.test_outbound        # email render, send re-check, dedupe
 python -m backtest.test_api_auth        # API token on HTTP + WebSocket
+python -m backtest.test_api_server      # dashboard, per-connection approvals, one turn at a time
 
 # Flutter app (offline fakes; see ciel_app/README.md for the live check)
 cd ciel_app && flutter analyze && flutter test
@@ -336,13 +326,14 @@ production planner and notifier data unchanged.
 ```text
 agent_system/       Model configuration, prompts, and model clients
 core/               Runtime orchestration and deterministic capability tiers
+api/                main_api.py building blocks: WebSocket approvals, served dashboard
 skills/             Auto-discovered tool packs
 ciel_data/          Persistent private state, RAG, logs, planner database
 ciel_workspace/     Sandboxed working files and immediate todos
 agent_output/       Generated reports and deliverables
 backtest/           Maintained regression and integration suites
 scripts/            Maintenance utilities and bounded prompt harness
-docker/             Dockerfiles, Compose files, deployment notes
+docker/             Dockerfile, docker-compose.yml (Ciel + Cloudflare tunnel), deployment guide
 ciel_app/           Flutter client (Android, iOS, Windows, macOS, web)
 instructionAI/      Stable project memory for future AI sessions
 improve.md          Living roadmap and pass criteria

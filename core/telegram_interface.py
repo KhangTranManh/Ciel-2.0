@@ -225,7 +225,7 @@ class TelegramInterface:
                 continue
             self._send_typing()
             try:
-                response = self.ciel.run_step(text)
+                response = self.ciel.run_step(text, confirm_callback=self.confirm_callback)
             except Exception as e:
                 response = f"[Ciel Fatal] {redact_secrets(e)}"
             # The attachment and its caption are already visible in this chat. Do not
@@ -235,7 +235,8 @@ class TelegramInterface:
             self._send_message(response)
 
     def start(self):
-        self.ciel.core.confirm_callback = self.confirm_callback
+        # Approvals are routed per turn (run_step above), so another front end in the
+        # same process keeps its own callback for its own turns.
         threading.Thread(target=self._poll_updates, daemon=True, name="telegram-poll").start()
         threading.Thread(target=self._worker_loop, daemon=True, name="telegram-worker").start()
         print(Fore.BLUE + f"[Telegram] Bot online — listening for chat_id={self.chat_id} only."
