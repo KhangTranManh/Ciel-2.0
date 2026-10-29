@@ -115,20 +115,25 @@ flowchart TD
    enter `ContextAssembler` as separate prioritized blocks.
 4. `ActiveSubject.begin_turn()` contributes one compact topic snapshot to the Brain.
    Recent raw turns are deliberately excluded from routing.
-5. Brain returns `chat`, `tool`, `code`, or `multi_tool` JSON.
+5. Brain returns `chat`, `tool`, `code`, or `multi_tool` JSON. Recoverable fenced/prose
+   wrappers are normalized before the canonical route event is logged; contract drift is
+   counted separately as `route_non_strict`.
 6. Deterministic route guards resolve explicit lookup follow-ups and block unsupported
    chat promises such as “I am searching now” without a tool execution handle.
 7. Multi-tool plans are normalized and validated before permission review.
 8. Permission policy resolves every call. An attended risky plan is confirmed before
    execution; an unattended risky call is deferred.
 9. Independent, explicitly safe reads may run concurrently. Mutations, dependencies,
-   unknown tools, and outbound deliveries remain sequential.
+   unknown tools, outbound deliveries, and Gmail reads over the shared Google client
+   remain sequential.
 10. Tool results are checked for deterministic failure signals. Recovery may retry or
-    select another loaded tool within bounded attempts.
+    select another loaded tool within bounded attempts. Auth, network, allowlist,
+    missing-command, and unavailable-tool failures skip argument healing. Empty or failed
+    referenced outputs stop their dependent step instead of becoming an argument.
 11. Worker composes the final response from the real request and grounded results.
-    Recent turns are available here, on the response side only. When the plan ends in
-    a send or deferred write, data steps skip per-step formatting and one synthesis
-    reads their raw results; the send runs after synthesis, and its status line is
+    Recent turns are available here, on the response side only. In every multi-tool
+    execution, data steps skip per-step formatting and one synthesis reads their raw
+    results; a send runs after synthesis, and its status line is
     built from the provider result plus a Gmail re-check, not from model prose.
 12. The final response updates chat memory, optional user-model learning, and the
     Active Subject snapshot once.
@@ -234,7 +239,8 @@ Brain plan
 
 `{prev}` and `{step_N}` can reference earlier results only. A plan with an unknown tool,
 forward dependency, malformed arguments, or unsafe duplicate renumbering stops as a
-whole. Continuation plans use the same path.
+whole. At runtime, an empty or failed referenced result emits `SKIPPED_DEPENDENCY` and
+the consumer is not called. Continuation plans use the same path.
 
 ## Planner architecture
 

@@ -46,6 +46,8 @@ Rules:
 - Descriptions state when to use the tool and what evidence it returns.
 - Unknown/new tools are sequential by default.
 - `parallel_safe` contains read-only, independent calls only.
+- Gmail toolkit reads are sequential even though they are logically read-only: the
+  current closures share one `googleapiclient` resource and HTTP transport.
 - Load-time capability removal uses `DISABLED_SKILL_MODULES=<module-stem>`.
 - Runtime allow/deny policy remains in permissions; it is not replaced by disabling a
   module.
@@ -128,6 +130,14 @@ References point backward only:
 
 Plan validation happens before permissions and execution. Do not duplicate schema,
 reference, or tool-existence checks in route-specific branches.
+
+Successful `BRAIN/route_decision` audit bodies are normalized JSON. A recoverable
+fenced or prose-wrapped object emits `BRAIN/route_non_strict`; readers never need to
+parse malformed text from the canonical event.
+
+Multi-tool steps return raw evidence to one final Worker synthesis. Per-step Worker
+formatting remains available for single-tool responses only. A referenced source that
+is empty, cancelled, or failed produces `SKIPPED_DEPENDENCY`; its consumer is not run.
 
 ## Context conventions
 
@@ -332,8 +342,8 @@ High-risk changes requiring broad regression and explicit review:
   Installing inside a running container is lost at the next recreate.
 - Changing the Dockerfile `apt-get` layer forces a multi-minute rebuild (PyTorch
   reinstalls); code-only changes rebuild from cache in seconds plus image export.
-- Self-healing rewrites tool arguments even when the failure is environmental (e.g.
-  `git: not found`), and the user sees only the last attempt's error. Check
-  `thoughts.log` `HEALING/DETECT_ERROR` for the first, real error.
+- Argument healing is reserved for potentially repairable input/format failures.
+  Deterministic auth, network, allowlist, missing-command, and unavailable-tool errors
+  retain their original cause and skip model-driven argument retries.
 - Async API handlers must not do blocking file or subprocess work; the vitals loop once
   read the whole multi-MB `thoughts.log` every 2 s per client and stalled confirm frames.

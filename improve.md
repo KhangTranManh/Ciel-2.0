@@ -282,24 +282,29 @@ No new HTML tool yet; no auto-analyze without user ask; unattended auto-send off
 
 ## Open findings (from the 2026-09-29 VPS log review)
 
-Not yet fixed; each needs a focused test before it is closed.
+Unchecked items still need a focused test before they are closed.
 
-- [ ] **Parallel Gmail reads** fail with `SSL record layer failure`: `search_gmail` /
+- [x] **Parallel Gmail reads** fail with `SSL record layer failure`: `search_gmail` /
   `get_gmail_message` / `get_gmail_thread` are in `core/parallel.py`'s parallel-safe set
-  but share one `googleapiclient` HTTP connection, which is not thread-safe.
-- [ ] **Self-healing hides the real error**: network/SSL, `not found`, and allowlist
+  but share one `googleapiclient` HTTP connection, which is not thread-safe. Fixed by
+  keeping Gmail reads sequential; `test_plan_validation` covers the batching boundary.
+- [x] **Self-healing hides the real error**: network/SSL, `not found`, and allowlist
   errors are retried with rewritten args, and only the last error reaches the Master
   (`git: not found` was reported as "used a full path"). Extend
-  `_HEALING_SKIP_PATTERNS`.
-- [ ] **Failed step feeds the next**: `{prev}` injected `No emails found.` as a Gmail
+  `_HEALING_SKIP_PATTERNS`. Fixed with deterministic error classification and original
+  bounded error propagation; repairable symbol/format errors remain healable.
+- [x] **Failed step feeds the next**: `{prev}` injected `No emails found.` as a Gmail
   message id, then healing invented ids. Stop a dependent step when its source failed or
-  was empty (`_resolve_step_refs`).
+  was empty (`_resolve_step_refs`). Fixed with `SKIPPED_DEPENDENCY`; focused outbound
+  coverage verifies the downstream Gmail reader is never called.
 - [ ] **Silent capability loss**: a tool pack that fails to load at startup (e.g. Gmail
   `invalid_grant`) should notify the Master on Telegram.
 - [ ] **Proactive messages in the app**: `main_api.py` does not publish notifier output
   over the WebSocket, so the Flutter app never sees weekly plans or reminders.
-- [ ] **API + Telegram on one host**: the one-writer rule forces a choice; run the
+- [x] **API + Telegram on one host**: the one-writer rule forces a choice; run the
   Telegram poller inside the API process before deploying the app against the VPS.
+  Implemented through `CIEL_API_TELEGRAM`, covered by `test_api_server`, and deployed
+  as the healthy `ciel` container on the VPS on 2026-10-28.
 - [ ] **Search quality**: Vietnamese price/news queries return Facebook/TikTok pages.
 - [ ] **Cost**: Brain averages ~14.6k input tokens per routing call (~22k tokens per
   request); the tool list is the main contributor.
@@ -406,7 +411,8 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | 2026-10-02 | Secret redaction | — | `quality_guards` 41/41 | **PASS** | Telegram poll errors had printed the bot token (inside the request URL) into the container log 6×. `core/redact.py` masks it and any secret-named env value in logs, tool results, and API/Telegram error replies. Rotate the bot token. |
 | 2026-10-02 | API hardening + Flutter app | Brain + Worker | `api_auth` 13/13; unit 12/12; Flutter analyze clean, 26/26 tests, web build; live app↔API check | **PASS** | API confirm callback had auto-approved every risky action (`get_event_loop()` raised on the executor thread → `return True`); now fails closed. `CIEL_API_TOKEN` on HTTP + WebSocket; raw thought frames opt-in; vitals loop no longer reads the 12 MB log per tick. React/Tauri `ui/` replaced by Flutter `ciel_app/` (Android/iOS/Windows/macOS/web, runtime server + token). |
 | 2026-10-02 | P1.2 + P1.3 | — | `test_proactive` 149/149; `test_user_model` 108/108; VPS log review | **PASS** | See P1.2/P1.3 evidence above. |
-| 2026-10-08 | One-container deployment + dashboard | — | `api_server` 26/26; unit 13/13; Flutter analyze clean, 28/28 tests; compose config (with/without tunnel); served-build smoke in headless Chrome | **PASS (local)** | `main_api.py` serves the Flutter web build at `/` (public static, API still token-gated by routing) and runs Telegram in-process (`CIEL_API_TELEGRAM`), so one process owns `ciel_data/`. `AgentLoop` turn lock; approvals per WebSocket connection (`api/confirm.py`). Multi-stage Dockerfile (Flutter 3.35.4 → Python), single `docker/docker-compose.yml` with `cloudflared` (profile `tunnel`), port 8000 on loopback. Replaces `docker-compose.api.yml`/`.telegram.yml`. VPS image build not yet verified. |
+| 2026-10-08 | One-container deployment + dashboard | — | `api_server` 26/26; unit 13/13; Flutter analyze clean, 28/28 tests; compose config (with/without tunnel); served-build smoke in headless Chrome; VPS build/health 2026-10-28 | **PASS (deployed)** | `main_api.py` serves the Flutter web build at `/` (public static, API still token-gated by routing) and runs Telegram in-process (`CIEL_API_TELEGRAM`), so one process owns `ciel_data/`. `AgentLoop` turn lock; approvals per WebSocket connection (`api/confirm.py`). Multi-stage Dockerfile (Flutter 3.35.4 → Python), single `docker/docker-compose.yml` with `cloudflared` (profile `tunnel`), port 8000 on loopback. Replaces `docker-compose.api.yml`/`.telegram.yml`. VPS smoke: dashboard 200, `/health` ready, auth gate 401, Telegram online, 0 restart/OOM. |
+| 2026-10-28 | VPS audit reliability fixes | Brain + Worker | focused: outbound 71/71, quality 59/59, plan 12/12; unit 13/13 suites (648/648); VPS health/syntax/startup smoke | **PASS (deployed)** | Provider timeouts finish honestly; route logs normalize recoverable JSON; all multi-tool branches keep raw evidence until one final synthesis; deterministic failures skip argument healing; empty/failed references stop dependents; shared-client Gmail reads are sequential. Deployed in the one-container runtime. Gmail OAuth independently returned `invalid_grant` on restart and needs a browser-authorized replacement token. |
 
 ---
 

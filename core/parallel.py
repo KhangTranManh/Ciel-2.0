@@ -37,8 +37,9 @@ _DEFAULT_PARALLEL_SAFE = frozenset({
     "read_file", "get_file_info", "list_workspace", "grep_in_workspace",
     # git reads
     "git_status", "git_diff", "git_list_repos",
-    # mail reads
-    "search_gmail", "get_gmail_message", "get_gmail_thread",
+    # Gmail reads are deliberately absent: the current GmailToolkit closures share one
+    # googleapiclient Resource, whose HTTP transport is not thread-safe. Independent
+    # Gmail steps therefore stay sequential until each call owns its own client.
     # misc reads / pure computation
     "get_weather", "calculate", "get_current_time", "get_fact", "list_todos",
     "list_monthly_goals", "list_weekly_plan",

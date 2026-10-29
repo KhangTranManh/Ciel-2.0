@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from core.plan_validation import validate_plan
+from core.parallel import collect_parallel_safe, plan_batches
 
 
 _passed = 0
@@ -98,10 +99,32 @@ def test_duplicate_delivery_repairs_without_renumbering():
           referenced_after_duplicate.error_text())
 
 
+def test_gmail_reads_are_serialized():
+    print("\n[4] Gmail reads sharing one API resource remain sequential")
+    safe = collect_parallel_safe([])
+    gmail_steps = [
+        {"tool_name": "search_gmail", "tool_args": {"query": "is:unread"}},
+        {"tool_name": "get_gmail_message", "tool_args": {"message_id": "m1"}},
+    ]
+    batches = plan_batches(gmail_steps, safe, max_workers=4)
+    check("Gmail reads are not declared parallel-safe", len(batches) == 2,
+          repr(batches))
+
+    independent_reads = [
+        {"tool_name": "get_market_price", "tool_args": {"symbol": "XAU"}},
+        {"tool_name": "stealth_search", "tool_args": {"query": "gold news"}},
+    ]
+    parallel_batches = plan_batches(independent_reads, safe, max_workers=4)
+    check("unrelated read-only tools still share a parallel batch",
+          len(parallel_batches) == 1 and len(parallel_batches[0]) == 2,
+          repr(parallel_batches))
+
+
 def main() -> int:
     test_valid_dependency_and_schema()
     test_invalid_structure_and_dependencies()
     test_duplicate_delivery_repairs_without_renumbering()
+    test_gmail_reads_are_serialized()
     total = _passed + len(_failed)
     print(f"\nRESULT: {_passed}/{total} passed")
     if _failed:

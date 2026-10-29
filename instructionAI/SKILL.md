@@ -110,17 +110,21 @@ Living files outside this directory:
 
 6. Tool packs auto-register from `skills/**/*_ops.py`. Each exposes one `get_*_tools()`
    function returning `tools`, `prompt`, and optional `parallel_safe`. New or unknown
-   tools remain sequential unless explicitly marked safe.
+   tools remain sequential unless explicitly marked safe. Gmail reads remain sequential
+   because their toolkit closures share one non-thread-safe Google API resource.
 
 7. A tool may be called repeatedly by healing, correction, continuation, or retries.
    Mutations are idempotent or use preview/confirm boundaries. Tools return the standard
    `skills._result.make_result()` envelope and report partial or empty outcomes honestly.
+   Argument healing skips deterministic auth, network, allowlist, missing-command, and
+   unavailable-tool failures; a failed or empty referenced step blocks its dependent step.
 
 8. Real external data is gathered before composing claims, emails, or reports. Undated
    search results remain undated. “Sent” is stated only after a real provider success.
-   In a plan that ends in a send or deferred write, data steps return raw evidence
-   (`execute_tool(_skip_format=True)`) instead of a per-step Worker reply, because that
-   reply saw the whole request and narrated “Đã gửi” before the send ran. After a Gmail
+   Every multi-tool plan keeps step outputs as raw evidence
+   (`execute_tool(_skip_format=True)`) and invokes Worker once at the final synthesis
+   boundary. This avoids branch-level opinions, contradictions, and premature delivery
+   claims. After a Gmail
    send, `_email_delivery_note` fetches the message back by its Message Id and the reply
    opens with ✅ (re-checked), ⚠️ (accepted but not found), or ❌ (declined/failed).
 
@@ -204,7 +208,9 @@ Living files outside this directory:
 
 26. `thoughts.log` is an immutable-format chronological audit contract. `[LLM_CALL]`
     keeps `model=` first and space-delimited. Readers normalize CRLF; writers do not
-    redesign the format for a UI. Trigger actions describe outcomes: delivery and digest
+    redesign the format for a UI. Successful `route_decision` entries contain normalized
+    JSON; recovered fenced/prose responses emit a separate `route_non_strict` event.
+    Trigger actions describe outcomes: delivery and digest
     are logged, while routine cooldown suppression is not emitted on every poll.
 
 27. `core/planner_store.py` is the only planner/reminder SQL boundary. SQLite writes are atomic,

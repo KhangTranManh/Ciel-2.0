@@ -79,6 +79,29 @@ def _extract_json_object(raw: str) -> str:
     raise ValueError("Router LLM reply contains an unterminated JSON object")
 
 
+def _parse_route_decision(raw: str) -> tuple[dict, bool]:
+    """Parse a route and report whether the model honored the strict JSON contract.
+
+    Wrapped JSON remains recoverable so a harmless Markdown fence does not spend a
+    provider retry.  The boolean is telemetry only: callers log the normalized object
+    on the canonical ``route_decision`` event and record contract drift separately.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("Router LLM returned empty response -- retrying")
+
+    try:
+        parsed = json.loads(raw)
+        strict = isinstance(parsed, dict)
+    except json.JSONDecodeError:
+        parsed = json.loads(_extract_json_object(raw))
+        strict = False
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Router LLM reply must be a JSON object")
+    return parsed, strict
+
+
 CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
 
 Respond ONLY with valid JSON. Start with a hidden_thought object.
@@ -383,20 +406,21 @@ class Router:
         if isinstance(content, list):
             content = "".join(c.text if hasattr(c, "text") else str(c) for c in content)
         raw = content.strip()
-        self.log_thought("BRAIN", "route_decision", raw)
 
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-            raw = raw.strip()
-
-        if not raw:
-            raise ValueError("Router LLM returned empty response -- retrying")
-
-        # Tolerate prose/trailing text around the decision object (see
-        # _extract_json_object) instead of failing the whole ~14s call over wrapping.
-        parsed = json.loads(_extract_json_object(raw))
+        # Tolerate prose/fences around the object, but never write that malformed raw
+        # text to the canonical route_decision event. Audit readers can now parse every
+        # successful decision deterministically, while route_non_strict measures model
+        # contract drift without copying potentially sensitive prompt prose into logs.
+        parsed, strict = _parse_route_decision(raw)
+        if not strict:
+            self.log_thought(
+                "BRAIN", "route_non_strict",
+                "Recovered a valid route object from a non-strict model response.",
+            )
+        self.log_thought(
+            "BRAIN", "route_decision",
+            json.dumps(parsed, ensure_ascii=False, separators=(",", ":")),
+        )
 
         # Extract and log Chain-of-Thought, then strip from decision
         hidden_thought = parsed.pop("hidden_thought", None)

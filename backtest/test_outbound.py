@@ -372,6 +372,78 @@ def test_sent_claim_only_after_verified_send():
     check("English request gets an English confirmation", out4.startswith("✅ Email sent to"), out4[:120])
 
 
+def test_multi_tool_synthesizes_raw_evidence_once():
+    """Independent data branches stay factual until the one final synthesis."""
+    c = make_core()
+    c.prompts = []
+
+    def fake_exec(name, args):
+        c.sent.append((name, dict(args or {})))
+        facts = {
+            "read_file": "RAW_FILE_FACT: project status is healthy",
+            "get_current_time": "RAW_TIME_FACT: 2026-10-28 00:40",
+        }
+        return {"success": True, "result": facts[name]}
+
+    def fake_generate(prompt, *args, **kwargs):
+        c.prompts.append(prompt)
+        if "Raw result:" in prompt:
+            return "EARLY_BRANCH_OPINION"
+        return "FINAL_SYNTHESIS"
+
+    c.tool_manager.execute_tool = fake_exec
+    c.worker.generate = fake_generate
+    plan = [
+        {"tool_name": "read_file", "tool_args": {"filename": "ciel_workspace/status.txt"}},
+        {"tool_name": "get_current_time", "tool_args": {}},
+    ]
+    out = c.execute_multi_tool(plan, "", user_input="Phân tích giá và tin vàng")
+
+    check("ordinary multi-tool invokes Worker exactly once", len(c.prompts) == 1,
+          str(len(c.prompts)))
+    check("no branch-level Worker formatting occurs",
+          not any("Raw result:" in prompt for prompt in c.prompts), repr(c.prompts))
+    check("the final synthesis receives both raw facts",
+          "RAW_FILE_FACT" in c.prompts[0] and "RAW_TIME_FACT" in c.prompts[0],
+          c.prompts[0][:300])
+    check("only the final synthesis is returned", out == "FINAL_SYNTHESIS", out)
+
+
+def test_failed_dependency_stops_downstream_tool():
+    """An empty search result must never be injected as a Gmail message id."""
+    import core.llm_connector as connector
+
+    c = make_core()
+    c.prompts = []
+
+    def fake_exec(name, args):
+        c.sent.append((name, dict(args or {})))
+        if name == "search_gmail":
+            return {"success": True, "result": "No emails found."}
+        raise AssertionError(f"downstream tool must not run: {name}({args})")
+
+    c.tool_manager.execute_tool = fake_exec
+    c.worker.generate = lambda prompt, *a, **k: (c.prompts.append(prompt), "No matching email.")[1]
+    plan = [
+        {"tool_name": "search_gmail", "tool_args": {"query": "subject:missing"}},
+        {"tool_name": "get_gmail_message", "tool_args": {"message_id": "{prev}"}},
+    ]
+    # This focused unit tests dependency execution only. Disable the optional Brain
+    # continuation loop so the suite remains fully offline and deterministic.
+    old_loop = connector.AGENT_LOOP_ENABLED
+    connector.AGENT_LOOP_ENABLED = False
+    try:
+        out = c.execute_multi_tool(plan, "", user_input="Read the matching email")
+    finally:
+        connector.AGENT_LOOP_ENABLED = old_loop
+
+    check("only the source search executes",
+          [name for name, _ in c.sent] == ["search_gmail"], repr(c.sent))
+    check("the final synthesis sees an explicit dependency skip",
+          "[SKIPPED_DEPENDENCY]" in c.prompts[-1], c.prompts[-1][:400])
+    check("the request still receives one bounded final response", out == "No matching email.", out)
+
+
 def main():
     print("=" * 72)
     print("OUTBOUND IDEMPOTENCE SUITE (tool layer stubbed — nothing is sent)")
@@ -379,7 +451,9 @@ def main():
     for fn in (test_key_shapes, test_duplicate_suppressed,
                test_direct_success_clears_matching_pending_action, test_scope,
                test_failure_is_retryable, test_html_and_reply, test_stale_send_status,
-               test_markdown_email_render, test_sent_claim_only_after_verified_send):
+               test_markdown_email_render, test_sent_claim_only_after_verified_send,
+               test_multi_tool_synthesizes_raw_evidence_once,
+               test_failed_dependency_stops_downstream_tool):
         fn()
 
     print("\n" + "=" * 72)

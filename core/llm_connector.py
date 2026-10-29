@@ -364,9 +364,28 @@ _RAW_STEP_RESULT_CHARS = 12000
 
 _HEALING_SKIP_PATTERNS = re.compile(
     r"library is not installed|service unavailable from a restricted location|"
-    r"max retries exceeded|read timed out|\[winerror|forbidden by its",
+    r"max retries exceeded|(?:read|connect|request|operation) timed out|\[winerror|"
+    r"forbidden by its|\[not_allowlisted\]|\[(?:tool_)?not_found\]|"
+    r"tool.{0,80}(?:not registered|not loaded|not found)|"
+    r"invalid_grant|authentication (?:failed|required)|unauthorized|"
+    r"permission denied|access denied|certificate verify failed|"
+    r"(?:ssl|tls)(?:error| failure|:)|connection (?:reset|aborted|refused)|"
+    r"command not found|is not recognized as an internal or external command|"
+    r"/(?:bin/)?(?:sh|bash):.{0,120}not found",
     re.IGNORECASE,
 )
+
+
+def _is_unfixable_tool_error(tool_name: str, result_text: str) -> bool:
+    """Whether changing tool arguments cannot repair this deterministic failure.
+
+    ``run_python_script`` is intentionally excluded: its recovery path can rewrite
+    code, not merely guess arguments, and may legitimately remove a bad dependency.
+    """
+    return (
+        tool_name != "run_python_script"
+        and bool(_HEALING_SKIP_PATTERNS.search((result_text or "")[:1000]))
+    )
 
 
 _RISK_DESCRIPTIONS = {
@@ -381,6 +400,50 @@ _RISK_DESCRIPTIONS = {
 }
 
 class CielCore:
+    @staticmethod
+    def _is_timeout_exception(error: BaseException) -> bool:
+        """Recognize provider timeouts through wrapper exception chains.
+
+        OpenAI-compatible gateways may wrap ``TimeoutError`` several times
+        (httpcore -> httpx -> OpenAI -> LangChain). Depending on dependency versions,
+        the outer class is not one stable import, so inspect the complete cause/context
+        chain instead of coupling the runtime to one SDK exception class.
+        """
+        seen = set()
+        current = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            name = type(current).__name__.casefold()
+            message = str(current).casefold()
+            if (
+                isinstance(current, TimeoutError)
+                or "timeout" in name
+                or "timed out" in message
+                or "read operation timed out" in message
+            ):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    @classmethod
+    def _pipeline_error_response(cls, error: BaseException, user_input: str) -> str:
+        """Return a bounded, user-facing failure without leaking provider internals."""
+        is_vi = cls._detect_language(user_input) == "Vietnamese"
+        if cls._is_timeout_exception(error):
+            if is_vi:
+                return (
+                    "Nhà cung cấp AI phản hồi quá chậm nên lượt này đã hết thời gian chờ. "
+                    "Yêu cầu chưa hoàn tất; đừng xem trạng thái “Processing…” là đã làm xong. "
+                    "Hãy gửi lại sau một lát."
+                )
+            return (
+                "The AI provider timed out, so this turn did not complete. Do not treat "
+                "the earlier Processing status as completion; please retry shortly."
+            )
+        if is_vi:
+            return "Lượt xử lý gặp lỗi và chưa hoàn tất. Vui lòng thử lại; lỗi đã được ghi để kiểm tra."
+        return "This turn failed before completion. Please retry; the error was recorded for review."
+
     def __init__(self):
         # Created FIRST: _log_thought serialises on it, and anything constructed below
         # may log during start-up.
@@ -1902,11 +1965,7 @@ class CielCore:
         attempt = 1
         current_args = tool_args
 
-        if (
-            tool_name != "run_python_script"
-            and is_error
-            and _HEALING_SKIP_PATTERNS.search(result_text[:300])
-        ):
+        if is_error and _is_unfixable_tool_error(tool_name, result_text):
             self._log_thought("HEALING", "skipped_unfixable",
                               f"{tool_name}: error matches a known-unfixable pattern (missing dependency / "
                               f"network / geo-restriction) — no tool_args correction could fix this, skipping retries.")
@@ -1914,7 +1973,7 @@ class CielCore:
         while (
             attempt <= max_attempts
             and is_error
-            and not (tool_name != "run_python_script" and _HEALING_SKIP_PATTERNS.search(result_text[:300]))
+            and not _is_unfixable_tool_error(tool_name, result_text)
         ):
             self._log_thought("HEALING", f"attempt_{attempt}", f"Starting heal attempt {attempt}/{max_attempts}")
             
@@ -1976,6 +2035,12 @@ class CielCore:
         if is_error:
             log.error(f"Tool {tool_name} failed after {attempt-1} self-healing attempts.")
             self._log_thought("TOOL", "error", f"{tool_name}: {result_text}")
+            # Avoid another provider call for deterministic auth/network/availability
+            # failures. It cannot repair the tool and can itself hang when the provider
+            # is unhealthy; preserve the original bounded cause for the caller instead.
+            if _is_unfixable_tool_error(tool_name, result_text):
+                first_line = (result_text or "Unknown tool failure").strip().splitlines()[0]
+                return f"[TOOL_ERROR] {tool_name}: {first_line[:800]}"
             # STRUCTURED ERROR: Rephrase raw error for the user
             try:
                 friendly = self.worker.generate(
@@ -2429,6 +2494,44 @@ class CielCore:
     # list has an "id" per result; get_gmail_message's message_id wants exactly that).
     _ID_KEY_RE = re.compile(r"(^|_)id$", re.IGNORECASE)
 
+    @classmethod
+    def _referenced_step_indexes(cls, value, prior_count: int) -> set[int]:
+        """Return zero-based source indexes referenced anywhere in nested args."""
+        found = set()
+        if isinstance(value, dict):
+            for item in value.values():
+                found.update(cls._referenced_step_indexes(item, prior_count))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                found.update(cls._referenced_step_indexes(item, prior_count))
+        elif isinstance(value, str):
+            for match in cls._STEP_REF_RE.finditer(value):
+                found.add(int(match.group(2)) - 1 if match.group(2) else prior_count - 1)
+        return found
+
+    @staticmethod
+    def _step_output_unusable(raw: str) -> bool:
+        """True when a referenced step has no value safe to feed into another tool."""
+        text = (raw or "").strip()
+        if not text or text.lower() in {"[]", "{}", "null", "none"}:
+            return True
+        low = text.lower()
+        if low.startswith(("[tool_error]", "[cancelled]", "[skipped_dependency]", "sorry,")):
+            return True
+        return bool(re.match(
+            r"^(?:no|zero|0)\s+(?:emails?|messages?|results?|items?|records?|files?)\s+"
+            r"(?:were\s+)?found\b",
+            low,
+        ))
+
+    @classmethod
+    def _failed_dependency(cls, args, step_outputs: list):
+        """Describe the first failed/empty source referenced by ``args``, if any."""
+        for idx in sorted(cls._referenced_step_indexes(args, len(step_outputs))):
+            if 0 <= idx < len(step_outputs) and cls._step_output_unusable(step_outputs[idx]):
+                return idx, (step_outputs[idx] or "empty output").strip().splitlines()[0][:160]
+        return None
+
     def _extract_id_field(self, raw: str):
         """Pull a bare "id" out of a step's raw JSON output, for an *_id-shaped arg.
         Returns None (caller falls back to the raw text) on anything that doesn't
@@ -2639,11 +2742,28 @@ class CielCore:
             prepared = []
             for t in batch:
                 name = (t.get("tool_name") or "").strip()
-                args = self._resolve_step_refs(t.get("tool_args") or {}, step_outputs)
+                original_args = t.get("tool_args") or {}
+                failed_dependency = self._failed_dependency(original_args, step_outputs)
+                if failed_dependency:
+                    source_idx, reason = failed_dependency
+                    skipped = (
+                        f"[SKIPPED_DEPENDENCY] {name} was not run because step "
+                        f"{source_idx + 1} returned no usable value: {reason}"
+                    )
+                    self._log_thought("TOOL", "dependency_skipped", skipped)
+                    step_outputs.append(skipped)
+                    results.append(f"--- Output from {name} ---\n{skipped}")
+                    records.append(StepRecord(name, original_args, skipped))
+                    self.tasks.record_step(name, skipped)
+                    continue
+                args = self._resolve_step_refs(original_args, step_outputs)
                 if args != (t.get("tool_args") or {}):
                     self._log_thought("TOOL", "step_ref_resolved",
                                       f"{name}: injected prior step output into args.")
                 prepared.append((name, args))
+
+            if not prepared:
+                continue
 
             # Captured HERE, in the submitting thread, because `unattended` is
             # thread-local: a worker thread starts with the default (attended), so
@@ -2904,9 +3024,12 @@ class CielCore:
         # Execute non-send tools first. Dependent chains ({{prev}}/{{step_N}}) are
         # resolved per step inside _run_steps, which also batches provably-independent
         # steps to run concurrently.
-        delivers = bool(send_tool or telegram_tool or deferred_write)
+        # A multi-tool plan has exactly one response-side synthesis boundary. Passing
+        # every data step through the Worker first turns raw evidence into separate
+        # opinions; the final Worker then reconciles opinions instead of original facts.
+        # Keep step outputs raw for every multi-tool plan, not only delivery plans.
         self._run_steps(other_tools, response_hint, user_input, results, step_outputs, records,
-                        skip_format=delivers)
+                        skip_format=True)
 
         # TIER-1 AGENT LOOP — observe what actually came back and, only when a
         # deterministic signal says the plan could not have been complete, plan again
@@ -2914,7 +3037,7 @@ class CielCore:
         # step was separated out above and still runs once, after synthesis, so extra
         # rounds can enrich the data a report is built from but can never double-send.
         self._continue_until_done(user_input, response_hint, records, results, step_outputs,
-                                  model_requested=model_requested, skip_format=delivers)
+                                  model_requested=model_requested, skip_format=True)
 
         combined_results = "\n\n".join(results)
 
@@ -4515,7 +4638,9 @@ RULES:
             traceback.print_exc()
             self.tasks.finish("failed", f"{type(e).__name__}: {str(e)[:120]}")
             self.permissions.clear_plan_grants()
-            return f"An error occurred: {str(e)[:200]}"
+            action = "provider_timeout" if self._is_timeout_exception(e) else "pipeline_error"
+            self._log_thought("SYSTEM", action, f"{type(e).__name__}: {str(e)[:200]}")
+            return self._pipeline_error_response(e, user_input)
 
     def _fallback_direct_action(self, user_input: str) -> dict:
         """Fallback when Brain router is blocked by provider content/safety filter.

@@ -300,6 +300,95 @@ def test_secrets_never_leave_in_errors():
                 os.environ[k] = v
 
 
+def test_pipeline_timeout_response():
+    print("\n[9] Provider timeout returns a useful final response")
+    from core.llm_connector import CielCore
+
+    inner = TimeoutError("The read operation timed out")
+    outer = RuntimeError("gateway request failed")
+    outer.__cause__ = inner
+    vi = CielCore._pipeline_error_response(outer, "kiểm tra giá vàng giúp t")
+    en = CielCore._pipeline_error_response(outer, "check the gold price")
+    check("wrapped timeout is recognized", CielCore._is_timeout_exception(outer))
+    check("Vietnamese timeout says the turn is incomplete",
+          "chưa hoàn tất" in vi and "Processing" in vi, vi)
+    check("English timeout says the turn is incomplete",
+          "did not complete" in en and "Processing" in en, en)
+    generic = CielCore._pipeline_error_response(ValueError("private detail"), "xin chào")
+    check("generic failures do not leak raw exception text", "private detail" not in generic, generic)
+
+
+def test_router_json_normalization():
+    print("\n[10] Router JSON normalization keeps audit events parseable")
+    import json
+    from core.router import _parse_route_decision
+
+    strict_obj, strict = _parse_route_decision('{"action":"chat","task":"hello"}')
+    check("a bare JSON object is strict", strict and strict_obj["action"] == "chat")
+
+    fenced_obj, fenced_strict = _parse_route_decision(
+        '```json\n{"action":"tool","tool_name":"calculate","tool_args":{}}\n```'
+    )
+    check("fenced JSON is recovered but marked non-strict",
+          not fenced_strict and fenced_obj["tool_name"] == "calculate")
+
+    prose_obj, prose_strict = _parse_route_decision(
+        'Decision follows: {"action":"chat","task":"ok"} trailing text'
+    )
+    normalized = json.dumps(prose_obj, ensure_ascii=False, separators=(",", ":"))
+    check("prose-wrapped JSON is recovered but marked non-strict",
+          not prose_strict and json.loads(normalized)["task"] == "ok")
+
+    rejected = False
+    try:
+        _parse_route_decision("[1, 2, 3]")
+    except ValueError:
+        rejected = True
+    check("a JSON value that is not an object is rejected", rejected)
+
+
+def test_unfixable_tool_error_classification():
+    print("\n[11] Deterministic tool failures do not enter argument healing")
+    from core.llm_connector import _is_unfixable_tool_error
+
+    check("allowlist rejection is unfixable by changing args",
+          _is_unfixable_tool_error("execute_shell_command", "[NOT_ALLOWLISTED] sudo is blocked"))
+    check("missing registered tool is unfixable",
+          _is_unfixable_tool_error("send_gmail_message", "[TOOL_NOT_FOUND] tool not registered"))
+    check("OAuth invalid_grant is unfixable",
+          _is_unfixable_tool_error("search_gmail", "invalid_grant: Token has been expired"))
+    check("SSL transport failure is unfixable",
+          _is_unfixable_tool_error("search_gmail", "SSL error: connection aborted"))
+    check("a fixable market symbol-format error remains healable",
+          not _is_unfixable_tool_error(
+              "get_market_price", "Could not find price for BTCUSDT. Ensure format is correct"
+          ))
+    check("Python recovery may still rewrite code around a missing dependency",
+          not _is_unfixable_tool_error("run_python_script", "library is not installed"))
+
+
+def test_failed_dependency_classification():
+    print("\n[12] Empty or failed references cannot become downstream tool arguments")
+    from core.llm_connector import CielCore
+
+    check("No emails found blocks a {prev} consumer",
+          CielCore._failed_dependency(
+              {"message_id": "{prev}"}, ["No emails found."]
+          ) == (0, "No emails found."))
+    check("a structured Gmail result remains usable",
+          CielCore._failed_dependency(
+              {"message_id": "{prev}"}, ['[{"id":"m1"}]']
+          ) is None)
+    check("an explicit failed step_N reference is detected",
+          CielCore._failed_dependency(
+              {"message_id": "{{step_1}}"}, ["[TOOL_ERROR] search_gmail: SSL error"]
+          )[0] == 0)
+    check("unrelated literal arguments are unaffected",
+          CielCore._failed_dependency(
+              {"message_id": "literal-m1"}, ["No emails found."]
+          ) is None)
+
+
 def main():
     print("=" * 72)
     print("QUALITY GUARDS (unit — former smoke coverage)")
@@ -313,6 +402,10 @@ def main():
     test_shell_allowlist_matches_host_os()
     test_git_list_repos_bounded()
     test_secrets_never_leave_in_errors()
+    test_pipeline_timeout_response()
+    test_router_json_normalization()
+    test_unfixable_tool_error_classification()
+    test_failed_dependency_classification()
     total = _passed + len(_failed)
     print("\n" + "=" * 72)
     print(f"RESULT: {_passed}/{total} passed")

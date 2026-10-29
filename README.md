@@ -24,6 +24,10 @@ both are disabled by default and reuse one of the two standard model identities.
   Monday since 2026-09-07 on the VPS with no repeat or cooldown spam.
 - Email: Markdown tables/headings/lists render as HTML; Ciel reports "sent" only after
   Gmail returns a Message Id **and** the message is fetched back by that id.
+- Multi-tool branches remain raw until one final Worker synthesis; failed dependencies
+  stop their consumers, and Gmail reads sharing one API client stay sequential.
+- Provider timeouts return an explicit incomplete-turn response instead of leaving a
+  misleading `Processing...` state; router audit decisions are normalized JSON.
 - Telegram, CLI, and the Flutter app (via the API) share the same `CielCore` runtime.
 
 The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
@@ -232,6 +236,8 @@ log.
 - `SAFETY_OPEN` controls Brain content filtering only.
 - `DISABLE_SAFETY_GATE` controls destructive-tool confirmation only.
 - Unknown or malformed multi-tool plans stop before execution.
+- Failed or empty referenced steps stop dependent tools before invalid arguments run.
+- Deterministic auth/network/allowlist failures skip model-driven argument healing.
 - Risky unattended actions are deferred; silence is never consent.
 - Outbound sends are deduplicated per recipient and turn; an email is reported as sent
   only after Gmail confirms it.
