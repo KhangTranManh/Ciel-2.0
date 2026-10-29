@@ -76,11 +76,10 @@ operator choice, not the default safety behavior.
 - `POST /tts`
 - `WS /ws`
 
-`GET /` and the other non-API paths serve the Flutter web build when one is present
-(`/app/web` in the image, `ciel_app/build/web` locally, or `CIEL_WEB_DIR`). Those files
-are public and sent with `Cache-Control: no-cache`; the API routes stay token-protected.
+Ciel does not serve a graphical interface. With `CIEL_API_TOKEN` set, every route
+except `GET /health` requires authentication.
 
-Turns from every front end in the process (dashboard, phone app, Telegram) run one at a
+Turns from every front end in the process (remote client, Telegram) run one at a
 time through `AgentLoop.run_step()`. Each WebSocket connection has its own
 `api.confirm.WebSocketConfirmer`: a `confirm_request` goes only to the connection whose
 message started the turn, and an answer from another device is ignored. It denies on
@@ -120,33 +119,13 @@ client stalled every frame, including confirm requests.
 `tool_name == "plan"` means approval covers all displayed risky steps before anything
 runs. A normal tool name means one per-call decision.
 
-## Flutter app (`ciel_app/`)
+## Remote client requirements
 
-One Flutter codebase targets Android, iOS, Windows, macOS and web. The server address
-and token are runtime settings (token in the OS keychain via `flutter_secure_storage`),
-so one build connects to a local, LAN or VPS backend. `CielEndpoints` derives REST and
-WebSocket URLs from any entered form, including a reverse-proxy path prefix.
-
-```text
-┌──────────────┬──────────────────────────────────┐
-│ Skills rail  │ App bar: status, usage, TTS     │
-│ from /skills │ Connection banner · Transcript  │
-│ (drawer on   │ Input, voice, Stop              │
-│  phones)     │                                 │
-└──────────────┴──────────────────────────────────┘
-```
-
-Only `CielSocket` (behind the `CielTransport` interface) touches `/ws`; all screens read
-and act through `CielController`, the Flutter counterpart of the old bus seam. The
-confirm view is non-dismissible, counts down from 60 s and denies at 0; a lost
-connection clears a pending approval rather than leaving a dialog whose answer cannot
-arrive. Chat history (last 200 turns) persists on the device. Voice input uses
-`speech_to_text`; read-aloud plays backend `POST /tts` audio. Offline tests use a fake
-transport and HTTP client; `test_live/` exercises a real server.
-
-The React/Tauri client (`ui/`) was removed after the Flutter app reached parity; it is
-recoverable from git history (commit `360bc52`). Its always-on-top desktop widget has no
-Flutter equivalent yet.
+No graphical client is currently shipped. A future client connects to `WS /ws`, obtains
+its server address and `CIEL_API_TOKEN` through runtime configuration, and implements
+the documented frames. It must show `confirm_request` to the user and send
+`confirm_response` only for an explicit decision. Lost connections, timeouts, malformed
+frames, and unavailable confirmation UI must deny the request.
 
 ## Telegram
 
@@ -205,7 +184,7 @@ termination. Killing a tool mid-write or mid-send is not supported.
 - TTS normalization remains server-side and shared.
 - Raw audit logs remain outside the user-facing transcript.
 - Active Subject, recent turns, and Telegram file metadata remain core contracts; an
-  interface does not implement its own conversational memory. The Flutter app's local
+  interface does not implement its own conversational memory. Any local
   chat history is display-only and is never sent back as context.
 - An API reachable from another device requires `CIEL_API_TOKEN` and, beyond the
   home network, HTTPS.

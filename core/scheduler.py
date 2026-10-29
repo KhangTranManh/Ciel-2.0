@@ -51,7 +51,7 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
             get_gmail_credentials,
         )
         base_dir = Path(__file__).resolve().parent.parent
-        credentials_file = base_dir / "credentials.json"
+        credentials_file = base_dir / "ciel_data" / "credentials.json"
         token_file = base_dir / "ciel_data" / "gmail_token.json"
 
         if not credentials_file.exists():

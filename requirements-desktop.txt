@@ -1,0 +1,2 @@
+# Optional Windows desktop-pet interface. The server and Docker images do not install this.
+PyQt6>=6.4.0

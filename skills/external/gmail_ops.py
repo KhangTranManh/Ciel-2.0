@@ -147,7 +147,7 @@ def _get_gmail_credentials_compat(token_file: Path, credentials_file: Path):
 def get_gmail_tools() -> dict:
     try:
         base_dir = Path(__file__).resolve().parent.parent.parent
-        credentials_file = base_dir / "credentials.json"
+        credentials_file = base_dir / "ciel_data" / "credentials.json"
         token_file = base_dir / "ciel_data" / "gmail_token.json"
 
         if not credentials_file.exists():

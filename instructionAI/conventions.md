@@ -243,9 +243,7 @@ never executes external or mutating tools as part of the combined run.
 - Telegram checks the chat allow-list before routing.
 - UI tool lists come from `GET /skills`; front-end capability lists are not hardcoded.
 - Text-to-speech uses the backend normalizer; the persona is not simplified for voice.
-- The Flutter app (`ciel_app/`) mirrors the wire protocol in `lib/core/protocol.dart`;
-  a backend frame change updates that file and `test/protocol_test.dart` together.
-  Only `CielSocket` touches `/ws`; screens use `CielController`.
+Remote clients must implement the documented WebSocket frames.
 - Server address and API token are runtime settings in a client, never build constants.
 - Error text that leaves the process goes through `core/redact.redact_secrets`.
 
@@ -266,10 +264,6 @@ Focused suites may run directly. Planner behavior belongs in
 (FastAPI `TestClient` without entering its context, so Ciel never starts); pure
 safeguards belong in the closest maintained unit suite. Do not add permanent
 `_smoke_*.py` files for one deployment event.
-
-The Flutter app is checked with `flutter analyze` and `flutter test` in `ciel_app/`
-(fake transport and HTTP client, no network). `ciel_app/test_live/` runs the app's real
-socket and REST code against a running API and is not part of `flutter test`.
 
 Live tests:
 
@@ -326,9 +320,6 @@ High-risk changes requiring broad regression and explicit review:
   `python main_api.py` sharing the VPS `.env` does not start a second poller.
 - Migrating from the old layout: `docker rm -f ciel-telegram ciel-api` before the first
   `docker compose -f docker/docker-compose.yml up`.
-- The dashboard build defaults its server to the page origin only with
-  `CIEL_SAME_ORIGIN=true`; `flutter run -d chrome` in development keeps the
-  `CIEL_SERVER_URL` default because its page origin is the dev server.
 - `category:primary` improves Gmail queries but cannot perfectly classify marketing
   mail; presentation logic handles the remaining curation.
 - Missing `SEARCH_API_KEY` silently falls back to weaker web sources. CI and runtime

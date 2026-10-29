@@ -1,4 +1,4 @@
-"""API access token for remote clients (Flutter app on phone/desktop).
+"""API access token for remote clients.
 
 The API can run shell commands and send email, so once it is reachable from other
 devices every route except /health must require CIEL_API_TOKEN. Uses FastAPI's

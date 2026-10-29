@@ -19,17 +19,8 @@ ciel_data/
 agent_output/
 ciel_workspace/
 backtest/logs/
-# The Dockerfile's dashboard stage builds ciel_app for the web; it needs lib/, web/
-# and pubspec.*, not local caches, native platform folders, or tests.
-ciel_app/build/
-ciel_app/.dart_tool/
-ciel_app/android/
-ciel_app/ios/
-ciel_app/macos/
-ciel_app/windows/
-ciel_app/linux/
-ciel_app/test/
-ciel_app/test_live/
+# Do not send remnants of the retired Flutter client with the server image.
+ciel_app/
 web/
 docker/tunnel.env
 

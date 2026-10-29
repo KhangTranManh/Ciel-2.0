@@ -4075,7 +4075,13 @@ RULES:
                 self._save_chat_memory()
                 return reply
             if self._AFFIRM_RE.match(user_input or ""):
+                pending_source = str(pending.get("from") or "")
                 self._clear_pending_action()
+                if pending_source.startswith("deferred-reissue:"):
+                    # The Master has explicitly taken ownership of this old background
+                    # request.  From here it becomes a normal attended action and still
+                    # passes through execute_tool's full safety confirmation.
+                    self.deferred.resolve(pending_source.split(":", 1)[1])
                 self._log_thought("SYSTEM", "pending_action_confirmed",
                                   f"Affirmation resolved to {pending['tool']}({pending['args']}).")
                 log.system(f"Confirmation accepted → executing {pending['tool']}")
@@ -4097,6 +4103,36 @@ RULES:
             self.chat_history.add_ai_message(reply)
             self._save_chat_memory()
             return reply
+
+        # A deferred action deliberately never runs merely because the process was
+        # restarted.  When the Master names its exact tool and asks to continue it,
+        # restore the saved context into the regular pending-confirmation path instead
+        # of asking the Brain to guess recipient, subject, or body from a one-line
+        # timestamp.  A subsequent affirmative answer still reaches the normal safety
+        # preview before the action can execute.
+        deferred_item = self.deferred.match_explicit_reissue(user_input)
+        if deferred_item:
+            tool_name = str(deferred_item.get("tool") or "")
+            tool_args = dict(deferred_item.get("args") or {})
+            if tool_name and tool_args:
+                self._set_pending_action(
+                    tool_name, tool_args,
+                    source=f"deferred-reissue:{deferred_item.get('id')}",
+                )
+                preview = json.dumps(tool_args, ensure_ascii=False, indent=2)
+                self._log_thought(
+                    "SYSTEM", "deferred_reissue_staged",
+                    f"Restored {tool_name} from deferred item {deferred_item.get('id')} for attended review.",
+                )
+                reply = (
+                    f"Đã khôi phục ngữ cảnh đã lưu cho {tool_name}:\n{preview}\n\n"
+                    "Đây vẫn là yêu cầu cũ, nên chưa có gì được gửi. Trả lời “yes”/“confirm” "
+                    "để dùng nó như một yêu cầu mới; Ciel sẽ hiện bước duyệt an toàn cuối cùng. "
+                    "Trả lời “no”/“cancel” để giữ nguyên mục đã hoãn."
+                )
+                self.chat_history.add_ai_message(reply)
+                self._save_chat_memory()
+                return reply
 
         # === NEW PATH CLARIFICATION LOGIC ===
         # If user wants to write/create/save/generate a file but didn't specify where,

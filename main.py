@@ -38,6 +38,15 @@ def _setup_proactive(ciel, scheduler):
 
 
 def main():
+    # Optional desktop companion.  Keep the terminal interface as the default, while
+    # allowing the same entry point to launch the transparent pet shell on Windows.
+    desktop_pet = ("--terminal" not in sys.argv and
+                   ("--desktop" in sys.argv or
+                    os.getenv("CIEL_DESKTOP_PET", "").lower() in ("1", "true", "yes")))
+    if desktop_pet:
+        from desktop_pet.app import run as run_desktop_pet
+        return run_desktop_pet()
+
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
     # Voice mode: `--voice` flag or INPUT_MODE=voice makes speech the default input.
     # Regardless of mode, typing ":v"/":voice" captures one utterance by voice.

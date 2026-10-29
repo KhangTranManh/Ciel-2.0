@@ -19,12 +19,12 @@
 ## Hand-off: what every AI must understand
 
 ### What Ciel is
-- Personal multi-tool agent: files, shell, Gmail, Telegram, trading, web, optional vision, Flutter app.
+- Personal multi-tool agent: files, shell, Gmail, Telegram, trading, web, optional vision, and remote API clients.
 - Pipeline: **Brain (route/plan/evaluate) → Worker (compose/format)** + `ToolManager`
   skills. Optional Middleware code is retained but disabled; the maintained deployment
   uses two model identities.
 - **Seven capability tiers** (loop, task state, permissions, context, cancel, proactive, user model): decisions in **deterministic Python**; LLM only plans/composes. See `instructionAI/architecture.md`.
-- Entry: `main.py` (CLI), `main_api.py` (Flutter app in `ciel_app/`), `main_telegram.py` — all via `AgentLoop` / `CielCore`.
+- Entry: `main.py` (CLI), `main_api.py` (API/WebSocket), `main_telegram.py` — all via `AgentLoop` / `CielCore`.
 
 ### Non-negotiables (detail in `instructionAI/SKILL.md`)
 - Do not break `thoughts.log` format.
@@ -299,8 +299,8 @@ Unchecked items still need a focused test before they are closed.
   coverage verifies the downstream Gmail reader is never called.
 - [ ] **Silent capability loss**: a tool pack that fails to load at startup (e.g. Gmail
   `invalid_grant`) should notify the Master on Telegram.
-- [ ] **Proactive messages in the app**: `main_api.py` does not publish notifier output
-  over the WebSocket, so the Flutter app never sees weekly plans or reminders.
+- [ ] **Proactive messages for remote clients**: `main_api.py` does not publish notifier output
+  over the WebSocket, so a future client cannot receive weekly plans or reminders.
 - [x] **API + Telegram on one host**: the one-writer rule forces a choice; run the
   Telegram poller inside the API process before deploying the app against the VPS.
   Implemented through `CIEL_API_TELEGRAM`, covered by `test_api_server`, and deployed
@@ -425,7 +425,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | How to change code safely | `instructionAI/conventions.md` | — |
 | Safety / unattended / outbound | `instructionAI/safety_and_risk.md` | `core/permissions.py`, `llm_connector` |
 | Memory / user model / cost | `instructionAI/data_pipeline.md` | — |
-| App / API / voice | `instructionAI/voice_and_interface.md` | `ciel_app/README.md`, `main_api.py` |
+| API / voice | `instructionAI/voice_and_interface.md` | `main_api.py` |
 | **What to upgrade next** | **`improve.md` (this file)** | `backtest/run_all.py` |
 | Dated live status (optional) | `note.md` | not required for hand-off |
 

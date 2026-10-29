@@ -223,15 +223,16 @@ _DEFERRED_MAX = 20
 class DeferredStore:
     """Actions a background run wanted to take but could not, pending the Master.
 
-    WHY THIS DOES NOT REPLAY THEM
+    WHY THIS DOES NOT REPLAY THEM AUTOMATICALLY
     -----------------------------
     The obvious next feature is "approve it and Ciel runs it". That is deliberately not
     here. A mutating action decided at 03:00 against 03:00's world — an email whose facts
     have moved on, a delete whose file has changed — is not the same action at 09:00, and
     approving it from a one-line summary is approving a fragment, which is the exact
     failure Tier 3 was built to remove. So this records what was wanted and why, tells
-    the Master, and lets them re-issue it as a fresh request that gets planned against
-    the world as it is now.
+    the Master.  An exact, explicit reference to a deferred tool can restore its saved
+    arguments into a *new attended review*, but it never executes by itself: the normal
+    confirmation gate still displays the full action before the tool can run.
     """
 
     def __init__(self, path=None, max_items: int = _DEFERRED_MAX):
@@ -284,6 +285,25 @@ class DeferredStore:
     def pending(self) -> list:
         with self._lock:
             return list(self._items)
+
+    _REISSUE_MARKERS = (
+        "continue", "resume", "tiep tuc", "tiếp tục", "lam tiep", "làm tiếp",
+    )
+
+    def match_explicit_reissue(self, text: str):
+        """Return one deferred item only when its tool is named and continuation is clear.
+
+        A vague "continue" must not revive an old action.  Requiring the exact tool name
+        keeps the stored arguments out of the model path and makes the user's intent
+        deterministic.  The caller must still create an attended confirmation before
+        executing anything.
+        """
+        query = " ".join(str(text or "").casefold().split())
+        if not query or not any(marker in query for marker in self._REISSUE_MARKERS):
+            return None
+        matches = [item for item in self.pending()
+                   if str(item.get("tool") or "").casefold() in query]
+        return dict(matches[0]) if len(matches) == 1 else None
 
     def resolve(self, item_id: str) -> bool:
         with self._lock:

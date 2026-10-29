@@ -18,7 +18,6 @@ from core.scheduler import CielScheduler
 from core.proactive_setup import setup_proactive
 from core.redact import redact_secrets
 from api.confirm import WebSocketConfirmer
-from api.dashboard import find_web_dir, is_dashboard_request, mount_dashboard
 
 langchain.debug = False
 langchain.verbose = False
@@ -57,8 +56,7 @@ def token_ok(candidate: str | None) -> bool:
 # headers — otherwise a browser client reports a CORS error instead of "unauthorized".
 @app.middleware("http")
 async def require_token(request: Request, call_next):
-    if (request.method == "OPTIONS" or request.url.path == "/health"
-            or is_dashboard_request(app, request.scope)):
+    if request.method == "OPTIONS" or request.url.path == "/health":
         return await call_next(request)
     if not token_ok(_bearer(request.headers.get("authorization"))):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -405,12 +403,6 @@ async def websocket_endpoint(websocket: WebSocket):
         if tail_task:
             tail_task.cancel()
         vitals_task.cancel()
-
-
-# Last, so "/" never shadows an API route.
-_web_dir = find_web_dir()
-if mount_dashboard(app, _web_dir):
-    print(f"[API] Dashboard served from {_web_dir}")
 
 
 if __name__ == "__main__":

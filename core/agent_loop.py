@@ -12,7 +12,7 @@ class AgentLoop:
         self.log_path = base_dir / "ciel_data" / "logs" / "thoughts.log"
         self.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        # One CielCore serves every front end in the process (dashboard, phone app,
+        # One CielCore serves every front end in the process (remote client,
         # Telegram). Its chat history, cancel flag and per-turn send dedupe are
         # single-turn state, so turns run one at a time.
         self._turn_lock = threading.Lock()

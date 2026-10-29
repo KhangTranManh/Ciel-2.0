@@ -32,8 +32,8 @@ services:
       # Files Ciel writes for/reads from the Master (reports, generated docs).
       - ../agent_output:/app/agent_output
       - ../ciel_workspace:/app/ciel_workspace
-      # Google OAuth client — gitignored, must exist on the host before `up`.
-      - ../credentials.json:/app/credentials.json:ro
+      # Google OAuth client — private runtime state, mounted read-only.
+      - ../ciel_data/credentials.json:/app/ciel_data/credentials.json:ro
       # Read-only: Ciel can inspect status/diff/log but cannot commit or push.
       - ..:/repo:ro
     logging:

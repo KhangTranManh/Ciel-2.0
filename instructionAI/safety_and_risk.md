@@ -185,7 +185,7 @@ later is less reliable than excluding it at discovery time.
 
 ## Credentials and private data
 
-- `.env`, `credentials.json`, Gmail tokens, `ciel_data/`, and deployment credentials
+- `.env`, `ciel_data/credentials.json`, Gmail tokens, `ciel_data/`, and deployment credentials
   stay outside Git.
 - Docker bind-mounts private files instead of baking them into the image.
 - Git tooling excludes known secret paths from automated commits.
@@ -201,9 +201,7 @@ later is less reliable than excluding it at discovery time.
   `send_telegram*` tool results (which reach `thoughts.log` and the models), Telegram
   fatal replies, and the API `error` frame. `requests` exceptions embed the full URL, so
   without it a network error printed the bot token into the container log.
-- `CIEL_API_TOKEN` guards the API for remote clients; the Flutter app keeps it in the OS
-  keychain. A token compiled into a client build would be extractable, so the app takes
-  it at runtime only.
+- `CIEL_API_TOKEN` guards the API for remote clients. A client must obtain it through runtime configuration and keep it out of source code and build artifacts.
 - `UserModel` rejects secret-like content before storage and prompt injection.
 - The prompt harness sanitizes bounded evidence before Brain/Worker use, hard-blocks
   private path/name patterns independently of its JSON allow-list, and rejects

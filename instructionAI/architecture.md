@@ -54,7 +54,6 @@ core/
 
 api/
   confirm.py                   WebSocket approval for the connection that started a turn
-  dashboard.py                 Serves the Flutter web build at "/"; routing-based auth exemption
 
 skills/
   _result.py                   Standard tool result envelope
@@ -73,10 +72,6 @@ scripts/
   harness_policy.json          Exact editable file::symbol allow-list
 docker/                        Image (with git), dependencies, separate Compose services;
                                host checkout mounted read-only at /repo
-ciel_app/                      Flutter client (Android, iOS, Windows, macOS, web)
-  lib/core/                    protocol, endpoints, socket, REST client, settings
-  lib/state/                   CielController (all app state), local chat history
-  lib/features/                chat, confirm, skills, vitals, settings, voice
 instructionAI/                 Stable project knowledge
 ```
 
@@ -286,13 +281,12 @@ See `data_pipeline.md` for data ownership and lifecycle.
 `main.py` provides interactive confirmation, Ctrl+C cancellation, optional STT/TTS,
 and a live CLI presence channel for proactive messages.
 
-### API and Flutter app
+### API and remote clients
 
-`main_api.py` exposes REST and WebSocket endpoints for the Flutter app in `ciel_app/`.
+`main_api.py` exposes REST and WebSocket endpoints for remote clients.
 Confirmation uses a bounded request/response exchange and fails closed when no client is
 attached, the request cannot be delivered, or the response times out. `CIEL_API_TOKEN`
-guards every route except `/health`. The app chooses its server and token at runtime,
-so one build serves a local, LAN, or VPS backend. See `voice_and_interface.md`.
+guards every route except `/health`. A client supplies its server and token at runtime. See `voice_and_interface.md`.
 
 ### Telegram
 
@@ -303,28 +297,19 @@ tools use inline confirmation; `/cancel` requests step-boundary cancellation.
 
 ## Docker deployment
 
-`docker/Dockerfile` builds one image in two stages: `dashboard` compiles `ciel_app/` for
-the web, `runtime` installs Python and copies that build to `/app/web`.
-`docker/docker-compose.yml` runs one `ciel` container (dashboard + API + in-process
-Telegram + scheduler) and, under the `tunnel` profile, `cloudflared`, which carries a
-Cloudflare hostname to `http://ciel:8000` over an outbound-only connection.
+`docker/Dockerfile` builds one Python runtime image. `docker/docker-compose.yml` runs
+one `ciel` container (API, in-process Telegram, and scheduler) and, under the `tunnel`
+profile, `cloudflared`, which carries a Cloudflare hostname to `http://ciel:8000` over
+an outbound-only connection.
 
-```text
-Cloudflare hostname ─► cloudflared ─► ciel:8000 ─┬─ /          dashboard (public static files)
-                                                 ├─ /ws /skills /tts   API (CIEL_API_TOKEN)
-                                                 └─ Telegram bot, scheduler (in-process)
-```
-
-`api/dashboard.py` mounts the build at `/` after every API route; the auth middleware
-exempts a path only when routing resolves it to that mount, so any API route added later
-is protected by default. `api/confirm.py` delivers an approval to the WebSocket
-connection whose message started the turn and denies on timeout, disconnect, delivery
-failure, or any answer other than JSON `true`.
+`api/confirm.py` delivers an approval to the WebSocket connection whose message started
+the turn and denies on timeout, disconnect, delivery failure, or any answer other than
+JSON `true`.
 
 Important constraints:
 
 - `COPY . .` places source in the image, so source updates require `--build`.
-- `.env`, `credentials.json`, `ciel_data/`, `ciel_workspace/`, and `agent_output/` stay
+- `.env`, `ciel_data/credentials.json`, `ciel_data/`, `ciel_workspace/`, and `agent_output/` stay
   outside source deployment and survive recreation.
 - Health is `GET /health` (the image HEALTHCHECK); the Telegram part is confirmed by the
   `[Telegram] Bot online` log line.

@@ -1,4 +1,4 @@
-"""One process, several front ends: dashboard serving, per-connection approvals,
+"""One process, several front ends: API access controls, per-connection approvals,
 turn serialization, and Telegram inside the API process.
 
 No models, no network: Ciel is replaced by small fakes, so only the server wiring is
@@ -8,7 +8,6 @@ under test.
 """
 import os
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -20,12 +19,6 @@ if sys.platform == "win32":
     except Exception:
         pass
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-# A throwaway dashboard build, set before main_api decides what to mount at import.
-_WEB = Path(tempfile.mkdtemp(prefix="ciel_web_"))
-(_WEB / "index.html").write_text("<html>ciel dashboard</html>", encoding="utf-8")
-(_WEB / "main.dart.js").write_text("console.log('app')", encoding="utf-8")
-os.environ["CIEL_WEB_DIR"] = str(_WEB)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -55,25 +48,17 @@ def _next_frame(ws, skip=("vitals",)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def test_dashboard():
-    print("\n[1] The dashboard is public; every API route still needs the token")
+def test_api_has_no_dashboard_bypass():
+    print("\n[1] No dashboard is served; all API routes remain token-protected")
     main_api.API_TOKEN = TOKEN
     client = TestClient(main_api.app)
 
-    page = client.get("/")
-    check("/ serves the dashboard without a token", page.status_code == 200 and "ciel dashboard" in page.text,
-          f"{page.status_code} {page.text[:60]}")
-    asset = client.get("/main.dart.js")
-    check("app assets are public", asset.status_code == 200, str(asset.status_code))
-    check("assets are revalidated so a deploy is picked up",
-          asset.headers.get("cache-control") == "no-cache", str(asset.headers.get("cache-control")))
-    check("/skills is not shadowed by the dashboard mount and still needs the token",
+    check("/ is not an unauthenticated dashboard", client.get("/").status_code == 401)
+    check("removed app assets are not public", client.get("/main.dart.js").status_code == 401)
+    check("/skills still needs the token",
           client.get("/skills").status_code == 401)
     check("/tts still needs the token", client.post("/tts", json={"text": "x"}).status_code == 401)
     check("/health stays open", client.get("/health").status_code == 200)
-    missing = client.get("/no-such-file.js")
-    check("an unknown path is a 404, not an auth bypass into some API",
-          missing.status_code == 404, str(missing.status_code))
     check("FastAPI's own /openapi.json is not public",
           client.get("/openapi.json").status_code == 401)
 
@@ -295,7 +280,7 @@ def main():
     print("=" * 72)
     saved = main_api.API_TOKEN
     try:
-        test_dashboard()
+        test_api_has_no_dashboard_bypass()
         test_ws_approvals_are_per_connection()
         test_ws_before_ready()
         test_confirmer_fails_closed()

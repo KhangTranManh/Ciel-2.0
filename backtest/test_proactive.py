@@ -676,7 +676,7 @@ def test_unattended_permissions(tmp):
 
 
 def test_deferred_store(tmp):
-    print("\n[20] Deferred store — record, tell, and deliberately do NOT replay")
+    print("\n[20] Deferred store — record, tell, and never replay automatically")
     d = DeferredStore(Path(tmp) / "deferred.json")
     d.add("delete_file", {"path": "a.txt"}, reason="needs approval", source="trigger", now=T0)
     check("a blocked action is recorded", len(d) == 1)
@@ -701,6 +701,16 @@ def test_deferred_store(tmp):
     chk = make_deferred_approval_check(d2)
     check("nothing pending means nothing to say", chk(T0) is None)
     d2.add("send_gmail_message", {"to": "x@y.z"}, now=T0)
+    resumed = d2.match_explicit_reissue("send_gmail_message — continue this")
+    check("an explicit tool + continuation restores its saved context for review",
+          resumed and resumed["tool"] == "send_gmail_message" and resumed["args"]["to"] == "x@y.z")
+    resumed_vi = d2.match_explicit_reissue("send_gmail_message lúc 03:15 — tiếp tục này đi")
+    check("the Vietnamese continuation wording restores the same saved context",
+          resumed_vi and resumed_vi["tool"] == "send_gmail_message")
+    check("a vague continuation never revives an old action",
+          d2.match_explicit_reissue("continue this") is None)
+    check("naming a tool without a continuation never revives it",
+          d2.match_explicit_reissue("send_gmail_message") is None)
     out = chk(T0 + 10)
     check("pending items are raised as a question", out is not None
           and out.effective_urgency() == ASK)

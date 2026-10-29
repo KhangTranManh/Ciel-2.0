@@ -18,7 +18,6 @@ notification state because they have different authority and retention rules.
 | `ciel_data/state/deferred.json` | `core/permissions.py` | Blocked unattended actions | Summary only; never replayed |
 | `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers; streamed to API clients only when `CIEL_API_STREAM_THOUGHTS=true` |
 | `ciel_data/gmail_token.json` | `skills/external/gmail_ops.py` | Gmail OAuth access/refresh token | Never; replaced by re-authorizing when it expires |
-| App chat history (device) | `ciel_app` `ChatHistoryStore` | Last 200 turns for display on that device | Never sent back as context |
 
 ## Per-turn context flow
 
@@ -236,7 +235,7 @@ Container deployments bind-mount:
 - `ciel_workspace/`
 - `agent_output/`
 - private `.env`
-- private `credentials.json`
+- private `ciel_data/credentials.json`
 
 Rebuilding the image must not replace these paths. One Ciel process writes the shared
 state at a time. Live smoke tests use temporary planner/notifier state, verify delivery

@@ -128,7 +128,7 @@ SUITES: list[Suite] = [
         "api_server",
         "backtest.test_api_server",
         "unit",
-        "Served dashboard, per-connection approvals, one turn at a time, Telegram in-process",
+        "API access controls, per-connection approvals, one turn at a time, Telegram in-process",
     ),
     Suite(
         "integration",

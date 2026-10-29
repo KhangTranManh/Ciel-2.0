@@ -1,0 +1,23 @@
+{
+  "sprite_sheet": "assets/ciel_sprite.png",
+  "separate_frames": {
+    "pattern": "assets/frames/frame_{index:02d}.png",
+    "count": 8
+  },
+  "grid": {
+    "columns": 4,
+    "rows": 2
+  },
+  "sequences": {
+    "walk": [1, 2, 3],
+    "run": [3, 4],
+    "action": [5, 6, 7, 8]
+  },
+  "render": {
+    "height_px": 160,
+    "walk_frame_ms": 700,
+    "run_frame_ms": 220,
+    "action_frame_ms": 180,
+    "reply_display_seconds": 20
+  }
+}

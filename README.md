@@ -28,7 +28,7 @@ both are disabled by default and reuse one of the two standard model identities.
   stop their consumers, and Gmail reads sharing one API client stay sequential.
 - Provider timeouts return an explicit incomplete-turn response instead of leaving a
   misleading `Processing...` state; router audit decisions are normalized JSON.
-- Telegram, CLI, and the Flutter app (via the API) share the same `CielCore` runtime.
+- Telegram, CLI, and remote API clients share the same `CielCore` runtime.
 
 The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
 engineering rules live in [instructionAI/SKILL.md](instructionAI/SKILL.md).
@@ -65,7 +65,7 @@ and notification cooldowns.
 | Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
 | Planning and reminders | `core/planner_store.py`, `core/planner_triggers.py`, `core/reminder_triggers.py` |
 | Prompt improvement harness | `scripts/prompt_harness.py`, `scripts/harness/` |
-| Interfaces | CLI, FastAPI/WebSocket, Telegram, Flutter app (`ciel_app/`) |
+| Interfaces | CLI, FastAPI/WebSocket, Telegram |
 | Tool extension | Auto-discovered `skills/**/*_ops.py` packs |
 
 ## Requirements
@@ -73,7 +73,6 @@ and notification cooldowns.
 - Python 3.12+
 - At least one supported LLM provider or OpenAI-compatible endpoint
 - Docker for container deployment
-- Node.js 18+ only for the UI
 - Optional Google OAuth credentials for Gmail
 - Optional Telegram bot token and numeric chat ID for Telegram mode
 
@@ -128,7 +127,7 @@ TELEGRAM_CHAT_ID=<numeric-chat-id>
 # Disable capabilities unavailable on a headless server
 DISABLED_SKILL_MODULES=vision_ops
 
-# Required before the API is reachable from another device (Flutter app)
+# Required before the API is reachable from another device
 CIEL_API_TOKEN=<long-random-string>
 ```
 
@@ -145,20 +144,16 @@ python main.py
 python main.py --voice --speak
 ```
 
-### API and app
+### API
 
 ```bash
 python main_api.py
-cd ciel_app
-flutter run -d chrome        # or windows / macos / an Android or iOS device
 ```
 
-The Flutter app in `ciel_app/` is the only graphical client (it replaced the
-React/Tauri `ui/`). The backend exposes `GET /health`, `GET /skills`, `POST /tts`, and
-`WS /ws`. Set `CIEL_API_TOKEN` in `.env` before the API is reachable from any other
-device; every route except `/health` then requires it (`Authorization: Bearer …`, or
-`?token=` on the WebSocket). The app's server address and token are set in its
-Settings screen. See [ciel_app/README.md](ciel_app/README.md).
+The backend exposes `GET /health`, `GET /skills`, `POST /tts`, and `WS /ws`. Set
+`CIEL_API_TOKEN` in `.env` before the API is reachable from any other device; every
+route except `/health` then requires it. A remote client must display and return the
+`confirm_request` frame; absent, lost, or timed-out confirmations are denied.
 
 ### Telegram
 
@@ -177,9 +172,9 @@ deployment runs the bot inside the API process instead.
 docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
 ```
 
-One container, `ciel`, serves the dashboard (the Flutter web build) at `/`, the API, and
-the Telegram bot, so a single process owns `ciel_data/`. Turns from every front end run
-one at a time, and each turn's approval goes back to the front end that asked. The
+One container, `ciel`, serves the API and the Telegram bot, so a single process owns
+`ciel_data/`. Turns from every front end run one at a time, and each turn's approval
+goes back to the front end that asked. The
 optional `cloudflared` service (profile `tunnel`) publishes it at an HTTPS hostname
 through a Cloudflare Tunnel, with no open inbound port; port 8000 is bound to
 `127.0.0.1` only. The image has no `.git`; the host checkout is mounted read-only at
@@ -317,10 +312,7 @@ python -m backtest.test_conversation_bugs
 python -m backtest.test_prompt_harness
 python -m backtest.test_outbound        # email render, send re-check, dedupe
 python -m backtest.test_api_auth        # API token on HTTP + WebSocket
-python -m backtest.test_api_server      # dashboard, per-connection approvals, one turn at a time
-
-# Flutter app (offline fakes; see ciel_app/README.md for the live check)
-cd ciel_app && flutter analyze && flutter test
+python -m backtest.test_api_server      # API access, per-connection approvals, one turn at a time
 ```
 
 Keep durable tests under `backtest/test_*.py`; do not accumulate one-off smoke-test
@@ -332,7 +324,7 @@ production planner and notifier data unchanged.
 ```text
 agent_system/       Model configuration, prompts, and model clients
 core/               Runtime orchestration and deterministic capability tiers
-api/                main_api.py building blocks: WebSocket approvals, served dashboard
+api/                main_api.py building blocks: WebSocket approvals
 skills/             Auto-discovered tool packs
 ciel_data/          Persistent private state, RAG, logs, planner database
 ciel_workspace/     Sandboxed working files and immediate todos
@@ -340,7 +332,6 @@ agent_output/       Generated reports and deliverables
 backtest/           Maintained regression and integration suites
 scripts/            Maintenance utilities and bounded prompt harness
 docker/             Dockerfile, docker-compose.yml (Ciel + Cloudflare tunnel), deployment guide
-ciel_app/           Flutter client (Android, iOS, Windows, macOS, web)
 instructionAI/      Stable project memory for future AI sessions
 improve.md          Living roadmap and pass criteria
 note.md             Dated operational journal
@@ -354,7 +345,6 @@ note.md             Dated operational journal
 - [Data and memory](instructionAI/data_pipeline.md)
 - [Safety and risk](instructionAI/safety_and_risk.md)
 - [Voice and interfaces](instructionAI/voice_and_interface.md)
-- [Flutter app](ciel_app/README.md)
 - [Roadmap](improve.md)
 
 ## License and responsibility

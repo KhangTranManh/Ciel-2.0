@@ -24,8 +24,8 @@ Current baseline:
   and were delivered live on the VPS.
 - P1.2 (proactive, real-day observation on the VPS) and P1.3 (user-model suite) pass.
   Level C, P2, and P3 remain roadmap work unless `improve.md` says otherwise.
-- The Flutter app in `../ciel_app/` is the only graphical client; the React/Tauri `ui/`
-  was removed.
+- No graphical client is currently shipped. Remote clients use the API WebSocket
+  protocol and must fail closed on confirmation requests.
 
 The standard verification command is:
 
@@ -55,7 +55,7 @@ or compose within those boundaries.
 Entry points:
 
 - `main.py` — CLI and optional voice.
-- `main_api.py` — FastAPI, WebSocket, and TTS backend for the Flutter app (`ciel_app/`).
+- `main_api.py` — FastAPI, WebSocket, and TTS backend for the remote clients.
 - `main_telegram.py` — allow-listed Telegram long polling.
 
 All three use `core.agent_loop.AgentLoop` and `core.llm_connector.CielCore`.
@@ -78,7 +78,6 @@ Living files outside this directory:
 | File | Responsibility |
 |---|---|
 | `../README.md` | Public overview, setup, operation, and concise project map |
-| `../ciel_app/README.md` | Flutter client: build, server/token settings, tests |
 | `../improve.md` | Roadmap, pass criteria, and upgrade journal |
 | `../note.md` | Dated provider, deployment, and operational observations (optional; not in every checkout — when absent, dated entries go to the `improve.md` upgrade journal) |
 | `../backtest/run_all.py` | Unified maintained regression runner |
@@ -219,15 +218,13 @@ Living files outside this directory:
 ### Deployment, testing, and documentation
 
 28. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
-    The Docker deployment is one `ciel` container: `main_api.py` serves the dashboard,
-    the API, and (with `CIEL_API_TELEGRAM=true`) the Telegram bot in-process.
+    The Docker deployment is one `ciel` container: `main_api.py` serves the API and (with `CIEL_API_TELEGRAM=true`) the Telegram bot in-process.
     `AgentLoop.run_step()` holds a turn lock, so turns from all front ends run one at a
     time, and each turn passes its own front end's `confirm_callback`; a front end never
     replaces the core's default callback. Do not add a second container or process that
     writes this state.
 
-29. `docker/Dockerfile` has a `dashboard` stage (Flutter 3.35.4 web build with
-    `CIEL_SAME_ORIGIN=true`) and a `runtime` stage that copies source with `COPY . .`.
+29. `docker/Dockerfile` builds a Python runtime image and copies source with `COPY . .`.
     Deploy is `git pull` then `docker compose -f docker/docker-compose.yml --profile
     tunnel up -d --build`. The `cloudflared` service publishes HTTPS through a
     Cloudflare Tunnel; its token lives only in gitignored `docker/tunnel.env`, and port
@@ -266,8 +263,7 @@ Living files outside this directory:
 
 ### Remote clients, secrets, and the container shell
 
-36. When `CIEL_API_TOKEN` is set, every API route except `/health` and the served
-    dashboard files requires it
+36. When `CIEL_API_TOKEN` is set, every API route except `/health` requires it
     (`Authorization: Bearer`, or `?token=` on `/ws`); a bad WebSocket token gets an
     `unauthorized` error frame and close code 4401, which clients treat as final. An API
     reachable from another device must have the token and, beyond the LAN, HTTPS.

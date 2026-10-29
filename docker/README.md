@@ -8,7 +8,6 @@ One container, `ciel`, runs everything that writes Ciel's state:
    ┌─────────────────────┼──────────────────────────────────────────┐
    │ VPS                 ▼                                          │
    │   ciel-tunnel ──► ciel:8000                                    │
-   │                    ├─ /            dashboard (Flutter web)     │
    │                    ├─ /ws, /skills, /tts   API (token)         │
    │                    ├─ Telegram bot (long polling, in-process)  │
    │                    └─ scheduler (planner, reminders)           │
@@ -16,13 +15,13 @@ One container, `ciel`, runs everything that writes Ciel's state:
    └────────────────────────────────────────────────────────────────┘
 ```
 
-The phone/desktop app connects to the same hostname as the dashboard.
+Remote clients connect to the API hostname.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Two stages: `dashboard` compiles `ciel_app/` for the web (Flutter 3.35.4); `runtime` is Python + the compiled dashboard at `/app/web`. Build context is the repo root. |
+| `Dockerfile` | Python runtime image for the API and optional in-process Telegram bot. Build context is the repo root. |
 | `docker-compose.yml` | The deployment: `ciel`, plus `cloudflared` under the `tunnel` profile. |
 | `tunnel.env.example` | Shape of `docker/tunnel.env` (gitignored): the Cloudflare tunnel token only. |
 | `requirements-docker.txt` | Server dependency set without desktop-only packages (screen control, microphone). |
@@ -46,8 +45,8 @@ On the server, in the checked-out repository:
    ```dotenv
    CIEL_API_TOKEN=<long random string>     # python -c "import secrets; print(secrets.token_urlsafe(32))"
    ```
-   Every route except `/health` and the dashboard files requires it.
-2. **`credentials.json`** (Google OAuth client) at the repo root.
+   Every route except `/health` requires it.
+2. **`ciel_data/credentials.json`** (Google OAuth client).
 3. **`ciel_data/gmail_token.json`**: a valid Gmail token. It cannot be created inside a
    headless container. Authorize on a PC with a browser (delete the old token, run
    `python main.py`, approve), copy the file to `ciel_data/` on the server, then
@@ -65,10 +64,8 @@ On the server, in the checked-out repository:
       `ciel.example.com`), **Service** `HTTP` `ciel:8000`. WebSockets need no extra
       setting.
    4. Recommended: **Zero Trust → Access → Applications → Self-hosted** for the same
-      hostname, policy "emails = yours". The browser then logs in with Cloudflare before
-      the dashboard loads. The phone app talks to the API with `CIEL_API_TOKEN`; if you
-      enable Access, add a bypass (or service token) policy for `/ws`, `/skills`,
-      `/tts`, `/health` so the app is not sent to a login page.
+      hostname, policy "emails = yours". Remote clients use `CIEL_API_TOKEN`; give each
+      client a compatible Access policy for `/ws`, `/skills`, `/tts`, and `/health`.
 
 ## Run
 
@@ -85,13 +82,10 @@ docker compose -f docker/docker-compose.yml logs -f --tail=50 cloudflared
 curl -s http://127.0.0.1:8000/health
 ```
 
-Healthy means: `ciel` is `healthy`, its log shows `Dashboard served from /app/web`,
-`Loaded gmail_ops: 9 tool(s)` and `[Telegram] Bot online`, and the `cloudflared` log
-shows `Registered tunnel connection`.
+Healthy means: `ciel` is `healthy`, its log shows `Loaded gmail_ops: 9 tool(s)` and
+`[Telegram] Bot online`, and the `cloudflared` log shows `Registered tunnel connection`.
 
-Then open `https://<your hostname>/`, go to **Settings**, paste `CIEL_API_TOKEN`, save.
-The server address is already filled in (the page's own address). On the phone app,
-enter `https://<your hostname>` and the same token.
+Configure your remote client with `https://<your hostname>` and `CIEL_API_TOKEN`.
 
 ## Update
 
@@ -103,13 +97,10 @@ docker compose -f docker/docker-compose.yml --profile tunnel up -d --build
 | What changed | What the rebuild does |
 |---|---|
 | Python code only | reuses cached layers; mostly image export |
-| `ciel_app/` | recompiles the dashboard stage (~1–2 min), Python layers cached |
 | `requirements-docker.txt` or the `apt-get` line | reinstalls PyTorch and all packages: 5–10 min |
 | only `.env` | no rebuild: `docker compose -f docker/docker-compose.yml up -d --force-recreate ciel` |
 | a mounted file (Gmail token) | `docker compose -f docker/docker-compose.yml restart ciel` |
 
-The dashboard is served with `Cache-Control: no-cache`, so a reload after a deploy
-picks up the new version.
 
 ## Migrating from the old two-container layout
 
