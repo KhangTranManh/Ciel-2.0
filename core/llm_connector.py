@@ -36,6 +36,7 @@ from .permissions import PermissionPolicy, Decision, DeferredStore
 from .outbound import OUTBOUND_KEYS, delivery_key, plaintext_to_html, recipients_lowered
 from .plan_validation import PlanValidation, validate_plan
 from .active_subject import ActiveSubject
+from .session_compact import SessionCompact
 from . import rag_manager
 
 import sys
@@ -55,6 +56,7 @@ from agent_system.config import (
     CONTEXT_RECENT_TURNS_ENABLED, CONTEXT_RECENT_TURNS_BUDGET,
     ACTIVE_SUBJECT_ENABLED, ACTIVE_SUBJECT_TTL_SECONDS,
     ACTIVE_SUBJECT_MAX_IDLE_TURNS, ACTIVE_SUBJECT_MAX_ENTITIES,
+    SESSION_COMPACT_ENABLED, SESSION_COMPACT_REFRESH_TURNS, SESSION_COMPACT_MAX_CHARS,
 )
 from core.cost import estimate_cost
 
@@ -306,7 +308,10 @@ _UNBACKED_CHAT_TOOL_PROMISE_RE = re.compile(
     r"(?:\b(?:đang|sẽ|will|currently|going\s+to)\b[^.!?\n]{0,56}"
     r"\b(?:chạy|dùng|thực\s+hiện|tìm|tra|search(?:ing)?|look\s*up|run(?:ning)?|"
     r"stealth_search|smart_scrape|search_gmail|get_weather)\b"
-    r"|\b(?:để\s+)?(?:tôi|mình|em|i|we)\b[^.!?\n]{0,40}"
+    # A first-person verb alone can describe a completed past mistake (for example
+    # "tôi loay hoay tìm file nên quên"), not a promise that work is running now.
+    # Require an explicit present/future marker before treating it as a fake action.
+    r"|\b(?:để\s+)?(?:tôi|mình|em|i|we)\s+(?:đang|sẽ|will|currently|going\s+to)\b[^.!?\n]{0,40}"
     r"\b(?:chạy|dùng|thực\s+hiện|tìm|tra|search(?:ing)?|look\s*up|run(?:ning)?)\b"
     r"|\b(?:chờ|đợi|wait(?:ing)?)\b[^.!?\n]{0,40}"
     r"\b(?:tôi|mình|em|i|we)\b)",
@@ -577,6 +582,13 @@ class CielCore:
         self.chat_history = ChatMessageHistory()
         self.max_history = 20
         self.chat_memory_file = self.base_dir / "ciel_data" / "memory_bank.json"
+        self.session_compact = SessionCompact(
+            self.base_dir / "ciel_data" / "session_compact.json",
+            enabled=SESSION_COMPACT_ENABLED,
+            refresh_turns=SESSION_COMPACT_REFRESH_TURNS,
+            max_source_messages=self.max_history,
+            max_chars=SESSION_COMPACT_MAX_CHARS,
+        )
 
         self._load_chat_memory()
         self._check_bootup_cleanse()
@@ -909,6 +921,7 @@ class CielCore:
 
             # 2. Clear memory and save
             self.chat_history.messages = []
+            self.session_compact.clear()
             self._save_chat_memory()
 
             # 3. Notify
@@ -996,6 +1009,29 @@ class CielCore:
     # to), and it is gated by length/relevance thresholds that a short follow-up like
     # "tại sao lại thế" or "phân tích thêm về tin đó" routinely fails to clear.
     _RECENT_TURNS_MAX = 3
+    # An explicit "use our chat history" request is different from an ordinary
+    # follow-up: the Master has deliberately selected the current session as the
+    # source. It may therefore inspect more turns, while each line is shortened so
+    # this context remains inside the same 500-token Worker budget.
+    _SESSION_HISTORY_REFERENCE_TURNS_MAX = 8
+    _SESSION_HISTORY_REFERENCE_LINE_CHARS = 100
+    _SESSION_HISTORY_REFERENCE_PATTERNS = (
+        r"\b(?:chat|conversation)\s+history\b",
+        r"\b(?:our|this|that)\s+(?:chat|conversation)\b",
+        r"lịch\s*sử\s*(?:chat|trò\s*chuyện)",
+        r"(?:chat|đoạn\s*chat|cuộc\s*trò\s*chuyện)\s*(?:ấy|đó|này|trước)",
+    )
+
+    @classmethod
+    def _references_session_history(cls, user_input: str) -> bool:
+        """Whether the Master explicitly selected this live chat as the source.
+
+        This is deliberately narrower than every pronoun such as "that". It only
+        broadens Worker context when the wording names chat/conversation history, so
+        an unrelated request cannot be pulled toward a stale subject.
+        """
+        lowered = (user_input or "").lower()
+        return any(re.search(pattern, lowered) for pattern in cls._SESSION_HISTORY_REFERENCE_PATTERNS)
 
     # Concrete, unambiguous tokens only — a file path or email is a FACT, never an
     # instruction, which is exactly what keeps this safe to show the Router (see
@@ -1076,7 +1112,7 @@ class CielCore:
         except Exception:
             return ""
 
-    def _recent_turns_block(self) -> str:
+    def _recent_turns_block(self, max_turns: int = None, line_chars: int = 240) -> str:
         """The last few turns of THIS conversation, or "" when there is nothing yet.
 
         Deliberately NOT sent to the Router (see `_router_persona`'s reasoning applied
@@ -1098,15 +1134,17 @@ class CielCore:
             # it is shown separately as "User's request: …" — so it is excluded here to
             # avoid sending it twice.
             history = self.chat_history.messages[:-1] if self.chat_history.messages else []
-            msgs = history[-(self._RECENT_TURNS_MAX * 2):]
+            turns = self._RECENT_TURNS_MAX if max_turns is None else max(1, int(max_turns))
+            chars = max(40, int(line_chars))
+            msgs = history[-(turns * 2):]
             if not msgs:
                 return ""
             lines = []
             for m in msgs:
                 role = "Master" if m.type == "human" else "Ciel"
                 text = (m.content or "").strip().replace("\n", " ")
-                if len(text) > 240:
-                    text = text[:240] + "…"
+                if len(text) > chars:
+                    text = text[:chars] + "…"
                 lines.append(f"{role}: {text}")
             return "\n".join(lines)
         except Exception:
@@ -1602,6 +1640,7 @@ class CielCore:
 
     def execute_chat(self, task: str) -> str:
         """Worker generates a natural language response."""
+        session_history_reference = self._references_session_history(task)
         capabilities_context = ""
         task_lower = task.lower()
         if any(kw in task_lower for kw in ["capabilit", "what can you do", "able to do", "list your features"]):
@@ -1637,7 +1676,25 @@ class CielCore:
         # gets a budget and drops WHOLE under pressure rather than being truncated
         # mid-turn, which would put a half a Master's sentence in front of the model.
         recent_ctx = ContextAssembler()
-        recent_ctx.add("recent_turns", self._recent_turns_block(), P_HELPFUL)
+        recent_ctx.add("session_compact", self.session_compact.render(), P_IMPORTANT)
+        if session_history_reference:
+            recent_turns = self._recent_turns_block(
+                max_turns=self._SESSION_HISTORY_REFERENCE_TURNS_MAX,
+                line_chars=self._SESSION_HISTORY_REFERENCE_LINE_CHARS,
+            )
+            history_rule = (
+                "The Master explicitly asked you to use this session's chat history. "
+                "Resolve the topic from the conversation below when it is clear; do not "
+                "ask for a topic already stated there."
+            )
+        else:
+            recent_turns = self._recent_turns_block()
+            history_rule = (
+                "If information is missing, ask one precise clarifying question; if the "
+                "Router's reference hint says the topic is missing, do not infer a topic "
+                "from recent conversation."
+            )
+        recent_ctx.add("recent_turns", recent_turns, P_HELPFUL)
         recent_block, recent_report = recent_ctx.render(budget_tokens=CONTEXT_RECENT_TURNS_BUDGET)
         if recent_report.dropped:
             self._log_thought("CONTEXT", "recent_turns_dropped", recent_report.summary())
@@ -1654,9 +1711,7 @@ class CielCore:
             "This turn was routed as chat: no tool has run, and your response cannot "
             "start one. Do NOT say or imply that you are running, about to run, or "
             "waiting on a tool/search (including stealth_search, smart_scrape, Gmail, "
-            "or weather). Do not promise results later. If information is missing, ask "
-            "one precise clarifying question; if the Router's reference hint says the "
-            "topic is missing, do not infer a topic from recent conversation.\n\n"
+            f"or weather). Do not promise results later. {history_rule}\n\n"
             f"{recent_section}"
             f"User's request: {task}"
         )
@@ -4641,6 +4696,9 @@ RULES:
 
             self.chat_history.add_ai_message(response)
             self._save_chat_memory()
+            self.session_compact.schedule_refresh(
+                self.chat_history.messages, self.worker.generate, self._log_thought,
+            )
             try:
                 updated_subject = self.active_subject.complete_turn(user_input, response, action)
                 if updated_subject:

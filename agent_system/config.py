@@ -195,7 +195,14 @@ ROUTER_PERSONA_MODE = os.getenv("ROUTER_PERSONA_MODE", "full").strip().lower()
 # the RESPONSE path only (never the Router — that stays out on purpose, see router.py's
 # July-2026 note about an old unresolved request bleeding into a new one).
 CONTEXT_RECENT_TURNS_ENABLED = os.getenv("CONTEXT_RECENT_TURNS_ENABLED", "true").lower() in ("true", "1", "yes")
-CONTEXT_RECENT_TURNS_BUDGET = int(os.getenv("CONTEXT_RECENT_TURNS_BUDGET", "500"))
+CONTEXT_RECENT_TURNS_BUDGET = int(os.getenv("CONTEXT_RECENT_TURNS_BUDGET", "700"))
+
+# A Worker-only, persisted factual summary of the current live conversation. Raw chat
+# still never reaches the Router; this compact only helps a response follow a longer
+# ordinary discussion without relying on RAG's semantic lookup.
+SESSION_COMPACT_ENABLED = os.getenv("SESSION_COMPACT_ENABLED", "true").lower() in ("true", "1", "yes")
+SESSION_COMPACT_REFRESH_TURNS = int(os.getenv("SESSION_COMPACT_REFRESH_TURNS", "4"))
+SESSION_COMPACT_MAX_CHARS = int(os.getenv("SESSION_COMPACT_MAX_CHARS", "480"))
 
 # Compact session subject passed to Brain before routing. This is structured state
 # (topic/entities/last action), not raw history and not durable memory.

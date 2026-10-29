@@ -8,6 +8,7 @@ notification state because they have different authority and retention rules.
 | Store | Owner | Purpose | Prompt injection |
 |---|---|---|---|
 | Recent chat history | LangChain file history | Short response continuity | Worker only, bounded |
+| `ciel_data/session_compact.json` | `core/session_compact.py` | Bounded factual session continuity | Worker only, bounded |
 | ChromaDB vector memory | `core/memory.py` | Semantic long-term recall | Retrieved, filtered, bounded |
 | `ciel_data/facts.json` | `skills/internal/memory_ops.py` | Explicit fact vault | Never automatic; pull-only |
 | `ciel_data/user_model.json` | `core/user_model.py` | Preferences with provenance | Bounded, secret-rejecting |
@@ -26,6 +27,7 @@ User message
   ├─> RAG query -> self-match filter -> bounded recall
   ├─> user model -> live, non-secret, budgeted traits
   ├─> active subject -> compact Brain-visible session state
+  ├─> session compact -> factual Worker-visible session state
   ├─> cwd/language/runtime facts
   └─> ContextAssembler -> prioritized whole blocks -> Brain
 
@@ -46,6 +48,20 @@ path renders only the newest complete turns within `CONTEXT_RECENT_TURNS_BUDGET`
 Raw history is deliberately absent from Brain routing. Earlier designs let unresolved
 requests leak into new turns and bias tool selection. Conversation history therefore
 helps Worker interpret “why?” or “do it,” but cannot authorize or route an action.
+
+## Session Compact
+
+`core/session_compact.py` maintains a persisted, Worker-only factual summary of the
+current conversation. It refreshes asynchronously after a bounded number of completed
+turns, so compaction never delays the reply that created it. The summary keeps active
+topics, confirmed facts, decisions, constraints, and unresolved questions; it redacts
+secret-like material, email addresses, URLs, and filesystem paths before the summarizer
+sees the transcript or any compact is persisted.
+
+The compact enters the response prompt through `ContextAssembler` alongside recent raw
+turns. It never enters Router planning and is labeled as background rather than an
+instruction or authorization. Daily cleansing clears it with the raw session history;
+older information remains available through RAG.
 
 ## Active Subject
 

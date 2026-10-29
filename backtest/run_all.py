@@ -65,6 +65,12 @@ SUITES: list[Suite] = [
         "Bounded Brain subject handoff, expiry, and unsafe-field rejection (0 LLM)",
     ),
     Suite(
+        "session_compact",
+        "backtest.test_session_compact",
+        "unit",
+        "Persisted Worker-side conversation compact and redaction (0 LLM)",
+    ),
+    Suite(
         "user_model",
         "backtest.test_user_model",
         "unit",

@@ -10,13 +10,14 @@
   },
   "sequences": {
     "walk": [1, 2, 3],
-    "run": [3, 4],
+    "run": [1, 2, 3, 4, 3, 2],
     "action": [5, 6, 7, 8]
   },
   "render": {
     "height_px": 160,
     "walk_frame_ms": 700,
-    "run_frame_ms": 220,
+    "run_frame_ms": 150,
+    "run_frame_timing_ms": [170, 130, 130, 220, 130, 170],
     "action_frame_ms": 180,
     "reply_display_seconds": 20
   }

@@ -248,7 +248,24 @@ class PetWindow(QWidget):
         self.frame_index += 1
         if self.frame_index >= len(frames):
             self.frame_index = 0
+        self.timer.start(self._frame_interval())
         self.update()
+
+    def _frame_interval(self) -> int:
+        """Return the cadence for the visible frame of the active sequence.
+
+        A uniform two-frame run reads as a blink. The manifest may instead provide a
+        short cadence list, letting the dash pose hold fractionally longer than each
+        stride without putting animation timing into application code.
+        """
+        render = self.manifest.get("render", {})
+        timings = render.get(f"{self.sequence}_frame_timing_ms", [])
+        if isinstance(timings, list) and timings:
+            try:
+                return max(40, int(timings[self.frame_index % len(timings)]))
+            except (TypeError, ValueError):
+                pass
+        return max(40, int(render.get(f"{self.sequence}_frame_ms", 550)))
 
     def _set_sequence(self, sequence: str) -> None:
         """Switch movement states and use the cadence declared for that state."""
@@ -256,9 +273,7 @@ class PetWindow(QWidget):
             sequence = "walk"
         self.sequence = sequence
         self.frame_index = 0
-        render = self.manifest.get("render", {})
-        interval = int(render.get(f"{sequence}_frame_ms", 550))
-        self.timer.start(max(40, interval))
+        self.timer.start(self._frame_interval())
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802

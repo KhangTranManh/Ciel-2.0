@@ -34,6 +34,7 @@ import tempfile
 from pathlib import Path
 
 from core.llm_connector import CielCore
+from core.session_compact import SessionCompact
 from core.task_state import TaskStore
 from core.permissions import DeferredStore
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -49,6 +50,7 @@ def isolate(core: CielCore, sandbox: Path) -> None:
 
     core.chat_history = ChatMessageHistory()
     core.chat_memory_file = sandbox / "memory_bank.json"
+    core.session_compact = SessionCompact(sandbox / "session_compact.json")
     core._pending_action = None
     core._pending_state_path = sandbox / "pending_action.json"
     core.tasks = TaskStore(sandbox / "tasks.json")

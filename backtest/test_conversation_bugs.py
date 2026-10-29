@@ -190,6 +190,28 @@ def test_recent_turns_block():
     check("a single very long message is truncated, not left to blow the budget",
           len(block3) < len(long_msg))
 
+    # An explicit history reference may look farther back than an ordinary follow-up,
+    # but its compact lines still stay within the normal Worker context budget.
+    core.chat_history = ChatMessageHistory()
+    for index in range(8):
+        core.chat_history.add_user_message(f"history anchor {index}")
+        core.chat_history.add_ai_message(f"history answer {index}")
+    core.chat_history.add_user_message("please check our chat history again")
+    normal = core._recent_turns_block()
+    expanded = core._recent_turns_block(max_turns=8, line_chars=100)
+    check("ordinary context remains short", "history anchor 0" not in normal)
+    check("an explicit history reference can include eight compact turns",
+          "history anchor 0" in expanded and "history answer 7" in expanded)
+    check("the history-reference detector recognises English and Vietnamese wording",
+          core._references_session_history("check our chat history again")
+          and core._references_session_history("trong lịch sử chat ấy, tra lại đi"))
+    captured.clear()
+    core.execute_chat("trong lịch sử chat ấy, tra lại đi")
+    p_history = captured[-1]
+    check("the Worker is told to resolve an explicit history reference",
+          "explicitly asked you to use this session's chat history" in p_history
+          and "history anchor 0" in p_history)
+
 
 def test_recent_turns_never_reaches_router():
     print("\n[4] The router must still never see chat_history (July-2026 decision stands)")
@@ -559,6 +581,12 @@ def test_unbacked_chat_tool_promise_guard():
     check("does not block a harmless explanation of a tool",
           core._block_unbacked_chat_tool_promise(explanation, "what is stealth_search?")
           == explanation)
+    past_explanation = "Ừ, lúc nãy tôi loay hoay tìm file nên quên mất ngữ cảnh đó."
+    check("does not block a past-tense explanation that contains a search verb",
+          not _UNBACKED_CHAT_TOOL_PROMISE_RE.search(past_explanation))
+    current_promise = "Tôi đang tìm lại trong lịch sử chat, chờ tôi một chút."
+    check("still detects a first-person present-tense search promise",
+          bool(_UNBACKED_CHAT_TOOL_PROMISE_RE.search(current_promise)))
     check("does not mistake addressing the Master for a tool call",
           not _UNBACKED_CHAT_TOOL_PROMISE_RE.search("Tôi sẽ gọi bạn là Master từ giờ."))
 
