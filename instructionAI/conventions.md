@@ -336,5 +336,10 @@ High-risk changes requiring broad regression and explicit review:
 - Argument healing is reserved for potentially repairable input/format failures.
   Deterministic auth, network, allowlist, missing-command, and unavailable-tool errors
   retain their original cause and skip model-driven argument retries.
+- OpenAI-compatible gateways may occasionally return an empty, HTML, SSE, or truncated
+  body that raises `json.JSONDecodeError` inside `response.json()`. Worker treats that
+  exact parse failure as transient and retries through its existing backoff for at most
+  three total attempts; ordinary `ValueError` and application logic failures remain
+  non-retryable.
 - Async API handlers must not do blocking file or subprocess work; the vitals loop once
   read the whole multi-MB `thoughts.log` every 2 s per client and stalled confirm frames.

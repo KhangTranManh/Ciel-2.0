@@ -1,10 +1,10 @@
 """Worker — The local Ollama model that does all heavy generation.
 No tools, no routing. Pure text/code generation."""
+import json
 import re
 import httpx
 from tenacity import (
     retry,
-    stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
@@ -37,11 +37,29 @@ WORKER_TRANSIENT_ERRORS = (
     ConnectionError,
     TimeoutError,
     OSError,
+    # Some OpenAI-compatible gateways intermittently return an empty, HTML, SSE,
+    # or truncated body with an HTTP status that still reaches response.parse().
+    # The OpenAI SDK then raises JSONDecodeError before LangChain can produce an
+    # AIMessage. A later identical request commonly succeeds, so treat this as a
+    # bounded transport failure rather than failing the whole Ciel turn immediately.
+    json.JSONDecodeError,
     httpx.ConnectError,
     httpx.ReadTimeout,
     httpx.ConnectTimeout,
     httpx.RemoteProtocolError,
 )
+
+
+def _worker_retry_limit(error: BaseException | None) -> int:
+    """Keep malformed provider bodies bounded more tightly than network outages."""
+    if isinstance(error, json.JSONDecodeError):
+        return min(RETRY_MAX_ATTEMPTS, 3)
+    return RETRY_MAX_ATTEMPTS
+
+
+def _stop_worker_retry(retry_state) -> bool:
+    error = retry_state.outcome.exception() if retry_state.outcome else None
+    return retry_state.attempt_number >= _worker_retry_limit(error)
 
 
 WORKER_SYSTEM_PROMPT = """You are a Worker assistant. You receive a specific task and produce ONLY the requested output.
@@ -61,9 +79,10 @@ def _log_worker_retry(retry_state):
     exc_msg = str(exc)[:120]
     wait = retry_state.next_action.sleep
     attempt = retry_state.attempt_number
+    limit = _worker_retry_limit(exc)
     log.error(
         f"Worker call failed ({exc_name}: {exc_msg}). "
-        f"Retrying in {wait:.1f}s (attempt {attempt}/{RETRY_MAX_ATTEMPTS})"
+        f"Retrying in {wait:.1f}s (attempt {attempt}/{limit})"
     )
 
 
@@ -179,7 +198,7 @@ class Worker:
 
     # Bonus: Worker gets retry protection for GPU timeouts and connection drops
     @retry(
-        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
+        stop=_stop_worker_retry,
         wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
         retry=retry_if_exception_type(WORKER_TRANSIENT_ERRORS),
         before_sleep=_log_worker_retry,

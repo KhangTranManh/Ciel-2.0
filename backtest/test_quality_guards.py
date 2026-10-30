@@ -389,6 +389,59 @@ def test_failed_dependency_classification():
           ) is None)
 
 
+def test_worker_retries_malformed_provider_json():
+    print("\n[13] Worker retries malformed OpenAI-compatible responses")
+    import json
+    from types import SimpleNamespace
+    from tenacity import RetryError, wait_none
+    from agent_system.models.worker import Worker, WORKER_TRANSIENT_ERRORS
+
+    class FlakyProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                raise json.JSONDecodeError("Expecting value", "<html>", 0)
+            return SimpleNamespace(content="recovered", usage_metadata=None)
+
+    worker = Worker.__new__(Worker)
+    worker._llm = FlakyProvider()
+    worker.on_call = None
+    # Keep the production retry predicate but remove sleeping from this unit check.
+    generate_without_wait = Worker.generate.retry_with(wait=wait_none())
+    result = generate_without_wait(worker, "short chat task")
+
+    check("JSONDecodeError is classified as a transient Worker failure",
+          json.JSONDecodeError in WORKER_TRANSIENT_ERRORS)
+    check("malformed response is retried exactly once before succeeding",
+          worker._llm.calls == 2, f"calls={worker._llm.calls}")
+    check("the recovered Worker response reaches the caller", result == "recovered", repr(result))
+    check("ordinary logic ValueError remains non-retryable",
+          ValueError not in WORKER_TRANSIENT_ERRORS)
+
+    class AlwaysMalformed:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    broken_worker = Worker.__new__(Worker)
+    broken_worker._llm = AlwaysMalformed()
+    broken_worker.on_call = None
+    stopped = False
+    try:
+        generate_without_wait(broken_worker, "short chat task")
+    except RetryError:
+        stopped = True
+    check("persistent malformed responses stop after three total attempts",
+          stopped and broken_worker._llm.calls == 3,
+          f"stopped={stopped}, calls={broken_worker._llm.calls}")
+
+
 def main():
     print("=" * 72)
     print("QUALITY GUARDS (unit — former smoke coverage)")
@@ -406,6 +459,7 @@ def main():
     test_router_json_normalization()
     test_unfixable_tool_error_classification()
     test_failed_dependency_classification()
+    test_worker_retries_malformed_provider_json()
     total = _passed + len(_failed)
     print("\n" + "=" * 72)
     print(f"RESULT: {_passed}/{total} passed")
