@@ -144,6 +144,17 @@ def _get_gmail_credentials_compat(token_file: Path, credentials_file: Path):
     if "client_sercret_file" in params: return get_gmail_credentials(**common_kwargs, client_sercret_file=str(credentials_file))
     raise TypeError("Unsupported get_gmail_credentials signature.")
 
+
+def _gmail_failure_reason(error: Exception) -> str:
+    """Classify initialization failure without exporting provider/OAuth details."""
+    text = str(error).lower()
+    if any(marker in text for marker in (
+        "invalid_grant", "refresh", "token", "credential", "oauth", "unauthorized",
+        "authorization", "access denied", "permission",
+    )):
+        return "oauth_or_credentials_error"
+    return "initialization_error"
+
 def get_gmail_tools() -> dict:
     try:
         base_dir = Path(__file__).resolve().parent.parent.parent
@@ -152,13 +163,21 @@ def get_gmail_tools() -> dict:
 
         if not credentials_file.exists():
             print("[Ciel Fatal] Missing credentials.json. Gmail armory locked.")
-            return {"tools": [], "prompt": ""}
+            return {
+                "tools": [], "prompt": "",
+                "readiness": {"state": "not_configured", "reason": "credentials_missing"},
+            }
 
         token_file.parent.mkdir(parents=True, exist_ok=True)
         credentials = _get_gmail_credentials_compat(token_file, credentials_file)
         api_resource = build_resource_service(credentials=credentials)
         toolkit = GmailToolkit(api_resource=api_resource)
         tools = toolkit.get_tools()
+        if not tools:
+            return {
+                "tools": [], "prompt": "",
+                "readiness": {"state": "unavailable", "reason": "toolkit_returned_no_tools"},
+            }
 
         # Wrap search_gmail so list/dig always see explicit message_id lines.
         wrapped = []
@@ -259,8 +278,17 @@ def get_gmail_tools() -> dict:
         )
 
         tools.extend([trash_tool, mark_read_tool, reply_tool, send_html_tool])
-        return {"tools": tools, "prompt": GMAIL_SYSTEM_PROMPT}
+        return {
+            "tools": tools,
+            "prompt": GMAIL_SYSTEM_PROMPT,
+            # This verifies only local setup and toolkit construction. It does
+            # not make a mailbox request during startup or claim live access.
+            "readiness": {"state": "ready", "reason": "tools_loaded"},
+        }
 
     except Exception as e:
         print(f"[Ciel System Error] Failed to arm Gmail toolkit: {e}")
-        return {"tools": [], "prompt": ""}
+        return {
+            "tools": [], "prompt": "",
+            "readiness": {"state": "unavailable", "reason": _gmail_failure_reason(e)},
+        }

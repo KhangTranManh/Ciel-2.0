@@ -414,10 +414,10 @@ def test_referential_recipient_override():
     print("  the helper is wired at BOTH send sites (single-tool AND multi_tool)")
     check("single-tool path calls the resolver",
           "_resolve_referential_recipient(tool_name, tool_args, user_input)"
-          in open("core/llm_connector.py", encoding="utf-8").read())
+          in open("core/harness/dispatch.py", encoding="utf-8").read())
     check("multi_tool path calls the resolver too",
           "_resolve_referential_recipient(send_name, send_args, user_input)"
-          in open("core/llm_connector.py", encoding="utf-8").read())
+          in open("core/harness/finalizer.py", encoding="utf-8").read())
 
 
 def test_open_thread_for_router():
@@ -680,6 +680,23 @@ def test_active_lookup_followup_context():
     core._active_lookup["created_at"] = time.time() - core._ACTIVE_LOOKUP_TTL_SECONDS - 1
     check("an expired lookup cannot be revived by a deictic follow-up",
           core._open_thread_note("scrape it") == "" and core._active_lookup is None)
+
+
+def test_bounded_search_retry_classifier():
+    print("\n[10] Chat search fallback retries only one changed query after zero hits")
+    from core.llm_connector import (_normalized_search_query, _search_results_need_retry,
+                                    _search_results_unusable)
+
+    check("zero-hit result permits a retry",
+          _search_results_need_retry("No results found for 'specific query'"))
+    check("filtered zero-hit result permits a retry",
+          _search_results_need_retry("No usable results for 'specific query'"))
+    check("provider error is never retried",
+          not _search_results_need_retry("Search API Error: timeout"))
+    check("provider error is never presented as search evidence",
+          _search_results_unusable("Search API Error: timeout"))
+    check("same query under case/spacing changes is not a new strategy",
+          _normalized_search_query("  LoL   Patch ") == _normalized_search_query("lol patch"))
 
 
 def main():

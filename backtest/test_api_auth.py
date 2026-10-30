@@ -60,6 +60,8 @@ def test_token_required():
     check("/health stays open for connection tests",
           health.status_code == 200 and health.json().get("auth_required") is True, health.text)
     check("/skills without a token is 401", client.get("/skills").status_code == 401)
+    check("/runs without a token is 401", client.get("/runs").status_code == 401)
+    check("/runs with a token returns metadata", client.get("/runs", headers=auth).status_code == 200)
     check("/skills with a wrong token is 401",
           client.get("/skills", headers={"Authorization": "Bearer nope"}).status_code == 401)
     check("/skills with the token is allowed", client.get("/skills", headers=auth).status_code == 200)

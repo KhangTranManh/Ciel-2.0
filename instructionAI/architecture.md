@@ -29,16 +29,18 @@ agent_system/
 core/
   agent_loop.py                Turn entry for every front end: one turn at a time,
                                per-turn confirm callback
-  llm_connector.py             Central turn coordinator and compatibility bridge
+  llm_connector.py             Model/context/domain services and compatibility entry points
+  harness/                     Modular turn, plan, tool, recovery and finalization services;
+                               optional three-lane manager and durable run database
   router.py                    Route parsing and intent normalization
   plan_validation.py           Pure pre-execution multi-tool validation
   continuation.py              Deterministic observe/re-plan policy and budgets
   parallel.py                  Dependency-aware, opt-in parallel execution
   permissions.py               AUTO/ASK/DENY/DEFER decisions and grants
-  task_state.py                Durable job lifecycle and restart recovery
+  task_state.py                Legacy task history and compatibility mirror
   context.py                   Bounded named-block context assembly
   active_subject.py            Compact RAM-only subject passed to Brain
-  recovery_manager.py          Tool-error repair strategies
+  recovery_manager.py          Compatibility import for harness/repair.py
   notifier.py                  Delivery routing, budgets, cooldowns, dedupe
   outbound.py                  Delivery keys, recipient normalization, Markdown→HTML email
   redact.py                    Masks tokens/keys in text leaving the process
@@ -48,7 +50,7 @@ core/
   planner_triggers.py          Monthly/weekly notification generation
   reminder_triggers.py         Due-reminder notification and delivery closure
   user_model.py                Bounded, secret-rejecting learned profile
-  memory.py                    Long-term RAG storage and recall
+  rag_manager.py               Long-term RAG storage and recall
   telegram_interface.py        Allow-list, uploads, confirmation, cancellation
   scheduler.py                 Background poll loop and legacy clock tasks
 
@@ -103,6 +105,14 @@ flowchart TD
 ```
 
 ## Turn lifecycle
+
+`CielCore.process()` delegates to `core/harness/turn.py`. With
+`CIEL_RUN_HARNESS_ENABLED=true`, deterministic classification dispatches fast chat,
+single-step reads and harness runs without an additional classification model call.
+The run manager persists execution state/evidence, propagates identity to parallel
+workers and enforces shared limits. See [runtime_harness.md](runtime_harness.md)
+for ownership, rollout, compatibility and recovery details. The steps below describe
+the shared conversation/tool behavior in both modes.
 
 1. The entry point receives one user message and marks the user as present.
 2. `CielCore.process()` clears per-turn cancellation and outbound-delivery state.

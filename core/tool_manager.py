@@ -18,6 +18,12 @@ class ToolManager:
         # new skills/*.py file surfaces in the UI with ZERO frontend/API changes. Never
         # hardcode a skill list against this; always read the manifest.
         self.skills_manifest = []
+        # A manifest only includes packs that supplied tools. Keep a separate,
+        # deliberately small status record for every discovered pack so health
+        # checks can distinguish a disabled/misconfigured integration from one
+        # that simply does not appear in the tool list. Never retain exception
+        # text here: OAuth/provider errors can contain sensitive details.
+        self.skill_statuses = []
         # Raw factory dicts, kept so consumers can read OPTIONAL keys a skill declares
         # (currently `parallel_safe`) without this class having to know about each one.
         self.skill_data = []
@@ -41,6 +47,13 @@ class ToolManager:
                 continue
             if modname in config.DISABLED_SKILL_MODULES:
                 print(Fore.YELLOW + f"[Ciel System] Skipped {modname} — disabled via DISABLED_SKILL_MODULES." + Style.RESET_ALL)
+                self.skill_statuses.append({
+                    "module": modname,
+                    "category": package_name.rsplit(".", 1)[-1],
+                    "state": "disabled",
+                    "reason": "disabled_by_configuration",
+                    "tool_count": 0,
+                })
                 continue
 
             try:
@@ -60,6 +73,17 @@ class ToolManager:
                 data = loader_fn()
                 tools = data.get("tools", [])
                 prompt = data.get("prompt", "")
+                declared_readiness = data.get("readiness") if isinstance(data, dict) else None
+                readiness = declared_readiness if isinstance(declared_readiness, dict) else {}
+                state = str(readiness.get("state") or ("ready" if tools else "unavailable"))
+                reason = str(readiness.get("reason") or ("tools_loaded" if tools else "factory_returned_no_tools"))
+                self.skill_statuses.append({
+                    "module": modname,
+                    "category": package_name.rsplit(".", 1)[-1],
+                    "state": state,
+                    "reason": reason,
+                    "tool_count": len(tools),
+                })
 
                 if tools:
                     self.tools.extend(tools)
@@ -83,6 +107,13 @@ class ToolManager:
 
             except Exception as e:
                 print(Fore.RED + f"[Ciel Warning] Failed to load {modname}: {e}" + Style.RESET_ALL)
+                self.skill_statuses.append({
+                    "module": modname,
+                    "category": package_name.rsplit(".", 1)[-1],
+                    "state": "error",
+                    "reason": "factory_error",
+                    "tool_count": 0,
+                })
 
     def get_tools(self) -> list:
         """Returns the list of validated tools to bind to the LLM."""
@@ -93,6 +124,28 @@ class ToolManager:
         """Dynamic list of loaded skills (module, category, tools, has_prompt).
         Consumed by the UI/API so new skills appear automatically — see __init__ note."""
         return self.skills_manifest
+
+    def get_skill_statuses(self) -> list:
+        """Safe status of every discovered pack, including packs with no tools.
+
+        This is operational metadata only; it intentionally never exposes a
+        credential path, OAuth response, or exception message.
+        """
+        return [dict(status) for status in self.skill_statuses]
+
+    def get_skill_status(self, module: str) -> dict:
+        """Return one safe pack status, or a deterministic not-loaded state."""
+        wanted = (module or "").strip()
+        for status in self.skill_statuses:
+            if status.get("module") == wanted:
+                return dict(status)
+        return {
+            "module": wanted,
+            "category": "unknown",
+            "state": "not_loaded",
+            "reason": "module_not_discovered",
+            "tool_count": 0,
+        }
 
     def get_dynamic_prompt(self) -> str:
         """Stitches all tool manuals together into one string."""

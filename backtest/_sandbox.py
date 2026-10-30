@@ -55,6 +55,10 @@ def isolate(core: CielCore, sandbox: Path) -> None:
     core._pending_state_path = sandbox / "pending_action.json"
     core.tasks = TaskStore(sandbox / "tasks.json")
     core.deferred = DeferredStore(sandbox / "deferred.json")
+    if getattr(core, "run_manager", None) is not None:
+        from core.harness.manager import RunManager
+        from core.harness.store import RunStore
+        core.run_manager = RunManager(core, RunStore(sandbox / "runs.db"), core.run_manager.policy)
 
     # All of the below are module-level constants in the skill files themselves
     # (not CielCore attributes), read fresh on every call via Python's normal

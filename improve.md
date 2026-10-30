@@ -416,6 +416,25 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 
 ---
 
+## 2026-10-30 - Local runtime harness refactor
+
+Implemented the three-lane runtime in `core/harness/`, with compatible CielCore
+entry points, durable run/step/artifact/event storage, shared execution limits,
+explicit escalation, fresh approval on reissue, and one synthesis per multi-tool
+request. Existing context, RAG, permission, planner/reminder and front-end services
+remain shared. `recovery_manager.py` is a compatibility import; Python syntax checks
+are deterministic. Local `.env` enables the harness after restart; source default
+remains disabled for existing deployments. No VPS deployment was performed.
+
+Staged checks: storage 6/6, lanes 4/4, runtime 11/11, workflow replay 22/22.
+An additional constructor/first-turn smoke passed 1/1 with fake providers and an
+isolated root. Final maintained offline regression: **16/16 suites PASS**, including
+43/43 harness checks. Report: `backtest/logs/run_all_20261030_152951.txt`.
+Provider-backed/live email tests were not run. See `instructionAI/runtime_harness.md`
+for ownership, rollout, boundaries and commands.
+
+---
+
 ## Map: this file ↔ instructionAI ↔ code
 
 | Need | Read first | Then |
@@ -443,6 +462,7 @@ All checked → **Level B** → personal agent trustworthy for daily use.
 | quality_guards | unit | `backtest.test_quality_guards` |
 | plan_validation | unit | `backtest.test_plan_validation` |
 | prompt_harness | unit | `backtest.test_prompt_harness` |
+| run_harness | unit | `backtest.test_run_harness` |
 | reminders | unit | `backtest.test_reminders` |
 | api_auth | unit | `backtest.test_api_auth` |
 | api_server | unit | `backtest.test_api_server` |

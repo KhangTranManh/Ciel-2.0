@@ -9,10 +9,11 @@ notification state because they have different authority and retention rules.
 |---|---|---|---|
 | Recent chat history | LangChain file history | Short response continuity | Worker only, bounded |
 | `ciel_data/session_compact.json` | `core/session_compact.py` | Bounded factual session continuity | Worker only, bounded |
-| ChromaDB vector memory | `core/memory.py` | Semantic long-term recall | Retrieved, filtered, bounded |
+| ChromaDB vector memory | `core/rag_manager.py` | Semantic long-term recall | Retrieved, filtered, bounded |
 | `ciel_data/facts.json` | `skills/internal/memory_ops.py` | Explicit fact vault | Never automatic; pull-only |
 | `ciel_data/user_model.json` | `core/user_model.py` | Preferences with provenance | Bounded, secret-rejecting |
 | `ciel_data/state/tasks.json` | `core/task_state.py` | Durable job lifecycle | Status path, not routing |
+| `ciel_data/runs.db` | `core/harness/store.py` | Runtime runs, steps, bounded artifacts and events; one-time legacy task import | Never injected; status metadata only |
 | `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals, weekly actions, and one-time reminders | Through planner/reminder tools and triggers |
 | `ciel_workspace/todos.json` | productivity tools | Immediate unscheduled checklist | Through todo tools/triggers |
 | `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |

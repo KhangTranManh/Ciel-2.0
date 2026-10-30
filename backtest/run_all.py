@@ -101,6 +101,18 @@ SUITES: list[Suite] = [
         "P1 guards: sanitize, write-intent, gmail digest, HTML builder, TG upload protect",
     ),
     Suite(
+        "operational_readiness",
+        "backtest.test_operational_readiness",
+        "unit",
+        "Gmail readiness, weather unit normalization, harness operational categories (0 network)",
+    ),
+    Suite(
+        "run_harness",
+        "backtest.test_run_harness",
+        "unit",
+        "Lane selection, durable runs, limits, escalation, and offline workflow replays",
+    ),
+    Suite(
         "plan_validation",
         "backtest.test_plan_validation",
         "unit",
@@ -209,6 +221,9 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
             }
             disabled.update({"github_ops", "gmail_ops", "telegram_ops", "trading_ops", "web_agent_ops"})
             child_env["DISABLED_SKILL_MODULES"] = ",".join(sorted(disabled))
+            # Legacy parity suites exercise the compatibility path. The dedicated
+            # harness suite enables the new manager with isolated state explicitly.
+            child_env["CIEL_RUN_HARNESS_ENABLED"] = "false"
             # RAG tests may exercise the lazy sentence-transformer loader. Unit
             # regression must use an already cached model or the graceful fallback,
             # never spend minutes retrying a Hugging Face download.

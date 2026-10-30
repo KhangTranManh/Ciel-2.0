@@ -66,6 +66,7 @@ All three use `core.agent_loop.AgentLoop` and `core.llm_connector.CielCore`.
 |---|---|
 | `SKILL.md` | Entry point, project identity, file index, critical rules |
 | `architecture.md` | Module map, dependency graph, runtime and deployment flows |
+| `runtime_harness.md` | Three execution lanes, run persistence, limits, compatibility and staged tests |
 | `conventions.md` | Code, tool, data, logging, testing, and maintenance conventions |
 | `data_pipeline.md` | Context, memory, planner, scheduler, audit, and persistence flows |
 | `safety_and_risk.md` | Permission model, unattended ceiling, outbound and sandbox controls |
@@ -93,7 +94,9 @@ Living files outside this directory:
    `MIDDLEWARE_ENABLED=false`. Vision defaults to the Brain model. Provider changes do
    not require orchestration changes.
 
-3. The Router classifies `chat`, `tool`, `code`, or `multi_tool`. For chat, its `task`
+3. The Router classifies `chat`, `tool`, `code`, or `multi_tool`. The optional runtime
+   harness assigns `fast_chat`, `single_step` or `harness_run` in Python after routing
+   and existing plan safeguards. See `runtime_harness.md`. For chat, its `task`
    and reasoning are non-binding hints. The Worker always receives the real user input;
    the Router cannot pre-write the final response.
 

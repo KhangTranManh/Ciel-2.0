@@ -115,6 +115,33 @@ def trace_target(
             reason="A missing dependency belongs to requirements or environment configuration, not a prompt literal.",
         )
 
+    if signal_type == "SELF_CORRECTION:GMAIL_AUTH_OR_CONFIGURATION":
+        return TargetAttribution(
+            relation="inferred/non-prompt-cause",
+            evidence_source="[BRAIN] EVALUATE_RESULT after a Gmail operation",
+            runtime_state="requires_gmail_readiness_check",
+            proposal_eligible=False,
+            reason="Gmail OAuth and credential failures require readiness/configuration diagnosis, not a prompt rewrite.",
+        )
+
+    if signal_type == "SELF_CORRECTION:TOOL_UNAVAILABLE":
+        return TargetAttribution(
+            relation="inferred/non-prompt-cause",
+            evidence_source="[BRAIN] EVALUATE_RESULT after an unavailable tool",
+            runtime_state="requires_tool_registration_check",
+            proposal_eligible=False,
+            reason="A missing or quarantined tool is a deployment/registration condition, not a prompt wording failure.",
+        )
+
+    if signal_type == "SELF_CORRECTION:WEATHER_UNIT_CONVERSION":
+        return TargetAttribution(
+            relation="inferred/non-prompt-cause",
+            evidence_source="[BRAIN] EVALUATE_RESULT after weather output",
+            runtime_state="requires_deterministic_normalization",
+            proposal_eligible=False,
+            reason="Temperature-unit consistency belongs in deterministic weather normalization, not a prompt rewrite.",
+        )
+
     if signal_type.startswith("SELF_CORRECTION:"):
         return TargetAttribution(
             relation="inferred",

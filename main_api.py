@@ -79,7 +79,19 @@ thoughts_log_path = Path(__file__).resolve().parent / "ciel_data" / "logs" / "th
 @app.get("/health")
 async def health():
     """Liveness/readiness probe for the UI to poll before opening the WebSocket."""
-    return {"status": "ok", "ready": ciel_agent is not None, "auth_required": bool(API_TOKEN)}
+    gmail = (
+        ciel_agent.core.tool_manager.get_skill_status("gmail_ops")
+        if ciel_agent is not None
+        else {"state": "not_started", "reason": "core_not_initialized", "tool_count": 0}
+    )
+    return {
+        "status": "ok",
+        "ready": ciel_agent is not None,
+        "auth_required": bool(API_TOKEN),
+        # Safe operational signal: no credential contents, paths, or OAuth error
+        # text are exposed on this unauthenticated liveness endpoint.
+        "integrations": {"gmail": gmail},
+    }
 
 
 @app.get("/skills")
@@ -101,6 +113,14 @@ async def get_skills():
             "tools": sum(s.get("tool_count", 0) for s in manifest),
         },
     }
+
+
+@app.get("/runs")
+async def get_runs():
+    """Token-protected run metadata; never publishes goals, tool args or evidence."""
+    if ciel_agent is None:
+        return {"ready": False, "enabled": False, "lane": None, "runs": []}
+    return {"ready": True, **ciel_agent.run_status()}
 
 @app.post("/tts")
 async def tts(payload: dict):

@@ -54,6 +54,39 @@ _CALC_ALLOWED_NODES = (
     ast.USub, ast.UAdd, ast.Call, ast.Load, ast.Tuple, ast.List,
 )
 
+_DEGREE = chr(176)
+_WEATHER_C_RE = re.compile(r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*\u00b0C", re.IGNORECASE)
+_WEATHER_F_RE = re.compile(r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*\u00b0F", re.IGNORECASE)
+
+def _format_temperature_pair(value: float, source_unit: str) -> str:
+    """Render one temperature in a stable Celsius/Fahrenheit pair."""
+    if source_unit.upper() == "F":
+        fahrenheit = value
+        celsius = (value - 32) * 5 / 9
+    else:
+        celsius = value
+        fahrenheit = value * 9 / 5 + 32
+    return f"{celsius:.1f}{_DEGREE}C ({fahrenheit:.1f}{_DEGREE}F)"
+
+
+def _normalize_weather_temperature(text: str) -> str:
+    """Make current-weather temperature comparisons deterministic across units."""
+    raw = text or ""
+    # A provider that already returned both units needs no second rendering.
+    if _WEATHER_C_RE.search(raw) and _WEATHER_F_RE.search(raw):
+        return raw
+    match = _WEATHER_C_RE.search(raw)
+    unit = "C"
+    if not match:
+        match = _WEATHER_F_RE.search(raw)
+        unit = "F"
+    if not match:
+        return raw
+    try:
+        return raw[:match.start()] + _format_temperature_pair(float(match.group("value")), unit) + raw[match.end():]
+    except (TypeError, ValueError):
+        return raw
+
 def get_productivity_tools() -> dict:
     try:
         tools = []
@@ -154,7 +187,9 @@ def get_productivity_tools() -> dict:
                 if not city:
                     city = "Hanoi"
                 city_quoted = urllib.parse.quote(city.strip())
-                url = f"https://wttr.in/{city_quoted}?format=3"
+                # Force metric at the source, then render both units ourselves so
+                # multi-city comparisons never mix C/F depending on a server locale.
+                url = f"https://wttr.in/{city_quoted}?format=3&m"
                 with urllib.request.urlopen(url, timeout=10) as response:
                     data = response.read().decode("utf-8").strip()
                 return f"Thời tiết ở {city}: {data}"
@@ -169,7 +204,8 @@ def get_productivity_tools() -> dict:
                 "Get CURRENT weather only for a city (e.g. 'Hanoi', 'Ho Chi Minh City', "
                 "'London'). Uses wttr.in nowcast — NOT multi-day forecast. For "
                 "'ngày mai' / 'dự báo' / 'tomorrow' or when Master says 'tra google', "
-                "use stealth_search instead. City names with spaces are supported."
+                "use stealth_search instead. Returns temperature in both Celsius and Fahrenheit "
+                "for reliable comparisons. City names with spaces are supported."
             ),
         ))
 

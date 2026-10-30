@@ -118,6 +118,15 @@ Then one of:
 - {{"action": "multi_tool", "tools": [...], "response_hint": "..."}}
 Any tool/multi_tool plan may also carry an optional "needs_followup": true (see RESULT-DEPENDENT REQUESTS).
 
+EXECUTION LANES (optional "lane" field; Python enforces the final choice):
+- fast_chat: conversation, explanation, translation, or drafting text without taking an action.
+- single_step: one fully specified read-only tool call with no dependent follow-up.
+- harness_run: multiple actions, research/diagnosis, code generation, writes/sends/deletes,
+  background work, dependencies, or a failed attempt requiring recovery.
+For hard work provide the concrete tool/multi_tool/code plan using the schema above;
+the lane label alone does not perform work. Do not add a planning round for easy tasks.
+Never downgrade a mutating or unknown tool to single_step to avoid approval.
+
 Use multi_tool when the task needs several tools in sequence — whether independent OR dependent (a later step needing an earlier step's output).
 
 DEPENDENT STEPS (a step that needs a previous step's result):

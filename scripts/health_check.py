@@ -70,6 +70,15 @@ def main() -> int:
         if empty:
             lines.append(f"⚠️ 0 tools loaded: {', '.join(empty)} (check credentials/deps if unexpected)")
 
+        gmail = core.tool_manager.get_skill_status("gmail_ops")
+        if gmail.get("state") == "ready":
+            lines.append(f"✅ Gmail configured ({gmail.get('tool_count', 0)} tools loaded; mailbox not probed)")
+        else:
+            lines.append(
+                f"⚠️ Gmail {gmail.get('state', 'unknown')} ({gmail.get('reason', 'unknown')}); "
+                "mailbox not probed"
+            )
+
         t1 = time.time()
         decision = core.router.route("Hello, are you online?", core._tool_list_str, core.chat_history)
         route_s = time.time() - t1

@@ -50,3 +50,10 @@ class AgentLoop:
             error_msg = f"[Ciel Fatal] Pipeline crashed: {e}"
             print(Fore.RED + error_msg + Style.RESET_ALL)
             return error_msg
+
+    def run_status(self) -> dict:
+        """Operational metadata for every front end; reading never starts work."""
+        manager = getattr(self.core, "run_manager", None)
+        if manager is None:
+            return {"enabled": False, "lane": None, "runs": []}
+        return {"enabled": True, **manager.status()}

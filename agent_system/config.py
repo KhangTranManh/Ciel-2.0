@@ -95,6 +95,12 @@ AGENT_LOOP_MAX_ROUNDS = int(os.getenv("AGENT_LOOP_MAX_ROUNDS", "2"))
 # Wall-clock ceiling for the whole loop, so a slow provider cannot strand a request.
 AGENT_LOOP_MAX_SECONDS = float(os.getenv("AGENT_LOOP_MAX_SECONDS", "120"))
 
+# Modular run harness. Off by default for existing deployments; enable locally
+# after offline replay validation. The same safety gate and tool catalog apply.
+RUN_HARNESS_ENABLED = os.getenv("CIEL_RUN_HARNESS_ENABLED", "false").lower() in ("true", "1", "yes")
+RUN_HARNESS_MAX_STEPS = int(os.getenv("CIEL_RUN_HARNESS_MAX_STEPS", "24"))
+RUN_HARNESS_MAX_SECONDS = float(os.getenv("CIEL_RUN_HARNESS_MAX_SECONDS", "180"))
+
 # --- Parallel tool execution (see core/parallel.py) ---
 # Provably-independent read-only steps in one plan run concurrently instead of one after
 # another. Opt-in per tool, so an unknown/new skill stays sequential by default. Helps

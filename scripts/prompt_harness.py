@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -42,6 +43,16 @@ from scripts.harness.prompt_value import (
     read_prompt_value,
 )
 from scripts.harness.sanitizer import sanitize_text
+
+
+# The audit report can contain Vietnamese evidence and Unicode arrows.  Without this,
+# invoking the harness from a legacy Windows console finishes the audit then crashes
+# while merely printing its report, leaving the operator unable to review it.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG = ROOT / "ciel_data" / "logs" / "thoughts.log"
@@ -92,6 +103,13 @@ MIDDLEWARE_TAGS = [
 # tool_names, so tagging by root cause instead of by tool avoids fragmenting
 # one systemic router/planning gap into a dozen tiny per-tool buckets. ──
 SELF_CORRECTION_TAGS = [
+    # These are operational signals, not prompt-rewrite candidates. Keep them
+    # ahead of broad tool-choice/search wording so an expired OAuth token cannot
+    # be misreported as a Gmail-prompt quality issue.
+    ("GMAIL_AUTH_OR_CONFIGURATION", r"(?:gmail|email).{0,80}(?:oauth|auth|credential|token|invalid_grant|refresh)|(?:oauth|auth|credential|token|invalid_grant|refresh).{0,80}(?:gmail|email)"),
+    ("TOOL_UNAVAILABLE", r"(?:tool|tools).{0,50}(?:does not exist|not found|unavailable|not available|quarantined)|(?:does not exist|not found).{0,50}(?:tool|gmail|email)"),
+    ("WEATHER_UNIT_CONVERSION", r"(?:celsius|fahrenheit|\u00b0c|\u00b0f|unit conversion|convert.{0,30}(?:temperature|weather)|(?:temperature|weather).{0,30}(?:convert|unit))"),
+    ("SEARCH_RESULT_QUALITY", r"(?:search|result|snippet).{0,80}(?:irrelevant|unrelated|off.?topic|not.{0,25}answer|thin|vague)|(?:irrelevant|unrelated|off.?topic).{0,80}(?:search|result|snippet)"),
     ("INCOMPLETE_MULTISTEP", r"only (fetched|retrieved|listed|gathered|found|installed|located|identified|verified|checked|provides?)|but (did not|failed to|does not|not perform)|instead of (actually\s*)?(reading|sending|performing|checking)"),
     ("WRONG_TOOL_CHOICE", r"another .*tool might work|is a more (robust|better) alternative|is specifically designed for|better alternative"),
     ("HALLUCINATED_ACTION", r"hallucinat"),
@@ -253,7 +271,13 @@ def _target_for(signal_type: str, key: str) -> tuple:
         if tag in _SELF_CORRECTION_CROSS_CUTTING:
             return DEFAULT_PROMPT_TARGET  # router-level planning gap
         if tag == "EXTERNAL_DEPENDENCY_MISSING":
-            return ("requirements.txt / environment", "N/A — not a prompt fix")
+            return ("requirements.txt / environment", "N/A ? not a prompt fix")
+        if tag == "GMAIL_AUTH_OR_CONFIGURATION":
+            return ("Gmail runtime configuration", "N/A - readiness/auth diagnostic")
+        if tag == "TOOL_UNAVAILABLE":
+            return ("Tool registration / deployment", "N/A - runtime availability")
+        if tag == "WEATHER_UNIT_CONVERSION":
+            return ("skills/internal/productivity_ops.py", "get_weather runtime normalization")
         return TOOL_TO_PROMPT.get(key, DEFAULT_PROMPT_TARGET)
     return TOOL_TO_PROMPT.get(key, DEFAULT_PROMPT_TARGET)
 
