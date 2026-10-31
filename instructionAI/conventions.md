@@ -108,6 +108,29 @@ Identity and history:
 - Timed requests use `add_reminder`; immediate unscheduled todos remain in
   `ciel_workspace/todos.json` and never imply a notification.
 
+Daily Brief references are display handles, not durable task IDs. The latest current-day
+brief may persist at most 20 entries containing only `D-number + source type/ID + title`.
+Resolution requires the D prefix, one distinct reference, matching local date, and live
+TTL. Python binds supported tool IDs/titles after routing; stale, ambiguous, unknown, or
+source/tool-mismatched references execute nothing. Run retries use the public goal as a
+fresh request and never restore historical arguments, artifacts, or consent.
+
+Proactive Daily Brief delivery is opt-in under the trigger name `daily_brief`. Its key
+is `daily_brief:<YYYY-MM-DD>` in `PLANNER_TIMEZONE`; configured hour/minute checks are
+catch-up aware. Empty item lists emit nothing, failed channel sends stay retryable, and
+successful sends use the shared persisted Notifier cooldown.
+
+Daily Brief external sources are separate opt-ins and bounded before rendering. Gmail
+stores no body/snippet in the brief, weather is parsed rather than forwarding raw
+provider text, and Calendar includes no description, attendees, or attachments. A
+failure adds only the source name to `external_unavailable`; it never clears local data.
+
+Google Calendar is an independent `calendar_ops` tool pack with its own token. Its
+shared Google client keeps reads sequential. `list_calendar_events` is read-only;
+`create_calendar_event`, `update_calendar_event`, and `delete_calendar_event` are
+high-risk, exact-call permission decisions. Exact create retries use a deterministic
+provider event ID.
+
 ## Router and plan JSON
 
 Normalized route actions are `chat`, `tool`, `code`, and `multi_tool`. Tool steps have a
@@ -136,8 +159,14 @@ fenced or prose-wrapped object emits `BRAIN/route_non_strict`; readers never nee
 parse malformed text from the canonical event.
 
 Multi-tool steps return raw evidence to one final Worker synthesis. Per-step Worker
-formatting remains available for single-tool responses only. A referenced source that
-is empty, cancelled, or failed produces `SKIPPED_DEPENDENCY`; its consumer is not run.
+formatting remains available for single-tool responses only. The single-tool formatter
+is an explicit allow-list of user-facing information, local mutation confirmations,
+todo, plan and reminder results. It uses persona and the user's language but may only
+restate grounded tool facts. Fact-vault operations, workspace/file reads, raw
+shell/script diagnostics and external delivery confirmations remain deterministic. A
+formatter-provider failure returns the original tool result and never replays the tool.
+A referenced source that is empty, cancelled, or failed produces
+`SKIPPED_DEPENDENCY`; its consumer is not run.
 
 ## Context conventions
 
@@ -194,6 +223,17 @@ log `delivered`, digest fallback logs `digested`, unusual suppression may log
 Every provider call records the actual model identity and provider-reported usage when
 available. Model aliases are measured before adoption because compatible gateways may
 inject significant hidden prompt overhead.
+
+Provider-attempt latency is written as a separate `PERF/LLM_LATENCY` event containing
+only component, model, duration in milliseconds, and success/error outcome. The stable
+`LLM_CALL` usage line remains unchanged. Retries therefore produce one timing event per
+provider attempt without copying exception, prompt, or response text.
+
+Some custom gateways intermittently reject a Worker call with a `reasoning_effort`
+compatibility error even though Ciel did not send that field. The Worker retries only
+that exact 400 once; unrelated bad requests remain non-retryable. Structured Daily Brief
+output additionally has a deterministic prose fallback, so the schema never becomes the
+user-facing answer when presentation is unavailable.
 
 User-facing logs never print credentials, OAuth tokens, authorization headers, or full
 private `.env` values.

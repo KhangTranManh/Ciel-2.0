@@ -27,12 +27,23 @@ database. Deployment and container recreation are separate operator actions.
 Brain keeps the existing `chat/tool/code/multi_tool` plan format and may include an
 optional `lane`. Python enforces the final lane after existing route safeguards.
 Unknown capabilities and mutations cannot use the single-step whitelist. Pending
-confirmations and explicit deferred reissues are resolved before ordinary routing.
-Ambiguous requests still go through Brain; arguments are never guessed by regex.
+confirmations, explicit deferred reissues, and Daily Brief D-reference validity are
+resolved before ordinary routing. A valid D-reference contributes only verified source
+identity; Python rebinds supported tool IDs/titles after routing. Other ambiguous
+requests still go through Brain; arguments are never guessed by regex.
 
 A failed single read or a chat knowledge-gap search can escalate within the same
 run, retaining evidence. Clear greetings use only one Worker call. Other ordinary
 chat still uses the existing Brain routing and response-side context services.
+
+For ordinary user-facing tools, the tool result is grounded evidence rather than the
+final voice. A maintained allow-list sends that bounded result through Worker once so
+time, weather, local file-write confirmations, todos, plans and reminders are answered
+in the user's language and Ciel's persona. Multi-tool runs still
+format only once at final synthesis. Vault operations, workspace/file reads, raw
+diagnostic command output, and Gmail/Telegram delivery confirmations stay deterministic
+and are not rewritten by a model. If the presentation call fails, Ciel returns the
+successful deterministic tool result without replaying the tool.
 
 ## Module ownership
 
@@ -79,6 +90,11 @@ A live confirmation callback exposes `waiting_for_approval`, then returns to
 running. A preview awaiting a later user message stays waiting. An explicit reissue
 creates a fresh reviewed run and links/closes the earlier wait. No persisted event
 acts as a permission grant.
+
+The same rule applies to a run selected through a same-day Daily Brief reference: only
+its bounded public goal is reused. Old step arguments, artifacts, pending confirmation,
+session/plan grants and consent are never loaded; linkage records
+`approval_inherited=false`.
 
 Runs remain serialized by `AgentLoop.run_step()` because chat, pending confirmation,
 cancellation and outbound deduplication are shared per-turn state. The run store

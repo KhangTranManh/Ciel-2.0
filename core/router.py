@@ -6,7 +6,9 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_openai import ChatOpenAI
 from agent_system.models.brain import Brain, TRANSIENT_ERRORS
 from agent_system.utils.logger import log
-from agent_system.utils.usage import extract_usage, format_usage
+from agent_system.utils.usage import (
+    extract_usage, format_latency, format_usage, invoke_with_latency,
+)
 from agent_system.config import (
     RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL,
     ROUTER_ASSISTANT_ENABLED, ROUTER_ASSISTANT_PROVIDER, ROUTER_ASSISTANT_MODEL,
@@ -322,14 +324,29 @@ class Router:
         # STAGE 2 — full Brain planner.
         return self._route_brain(user_input, tool_list_str, chat_history)
 
+    def _log_llm_latency(
+        self, component: str, model: str, duration_ms: int, outcome: str
+    ) -> None:
+        self.log_thought(
+            "PERF",
+            "LLM_LATENCY",
+            format_latency(component, model, duration_ms, outcome),
+        )
+
     def _classify_with_assistant(self, user_input: str) -> str:
         """Return 'chat' or 'escalate'. Fail-safe: any error/ambiguity → 'escalate', so a
         broken assistant never silently turns a real action into a chat reply."""
         try:
-            resp = self._assistant_llm.invoke([
-                SystemMessage(content=_ASSISTANT_TRIAGE_PROMPT),
-                HumanMessage(content=user_input),
-            ])
+            resp = invoke_with_latency(
+                self._assistant_llm,
+                [
+                    SystemMessage(content=_ASSISTANT_TRIAGE_PROMPT),
+                    HumanMessage(content=user_input),
+                ],
+                component="router_assistant",
+                model=ROUTER_ASSISTANT_MODEL,
+                on_latency=self._log_llm_latency,
+            )
             self.log_thought("ROUTER", "LLM_CALL",
                              format_usage(ROUTER_ASSISTANT_MODEL, extract_usage(resp)))
             content = resp.content
@@ -408,7 +425,10 @@ class Router:
         # The `chat_history` parameter is kept only for call-site/signature compatibility.
         messages.append(HumanMessage(content=user_input))
 
-        response = self.brain._router_llm.invoke(messages)
+        response = invoke_with_latency(
+            self.brain._router_llm, messages, component="brain", model=BRAIN_MODEL,
+            on_latency=self._log_llm_latency,
+        )
         self.log_thought("BRAIN", "LLM_CALL", format_usage(BRAIN_MODEL, extract_usage(response)))
         # Gemini occasionally returns content as a list of parts instead of a plain string
         content = response.content

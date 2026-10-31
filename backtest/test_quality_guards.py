@@ -16,7 +16,10 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 # that load. These guards test only core/internal behavior, so exclude external
 # packs before agent_system.config is first imported below.
 _disabled_skills = {s.strip() for s in os.environ.get("DISABLED_SKILL_MODULES", "").split(",") if s.strip()}
-_disabled_skills.update({"github_ops", "gmail_ops", "telegram_ops", "trading_ops", "web_agent_ops"})
+_disabled_skills.update({
+    "calendar_ops", "github_ops", "gmail_ops", "telegram_ops", "trading_ops",
+    "web_agent_ops",
+})
 os.environ["DISABLED_SKILL_MODULES"] = ",".join(sorted(_disabled_skills))
 if sys.platform == "win32":
     try:
@@ -394,7 +397,9 @@ def test_worker_retries_malformed_provider_json():
     import json
     from types import SimpleNamespace
     from tenacity import RetryError, wait_none
-    from agent_system.models.worker import Worker, WORKER_TRANSIENT_ERRORS
+    from agent_system.models.worker import (
+        Worker, WORKER_TRANSIENT_ERRORS, _is_worker_retryable_error,
+    )
 
     class FlakyProvider:
         def __init__(self):
@@ -420,6 +425,35 @@ def test_worker_retries_malformed_provider_json():
     check("the recovered Worker response reaches the caller", result == "recovered", repr(result))
     check("ordinary logic ValueError remains non-retryable",
           ValueError not in WORKER_TRANSIENT_ERRORS)
+
+    class BadRequestError(Exception):
+        pass
+
+    gateway_error = BadRequestError(
+        "This model does not accept the requested reasoning_effort parameter"
+    )
+    check("the specific gateway reasoning-effort rejection is retryable",
+          _is_worker_retryable_error(gateway_error))
+    check("unrelated HTTP 400-style errors remain non-retryable",
+          not _is_worker_retryable_error(BadRequestError("invalid API key")))
+
+    class FlakyReasoningGateway:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                raise gateway_error
+            return SimpleNamespace(content="recovered after gateway retry", usage_metadata=None)
+
+    gateway_worker = Worker.__new__(Worker)
+    gateway_worker._llm = FlakyReasoningGateway()
+    gateway_worker.on_call = None
+    gateway_result = generate_without_wait(gateway_worker, "format grounded data")
+    check("reasoning-effort rejection retries once and recovers",
+          gateway_worker._llm.calls == 2 and gateway_result == "recovered after gateway retry",
+          f"calls={gateway_worker._llm.calls}, result={gateway_result!r}")
 
     class AlwaysMalformed:
         def __init__(self):

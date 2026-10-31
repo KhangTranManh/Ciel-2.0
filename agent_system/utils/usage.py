@@ -8,7 +8,8 @@ and all feed the same cost-tracking chokepoint (CielCore._log_thought). Keeping 
 provider quirk is fixed once, not in three places. Always returns a dict with the
 same three int keys so callers never have to null-check.
 """
-from typing import Any
+import time
+from typing import Any, Callable
 
 
 def extract_usage(response: Any) -> dict:
@@ -52,3 +53,39 @@ def format_usage(model: str, usage: dict) -> str:
     out = int(usage.get("output", 0) or 0)
     tot = int(usage.get("total", inp + out) or (inp + out))
     return f"model={model} in={inp} out={out} total={tot}"
+
+
+def format_latency(component: str, model: str, duration_ms: int, outcome: str) -> str:
+    """Render secret-free latency metadata in a separate audit event."""
+    clean_component = "_".join(str(component or "unknown").split())[:48]
+    clean_model = "_".join(str(model or "unknown").split())[:120]
+    clean_outcome = "success" if outcome == "success" else "error"
+    return (
+        f"component={clean_component} model={clean_model} "
+        f"duration_ms={max(0, int(duration_ms))} outcome={clean_outcome}"
+    )
+
+
+def invoke_with_latency(
+    client: Any,
+    messages: Any,
+    *,
+    component: str,
+    model: str,
+    on_latency: Callable[[str, str, int, str], None] | None = None,
+):
+    """Invoke one provider attempt and report timing without changing its result/error."""
+    started = time.perf_counter()
+    outcome = "error"
+    try:
+        response = client.invoke(messages)
+        outcome = "success"
+        return response
+    finally:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        if on_latency is not None:
+            try:
+                on_latency(component, model, duration_ms, outcome)
+            except Exception:
+                # Telemetry must never turn a successful provider call into a failed turn.
+                pass

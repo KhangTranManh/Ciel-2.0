@@ -43,7 +43,7 @@ from agent_system.models.brain import Brain
 from agent_system.models.worker import Worker
 from agent_system.models.middleware import Middleware
 from agent_system.utils.logger import log
-from agent_system.utils.usage import format_usage
+from agent_system.utils.usage import format_latency, format_usage
 from agent_system.config import (
     MIDDLEWARE_ENABLED, MIDDLEWARE_SCOPE, MIDDLEWARE_MAX_PASSES,
     AGENT_LOOP_ENABLED, AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_SECONDS,
@@ -178,6 +178,9 @@ class CielCore:
         # mechanism causes extra calls (e.g. today's healing-waste finding), not exact
         # token math, and this needs no changes to Worker's return type/callers.
         self.worker.on_call = lambda model, usage=None: self._log_thought("WORKER", "LLM_CALL", format_usage(model, usage))
+        self.worker.on_latency = lambda component, model, duration_ms, outcome: self._log_thought(
+            "PERF", "LLM_LATENCY", format_latency(component, model, duration_ms, outcome)
+        )
 
         # Modular Components
         self.router = Router(self.brain, self._log_thought, persona=self.ciel_persona)
@@ -191,6 +194,9 @@ class CielCore:
             try:
                 self.middleware = Middleware()
                 self.middleware.on_call = lambda model, usage=None: self._log_thought("MIDDLEWARE", "LLM_CALL", format_usage(model, usage))
+                self.middleware.on_latency = lambda component, model, duration_ms, outcome: self._log_thought(
+                    "PERF", "LLM_LATENCY", format_latency(component, model, duration_ms, outcome)
+                )
             except Exception as e:
                 log.error(f"Middleware failed to initialize, continuing without it: {e}")
 
@@ -413,17 +419,72 @@ class CielCore:
         ),
         "list_reminders": "List pending reminders; optional include_closed=false.",
         "cancel_reminder": "Cancel a pending reminder by reminder_id.",
+        "get_daily_brief": (
+            "Read-only prioritized view of today's weekly tasks, todos, reminders, "
+            "and interrupted/waiting runs. Optional date=YYYY-MM-DD, "
+            "lookahead_hours=24, max_items=7. Use for 'what should I do today?'."
+        ),
+        "list_calendar_events": (
+            "Read upcoming Calendar event metadata. Args: optional lookahead_hours, "
+            "max_results, calendar_id. This is read-only."
+        ),
+        "create_calendar_event": (
+            "Create Calendar event. Required: summary, ISO start, ISO end; optional "
+            "timezone_name/calendar_id. Requires confirmation."
+        ),
+        "update_calendar_event": (
+            "Update Calendar event by exact event_id; optional summary/start/end. "
+            "Requires confirmation."
+        ),
+        "delete_calendar_event": (
+            "Delete Calendar event by exact event_id. Requires confirmation."
+        ),
     }
 
-    # Only call the Worker to format these tools. Others are already readable.
+    # User-facing results that benefit from one grounded Worker presentation pass.
+    # Keep this an explicit allow-list: vault operations, raw diagnostic commands,
+    # and external delivery confirmations must never be silently sent through a
+    # model or rewritten into a claim that an action succeeded.
     _TOOLS_NEEDING_FORMAT = {
+        # Everyday information and bounded personal planning reads.
+        "get_current_time",
+        "get_weather",
+        "calculate",
+        "list_todos",
+        "list_monthly_goals",
+        "list_weekly_plan",
+        "list_reminders",
+        "get_daily_brief",
+        "list_calendar_events",
+        # Local state changes: only their bounded success/error envelope is
+        # formatted; file contents and private state are not read by this pass.
+        "write_file",
+        "append_file",
+        "delete_file",
+        "add_todo",
+        "complete_todo",
+        "add_monthly_goal",
+        "update_monthly_goal",
+        "complete_monthly_goal",
+        "add_weekly_task",
+        "update_weekly_task",
+        "complete_weekly_task",
+        "add_reminder",
+        "cancel_reminder",
+        # External Calendar mutations remain high-risk even though their bounded
+        # result envelopes may receive the normal grounded presentation pass.
+        "create_calendar_event",
+        "update_calendar_event",
+        "delete_calendar_event",
+        # External information retrieval.
         "search_gmail",
         "get_market_price",
+        "get_crypto_stats",
         "analyze_crypto_technical",
         "get_gmail_message",
         "get_gmail_thread",
         "stealth_search",
-        "smart_scrape"
+        "smart_scrape",
     }
 
     # Tools with obviously-correct results — skip Brain self-correction to save API cost
@@ -444,6 +505,9 @@ class CielCore:
         "complete_monthly_goal", "add_weekly_task", "list_weekly_plan",
         "update_weekly_task", "complete_weekly_task",
         "add_reminder", "list_reminders", "cancel_reminder",
+        "get_daily_brief",
+        "list_calendar_events", "create_calendar_event", "update_calendar_event",
+        "delete_calendar_event",
     }
 
     def _log_thought(self, actor: str, action: str, content: str):
@@ -2625,9 +2689,9 @@ class CielCore:
             return None
         return p
 
-    # "What were you doing?" — answerable from the task store alone. The Router never
-    # sees chat_history, so without this the Brain would have to guess, and short inputs
-    # like these fall under RAG's MIN_QUERY_LENGTH too. Deterministic, zero LLM calls.
+    # "What were you doing?" — grounded in the task store. The Router never sees
+    # chat_history, so without this the Brain would have to guess. Worker only presents
+    # the bounded deterministic status; it does not decide what actually happened.
     _STATUS_QUERY_RE = re.compile(
         r"^\s*(?:(?:bạn|cậu|mày)?\s*(?:đang|vừa)\s*làm\s*(?:gì|cái\s*gì)|"
         r"làm\s*(?:tới|đến)\s*đâu\s*(?:rồi)?|tiến\s*độ(?:\s*(?:sao|thế\s*nào|ra\s*sao))?|"
@@ -2640,27 +2704,56 @@ class CielCore:
         rec = self.tasks.unfinished()
         return rec.describe() if rec else ""
 
-    def _answer_status_query(self) -> str:
-        """Report current/recent work straight from the store."""
+    def _answer_status_query(self, user_input: str = "") -> str:
+        """Ground status in the run store, then let Worker present it naturally.
+
+        The Worker receives bounded display data, never step arguments/artifacts.
+        If the provider is unavailable, the deterministic status remains usable.
+        """
         manager = getattr(self, "run_manager", None)
         if manager is not None:
             runs = manager.store.recent(5)
             if runs:
-                return "Recent runs:\n" + "\n".join(
+                raw = "Recent runs:\n" + "\n".join(
                     f"  [{run['state']}] {run['lane']}: {run['goal'][:120]}"
                     for run in runs
                 )
-        act = self.tasks.active
-        lines = []
-        if act:
-            lines.append(f"Currently working on: {act.describe()}")
-        recent = [r for r in self.tasks.recent(4) if r is not act]
-        if recent:
-            lines.append("Recent:")
-            lines += [f"  • {r.describe()}" for r in recent]
-        if not lines:
-            return "Nothing in progress, Master — no task has been recorded yet."
-        return "\n".join(lines)
+            else:
+                raw = "Nothing is currently running and no recent run is recorded."
+        else:
+            act = self.tasks.active
+            lines = []
+            if act:
+                lines.append(f"Currently working on: {act.describe()}")
+            recent = [r for r in self.tasks.recent(4) if r is not act]
+            if recent:
+                lines.append("Recent:")
+                lines += [f"  • {r.describe()}" for r in recent]
+            raw = ("\n".join(lines) if lines else
+                   "Nothing is currently running and no recent task is recorded.")
+
+        prompt = (
+            f"{self.ciel_persona}\n\n"
+            "Present the deterministic activity status below as a natural, concise "
+            "reply in the user's language and persona voice. Use only these facts. "
+            "Do not expose internal lane names such as fast_chat, single_step, or "
+            "harness_run. Do not say work is currently running when every listed run "
+            "is completed. Do not invent progress, results, or actions.\n"
+            f"[USER LANGUAGE: {self._detect_language(user_input)}]\n"
+            f"User's request: {user_input}\n"
+            f"Deterministic status:\n{raw}"
+        )
+        try:
+            self._log_thought("WORKER", "status_format_task", prompt)
+            formatted = self.worker.generate(prompt)
+            self._log_thought("WORKER", "status_format_response", formatted)
+            return formatted
+        except Exception as exc:
+            self._log_thought(
+                "WORKER", "status_format_failed",
+                f"{type(exc).__name__}: {str(exc)[:160]} - returned deterministic status.",
+            )
+            return raw
 
     @staticmethod
     def _is_referential_send(user_input: str) -> bool:

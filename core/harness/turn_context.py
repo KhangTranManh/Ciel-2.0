@@ -3,7 +3,9 @@ from __future__ import annotations
 
 
 
-def prepare_decision(self, user_input, recalled, active_subject_note):
+def prepare_decision(
+    self, user_input, recalled, active_subject_note, daily_brief_reference_note=""
+):
     import os
     from core.llm_connector import CONTEXT_INPUT_BUDGET, CONTEXT_RECALL_BUDGET
     from core.context import ContextAssembler, P_CRITICAL, P_HELPFUL, P_IMPORTANT, P_REQUEST
@@ -167,6 +169,10 @@ def prepare_decision(self, user_input, recalled, active_subject_note):
     # Structured layer-2 handoff: Brain gets the last grounded subject, never
     # raw history. Explicit words in the current request still override it.
     ctx.add("active_subject", active_subject_note, P_CRITICAL)
+    # A D-number is useful only after Python has verified the latest persisted
+    # same-day snapshot. The note contains identity and allowed API mappings,
+    # never prior run arguments, artifacts, confirmations or consent.
+    ctx.add("daily_brief_reference", daily_brief_reference_note, P_CRITICAL)
 
     # Which language the request was ORIGINALLY written in. Added AFTER the
     # translate step so it survives it — otherwise the Brain only ever sees

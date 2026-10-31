@@ -44,6 +44,9 @@ them first:
 | `send_gmail_html_message` | External HTML email |
 | `reply_to_email` | External thread reply |
 | `trash_email` | Inbox mutation |
+| `create_calendar_event` | External calendar mutation |
+| `update_calendar_event` | External calendar mutation |
+| `delete_calendar_event` | External calendar deletion |
 | `git_confirm_push` | Commit and remote push |
 | `vision_act` | Autonomous screen control |
 
@@ -185,7 +188,7 @@ later is less reliable than excluding it at discovery time.
 
 ## Credentials and private data
 
-- `.env`, `ciel_data/credentials.json`, Gmail tokens, `ciel_data/`, and deployment credentials
+- `.env`, `ciel_data/credentials.json`, Gmail/Calendar tokens, `ciel_data/`, and deployment credentials
   stay outside Git.
 - Docker bind-mounts private files instead of baking them into the image.
 - Git tooling excludes known secret paths from automated commits.

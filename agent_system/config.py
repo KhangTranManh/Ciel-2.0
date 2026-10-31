@@ -115,7 +115,7 @@ AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 # default-on trigger added later would start talking without anyone choosing it.
 # Known names — A (Ciel watching itself): unfinished_task, daily_cost, repeated_failure,
 # deferred_approval | B (clock): digest, morning_digest, monthly_plan, weekly_plan,
-# reminder_due |
+# reminder_due, daily_brief |
 # C (outside world, each needs a threshold below): price_alert, important_email, stale_todo.
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
 PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
@@ -162,6 +162,42 @@ PLANNER_MONTHLY_MINUTE = int(os.getenv("PLANNER_MONTHLY_MINUTE", "0"))
 PLANNER_WEEKLY_WEEKDAY = int(os.getenv("PLANNER_WEEKLY_WEEKDAY", "0"))  # Monday=0
 PLANNER_WEEKLY_HOUR = int(os.getenv("PLANNER_WEEKLY_HOUR", "8"))
 PLANNER_WEEKLY_MINUTE = int(os.getenv("PLANNER_WEEKLY_MINUTE", "0"))
+# The proactive Daily Brief uses the planner timezone but has its own opt-in clock.
+DAILY_BRIEF_HOUR = int(os.getenv("DAILY_BRIEF_HOUR", "8"))
+DAILY_BRIEF_MINUTE = int(os.getenv("DAILY_BRIEF_MINUTE", "0"))
+# Visible D1...Dn Daily Brief references are same-day hints, not durable task IDs.
+# The date boundary is always enforced in addition to this wall-clock ceiling.
+DAILY_BRIEF_REFERENCE_TTL_SECONDS = int(
+    os.getenv("DAILY_BRIEF_REFERENCE_TTL_SECONDS", "43200")
+)
+# External Daily Brief sources are independent opt-ins. Bounds are enforced again at
+# the collection boundary so a bad environment value cannot inflate notification data.
+DAILY_BRIEF_GMAIL_ENABLED = os.getenv(
+    "DAILY_BRIEF_GMAIL_ENABLED", "false"
+).lower() in ("true", "1", "yes")
+DAILY_BRIEF_GMAIL_MAX_RESULTS = int(os.getenv("DAILY_BRIEF_GMAIL_MAX_RESULTS", "3"))
+DAILY_BRIEF_WEATHER_ENABLED = os.getenv(
+    "DAILY_BRIEF_WEATHER_ENABLED", "false"
+).lower() in ("true", "1", "yes")
+DAILY_BRIEF_WEATHER_CITY = os.getenv("DAILY_BRIEF_WEATHER_CITY", "").strip()
+DAILY_BRIEF_CALENDAR_ENABLED = os.getenv(
+    "DAILY_BRIEF_CALENDAR_ENABLED", "false"
+).lower() in ("true", "1", "yes")
+DAILY_BRIEF_CALENDAR_MAX_RESULTS = int(os.getenv("DAILY_BRIEF_CALENDAR_MAX_RESULTS", "5"))
+DAILY_BRIEF_CALENDAR_LOOKAHEAD_HOURS = int(
+    os.getenv("DAILY_BRIEF_CALENDAR_LOOKAHEAD_HOURS", "24")
+)
+
+# Calendar owns a separate OAuth token and tool pack. Read access may enrich a Daily
+# Brief; create/update/delete still pass through the normal high-risk confirmation path.
+CALENDAR_ID = os.getenv("CALENDAR_ID", "primary").strip() or "primary"
+_calendar_token_path = Path(
+    os.getenv("CALENDAR_TOKEN_PATH", "ciel_data/calendar_token.json")
+).expanduser()
+CALENDAR_TOKEN_PATH = (
+    _calendar_token_path if _calendar_token_path.is_absolute()
+    else Path(__file__).resolve().parent.parent / _calendar_token_path
+)
 
 # --- Tier-7 user model (see core/user_model.py) ---
 # The PUSH side of memory. facts.json is pull-only (the model must guess a key and choose

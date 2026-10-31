@@ -45,8 +45,13 @@ core/
   outbound.py                  Delivery keys, recipient normalization, Markdown→HTML email
   redact.py                    Masks tokens/keys in text leaving the process
   triggers.py                  Deterministic condition checks and trigger engine
+  capability_triggers.py       Opt-in startup capability-loss notifications
   proactive_setup.py           Shared CLI/API/Telegram trigger wiring
   planner_store.py             SQLite boundary for plans and one-time reminders
+  daily_brief.py               Daily aggregation, priority, and bounded D-reference identity
+  daily_brief_context.py       Fail-open bounded Gmail/weather/Calendar enrichment
+  gmail_client.py              Current/legacy Gmail service-builder boundary
+  daily_brief_triggers.py      Catch-up Daily Brief notification generation
   planner_triggers.py          Monthly/weekly notification generation
   reminder_triggers.py         Due-reminder notification and delivery closure
   user_model.py                Bounded, secret-rejecting learned profile
@@ -61,6 +66,7 @@ skills/
   _result.py                   Standard tool result envelope
   internal/*_ops.py            Files, reports, memory, todos, planner tools
   external/*_ops.py            Gmail, Telegram, web, trading, GitHub tools
+  external/calendar_ops.py     Separate Calendar reads and confirmed mutations
 
 ciel_data/                     Private persistent state, logs, RAG, planner DB
 ciel_workspace/                Sandboxed working files and immediate todos
@@ -268,6 +274,32 @@ completion or delivery changes status and retains history.
 Monthly and weekly triggers are catch-up checks: once the configured local time has
 passed, they may still announce later in that period. Stable period keys prevent a
 successful message from repeating after a restart.
+
+`DailyBriefCollector` is a derived read-only view over the current week's actions,
+open todos, pending reminders, monthly-goal labels, and only the goal/state/timestamps
+of interrupted or waiting runs. Python ranks and bounds the items; the
+`get_daily_brief` tool gives that structure to Worker for one grounded presentation.
+Phase 2 atomically persists only the visible D-reference, source type/ID, and title for
+the current local day. A later D-number is verified for date, TTL, uniqueness, and
+source identity before the Router sees its bounded mapping. Python then replaces any
+model-guessed ID/title in supported action tools before ordinary validation, permission,
+and execution. Explicit run reissue starts a fresh run from the public goal and links
+IDs without reading old arguments/artifacts or inheriting approval. The snapshot is not
+a second task store.
+
+When `daily_brief` is explicitly enabled, `daily_brief_triggers.py` collects and renders
+the same bounded local view after the configured time. It catches up after downtime,
+stays silent for an empty item list, and uses `daily_brief:<YYYY-MM-DD>`. Delivery goes
+through the shared Notifier/Telegram path, so provider failures retry and only a
+successful send persists dedupe across restart. No model runs in this background path.
+
+Phase 4 optionally adds independent external context after local collection. Gmail is
+metadata-only (From/Subject/Date), weather is one parsed current-condition record, and
+Calendar is bounded event title/time metadata. Failures are recorded per source and do
+not remove local actions or another external source. `calendar_ops.py` owns Calendar
+tools and its separate OAuth token. Reads may enrich the brief; create/update/delete
+remain high-risk tools and therefore require attended confirmation or DEFER in the
+background.
 
 The due-reminder trigger polls once per minute and remains retryable after a failed
 channel send. Routine cooldown suppression is not written as a repeated trigger event.

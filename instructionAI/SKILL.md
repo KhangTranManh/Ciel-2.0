@@ -24,6 +24,11 @@ Current baseline:
   and were delivered live on the VPS.
 - P1.2 (proactive, real-day observation on the VPS) and P1.3 (user-model suite) pass.
   Level C, P2, and P3 remain roadmap work unless `improve.md` says otherwise.
+- Daily Command Center Phases 1 through 4 provide an on-demand Daily Brief over weekly
+  tasks, todos, upcoming reminders, and interrupted/waiting run metadata, plus bounded
+  same-day `D1...Dn` action references and opt-in catch-up delivery through the shared
+  proactive Telegram path. Optional Gmail metadata, current weather, and Calendar event
+  metadata fail independently; Calendar mutations retain ordinary confirmation rules.
 - No graphical client is currently shipped. Remote clients use the API WebSocket
   protocol and must fail closed on confirmation requests.
 
@@ -189,7 +194,11 @@ Living files outside this directory:
 22. Durable tasks, conversational memory, plans, reminders, and todos are distinct.
     Monthly goals, weekly tasks, and one-time reminders live in
     `ciel_data/planner.db`; immediate unscheduled todos remain in
-    `ciel_workspace/todos.json`.
+    `ciel_workspace/todos.json`. `core/daily_brief.py` derives a bounded view across
+    those stores and `runs.db`; its identity-only `ciel_data/state/daily_brief.json`
+    snapshot resolves same-day D-numbers but never becomes another task source of truth
+    or reads run step arguments/artifacts. Expired or ambiguous references stop before
+    routing, and a run reissue never inherits old consent.
 
 ### Proactivity and persistence
 
@@ -208,10 +217,24 @@ Living files outside this directory:
     send. `reminder_due` must be named in `PROACTIVE_TRIGGERS`; otherwise creation fails
     honestly instead of storing an undeliverable alert.
 
+25a. The optional Daily Brief trigger uses `daily_brief:<YYYY-MM-DD>`, the planner
+    timezone, and its configured local hour/minute. It is silent for an empty brief,
+    catches up later that day, retries failed provider sends, and persists dedupe only
+    after successful delivery. Its D-reference snapshot remains identity-only.
+
+25b. Daily Brief external context is separately opt-in and bounded. Gmail contributes
+    only From/Subject/Date metadata, weather contributes parsed current conditions, and
+    Calendar contributes only event title/time. One provider failure never suppresses
+    local data or another provider. Calendar owns a separate tool pack/token;
+    list-calendar is read-only, while create/update/delete remain high-risk and defer
+    unattended.
+
 26. `thoughts.log` is an immutable-format chronological audit contract. `[LLM_CALL]`
     keeps `model=` first and space-delimited. Readers normalize CRLF; writers do not
     redesign the format for a UI. Successful `route_decision` entries contain normalized
     JSON; recovered fenced/prose responses emit a separate `route_non_strict` event.
+    Provider-attempt duration uses a separate secret-free `PERF/LLM_LATENCY` event, so
+    the `LLM_CALL` usage contract remains unchanged and retries are measurable.
     Trigger actions describe outcomes: delivery and digest
     are logged, while routine cooldown suppression is not emitted on every poll.
 

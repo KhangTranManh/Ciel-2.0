@@ -15,6 +15,9 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
         return None, None
     try:
         from core.notifier import CliChannel, Notifier, Presence, TelegramChannel
+        from core.capability_triggers import build_capability_loss_triggers
+        from core.daily_brief_triggers import build_daily_brief_triggers
+        from core.daily_brief_context import DailyBriefExternalContext
         from core.planner_triggers import build_planner_triggers
         from core.reminder_triggers import build_reminder_triggers
         from core.triggers import TriggerEngine, build_triggers, parse_price_alerts
@@ -50,6 +53,10 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
             digest_hour=config.PROACTIVE_DIGEST_HOUR,
             digest_minute=config.PROACTIVE_DIGEST_MINUTE,
         )
+        triggers.extend(build_capability_loss_triggers(
+            enabled_names=config.PROACTIVE_TRIGGERS,
+            statuses=ciel.core.tool_manager.get_skill_statuses(),
+        ))
         triggers.extend(build_planner_triggers(
             enabled_names=config.PROACTIVE_TRIGGERS,
             planner_db=config.PLANNER_DB_PATH,
@@ -66,6 +73,27 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
             enabled_names=config.PROACTIVE_TRIGGERS,
             planner_db=config.PLANNER_DB_PATH,
             timezone_name=config.PLANNER_TIMEZONE,
+        ))
+        triggers.extend(build_daily_brief_triggers(
+            enabled_names=config.PROACTIVE_TRIGGERS,
+            planner_db=config.PLANNER_DB_PATH,
+            todo_path=todo_path,
+            runs_path=ciel.core.base_dir / "ciel_data" / "runs.db",
+            reference_path=ciel.core.base_dir / "ciel_data" / "state" / "daily_brief.json",
+            timezone_name=config.PLANNER_TIMEZONE,
+            hour=config.DAILY_BRIEF_HOUR,
+            minute=config.DAILY_BRIEF_MINUTE,
+            reference_ttl_seconds=config.DAILY_BRIEF_REFERENCE_TTL_SECONDS,
+            external_context=DailyBriefExternalContext(
+                gmail_enabled=config.DAILY_BRIEF_GMAIL_ENABLED,
+                gmail_max_results=config.DAILY_BRIEF_GMAIL_MAX_RESULTS,
+                weather_enabled=config.DAILY_BRIEF_WEATHER_ENABLED,
+                weather_city=config.DAILY_BRIEF_WEATHER_CITY,
+                calendar_enabled=config.DAILY_BRIEF_CALENDAR_ENABLED,
+                calendar_max_results=config.DAILY_BRIEF_CALENDAR_MAX_RESULTS,
+                calendar_lookahead_hours=config.DAILY_BRIEF_CALENDAR_LOOKAHEAD_HOURS,
+                base_dir=ciel.core.base_dir,
+            ),
         ))
         if not triggers:
             print("[Proactive] No configured trigger could be built; background notifications disabled.")

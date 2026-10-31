@@ -44,12 +44,13 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
     than being extracted into gmail_ops.py (which wraps the LangChain
     GmailToolkit and doesn't expose a raw fetch function).
     """
+    service = None
     try:
         import inspect
         from langchain_google_community.gmail.utils import (
-            build_resource_service,
             get_gmail_credentials,
         )
+        from core.gmail_client import build_gmail_api_service
         base_dir = Path(__file__).resolve().parent.parent
         credentials_file = base_dir / "ciel_data" / "credentials.json"
         token_file = base_dir / "ciel_data" / "gmail_token.json"
@@ -66,7 +67,7 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
         else:
             return "[Gmail] Unsupported credential signature"
 
-        service = build_resource_service(credentials=creds)
+        service = build_gmail_api_service(credentials=creds)
         # category:primary excludes Promotions/Social/Updates/Forums — without it,
         # "is:unread" alone pulls in marketing mail Gmail auto-marks unread (job
         # boards, LinkedIn, etc.), which is what a "top unread emails" digest should
@@ -93,6 +94,11 @@ def _fetch_unread_emails(max_results: int = 5) -> str:
         return "\n".join(summaries)
     except Exception as e:
         return f"[Gmail Error] {e}"
+    finally:
+        if service is not None:
+            from core.gmail_client import close_gmail_api_service
+
+            close_gmail_api_service(service)
 
 
 # ──────────────────────────────────────────────

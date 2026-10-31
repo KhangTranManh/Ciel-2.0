@@ -233,6 +233,85 @@ collapse once; continuation plans cannot bypass validation or permission review.
 
 ---
 
+### Feature — Daily Command Center
+
+#### Phase 1 — On-demand local Daily Brief — **DONE**
+
+`get_daily_brief` derives one prioritized, bounded read-only view from today's weekly
+tasks, open todos, reminders due within the configured look-ahead, active monthly-goal
+labels, and only waiting/interrupted run metadata. Python owns ranking and bounds;
+Worker performs one grounded presentation. It does not persist a second task store,
+inspect run arguments/artifacts, mutate work, or send proactively.
+
+**Pass when:** deterministic priority and date/timezone filtering pass; one unavailable
+source does not erase other local data; private run evidence stays excluded; runtime
+uses one read plus one Worker presentation; unified unit regression is green.
+
+- [x] Collector and `get_daily_brief` tool
+- [x] Read-only permission/lane/parallel registration
+- [x] Bounded structured output and source isolation
+- [x] Focused collector and runtime replay coverage
+- Pass date: **2026-10-31**
+
+#### Phase 2 — Actionable Daily Brief references — **DONE**
+
+- [x] Persist a bounded same-day `D1...Dn` mapping under `ciel_data/state/`.
+- [x] Resolve completion, reminder creation, reschedule, and explicit run reissue
+      through existing permission and tool boundaries; never auto-replay consent.
+- [x] Expire references by date/TTL and reject stale or ambiguous numbers.
+
+The snapshot contains only reference, source type/ID, and bounded title. Python binds
+model-selected todo/weekly/reminder tools back to that verified identity before normal
+plan validation and permissions. An explicit run reissue creates a fresh run from the
+public goal and links IDs with `approval_inherited=false`; it never reads or copies old
+step arguments, artifacts, pending confirmation, or consent.
+
+**Pass when:** identity-only persistence and non-today clearing pass; stale, unknown,
+and multi-reference requests stop before routing; guessed IDs/titles are overwritten by
+the verified mapping; mismatched source tools execute nothing; explicit run reissue is
+fresh and consent-free; focused and unified unit regression are green.
+
+- Pass date: **2026-10-31**
+
+#### Phase 3 — Proactive morning Telegram delivery — **DONE**
+
+- [x] Add opt-in `daily_brief` trigger, configured local time, stable daily key,
+      catch-up, provider retry, and successful-delivery dedupe.
+- [x] Empty briefs remain silent; polling suppression does not flood the audit log.
+
+The trigger renders the bounded local brief deterministically, writes the same
+identity-only D-reference snapshot before delivery, and routes through the shared
+Notifier/Telegram stack. Failed provider sends remain retryable; a later success removes
+the temporary digest copy and persists the daily cooldown key.
+
+**Pass when:** before-time and empty checks are silent; late startup catches up; a failed
+provider attempt retries; success survives restart without duplicate delivery or audit
+noise; focused and unified unit regression are green.
+
+- Pass date: **2026-10-31**
+
+#### Phase 4 — Optional external context — **DONE**
+
+- [x] Add opt-in bounded Gmail metadata and weather without letting either failure
+      suppress the local brief.
+- [x] Treat Calendar as a separate tool pack; reads may enrich the brief while
+      create/update/delete retain normal permission checks.
+
+Gmail enrichment keeps only bounded From/Subject/Date metadata; weather parses one
+current-condition record into bounded numeric fields. Calendar has a separate OAuth
+token/tool pack: Daily Brief reads keep only event title/time, while create/update/delete
+are high-risk attended actions and become DEFER when unattended. Every external source
+is isolated and may fail without removing local work or the other external sources.
+
+**Pass when:** all external fields are bounded; email bodies/snippets and Calendar
+descriptions/attendees never enter the brief; source failures are independent and
+fail-open; D-reference persistence remains identity-only; Calendar reads are AUTO while
+mutations are ASK/DEFER; focused and unified unit regression are green.
+
+- Pass date: **2026-10-31**
+
+---
+
 ### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **DEFINED**
 
 > Level B không phụ thuộc feature này. Implement theo phase.
@@ -297,8 +376,10 @@ Unchecked items still need a focused test before they are closed.
   message id, then healing invented ids. Stop a dependent step when its source failed or
   was empty (`_resolve_step_refs`). Fixed with `SKIPPED_DEPENDENCY`; focused outbound
   coverage verifies the downstream Gmail reader is never called.
-- [ ] **Silent capability loss**: a tool pack that fails to load at startup (e.g. Gmail
-  `invalid_grant`) should notify the Master on Telegram.
+- [x] **Silent capability loss**: the opt-in `capability_loss` trigger snapshots
+  ToolManager's secret-free startup states and notifies through the shared persistent
+  channel when a pack is `unavailable/error`. Intentional `disabled/not_configured`
+  states stay silent; stable module/reason keys prevent restart and poll spam.
 - [ ] **Proactive messages for remote clients**: `main_api.py` does not publish notifier output
   over the WebSocket, so a future client cannot receive weekly plans or reminders.
 - [x] **API + Telegram on one host**: the one-writer rule forces a choice; run the
@@ -308,6 +389,14 @@ Unchecked items still need a focused test before they are closed.
 - [ ] **Search quality**: Vietnamese price/news queries return Facebook/TikTok pages.
 - [ ] **Cost**: Brain averages ~14.6k input tokens per routing call (~22k tokens per
   request); the tool list is the main contributor.
+
+**2026-11-01 incremental reliability/telemetry close:** Gmail service construction now
+prefers `build_gmail_service` with an old-library fallback and closes transient API
+transports. `capability_loss` startup alerts are opt-in, classified, and deduplicated.
+Provider attempts emit separate `PERF/LLM_LATENCY` metadata without changing the stable
+`LLM_CALL` line or retaining exception/prompt/response text. Focused checks: Daily Brief
+20/20, operational readiness 29/29, proactive 153/153, quality guards 67/67, run harness
+54/54, conversation 92/92. Unified unit regression: **17/17 suites PASS**.
 
 ## P2 — Personal coworker (not IDE agent)
 
@@ -457,6 +546,7 @@ for ownership, rollout, boundaries and commands.
 | user_model | unit | `backtest.test_user_model` |
 | proactive | unit | `backtest.test_proactive` |
 | planner | unit | `backtest.test_planner` |
+| daily_brief | unit | `backtest.test_daily_brief` |
 | outbound | unit | `backtest.test_outbound` |
 | conversation_bugs | unit | `backtest.test_conversation_bugs` |
 | quality_guards | unit | `backtest.test_quality_guards` |

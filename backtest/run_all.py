@@ -131,6 +131,12 @@ SUITES: list[Suite] = [
         "SQLite monthly/weekly plans, separate tools, catch-up triggers, and dedupe",
     ),
     Suite(
+        "daily_brief",
+        "backtest.test_daily_brief",
+        "unit",
+        "Daily aggregation, external fail-open context, proactive dedupe, and privacy",
+    ),
+    Suite(
         "reminders",
         "backtest.test_reminders",
         "unit",
@@ -219,7 +225,10 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
                 for item in child_env.get("DISABLED_SKILL_MODULES", "").split(",")
                 if item.strip()
             }
-            disabled.update({"github_ops", "gmail_ops", "telegram_ops", "trading_ops", "web_agent_ops"})
+            disabled.update({
+                "calendar_ops", "github_ops", "gmail_ops", "telegram_ops",
+                "trading_ops", "web_agent_ops",
+            })
             child_env["DISABLED_SKILL_MODULES"] = ",".join(sorted(disabled))
             # Legacy parity suites exercise the compatibility path. The dedicated
             # harness suite enables the new manager with isolated state explicitly.

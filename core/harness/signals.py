@@ -366,6 +366,9 @@ _RISK_DESCRIPTIONS = {
     "send_gmail_html_message": "Send an HTML email from your Gmail account",
     "reply_to_email":          "Send a reply to an email thread",
     "trash_email":             "Move an email to Trash in your Gmail",
+    "create_calendar_event":   "Create an event in your Google Calendar",
+    "update_calendar_event":   "Modify an event in your Google Calendar",
+    "delete_calendar_event":   "Delete an event from your Google Calendar",
     "git_confirm_push":        "Commit and PUSH code to the remote repository",
     "vision_act":              "Autonomously control your screen (click, type, scroll)",
 }

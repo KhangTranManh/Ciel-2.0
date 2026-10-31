@@ -44,10 +44,10 @@ def process_turn(self, user_input: str) -> str:
     # therefore asks the Master to re-state details it just printed itself.
     # The executed tool still goes through execute_tool, so its Safety-Gate Y/N
     # remains in force — this resolves context, it does not bypass any gate.
-    # "Đang làm gì?" / "what were you doing?" — answered from the task store, before
-    # routing, with no LLM call at all.
+    # "Đang làm gì?" / "what were you doing?" — grounded from the task store before
+    # routing, then presented once by Worker in the user's language/persona.
     if self._STATUS_QUERY_RE.match(user_input or ""):
-        reply = self._answer_status_query()
+        reply = self._answer_status_query(user_input)
         self._log_thought("SYSTEM", "status_query", reply[:200])
         self.chat_history.add_ai_message(reply)
         self._save_chat_memory()
@@ -137,6 +137,48 @@ def process_turn(self, user_input: str) -> str:
             self._save_chat_memory()
             return reply
 
+    # Daily Brief D-numbers are resolved before routing. A missing, stale or
+    # multi-reference request stops here instead of letting the Brain guess that
+    # D1 means database row 1. A valid mapping contributes only source identity
+    # and normal tool-boundary instructions to the Router.
+    daily_brief_reference = None
+    try:
+        from agent_system import config
+        from core.daily_brief import DailyBriefReferenceStore
+        from pathlib import Path
+
+        daily_brief_reference = DailyBriefReferenceStore(
+            Path(self.base_dir) / "ciel_data" / "state" / "daily_brief.json",
+            timezone_name=config.PLANNER_TIMEZONE,
+            ttl_seconds=config.DAILY_BRIEF_REFERENCE_TTL_SECONDS,
+        ).resolve_request(user_input)
+    except Exception as reference_err:
+        from core.daily_brief import DailyBriefReferenceError
+
+        if not isinstance(reference_err, DailyBriefReferenceError):
+            raise
+        self._log_thought(
+            "SYSTEM", "daily_brief_reference_rejected",
+            f"code={reference_err.code} message={str(reference_err)[:180]}",
+        )
+        reply = str(reference_err)
+        self.chat_history.add_ai_message(reply)
+        self._save_chat_memory()
+        return reply
+
+    daily_brief_reference_note = (
+        daily_brief_reference.routing_note() if daily_brief_reference else ""
+    )
+    execution_goal = user_input
+    explicit_run_reissue = bool(
+        daily_brief_reference
+        and daily_brief_reference.is_explicit_run_reissue(user_input)
+    )
+    if explicit_run_reissue:
+        # The new run is named after the grounded public goal, not "retry D3".
+        # Planning still uses the current turn and all current safety checks.
+        execution_goal = daily_brief_reference.title
+
     # === NEW PATH CLARIFICATION LOGIC ===
     # If user wants to write/create/save/generate a file but didn't specify where,
     # ask for the path first. If the question already contains a path ("where"),
@@ -159,23 +201,51 @@ def process_turn(self, user_input: str) -> str:
         self._log_thought("RAG", "recalled", recalled[:300])
 
     try:
-        decision, recalled = prepare_decision(self, user_input, recalled, active_subject_note)
+        decision, recalled = prepare_decision(
+            self, user_input, recalled, active_subject_note, daily_brief_reference_note
+        )
+        decision = normalize_decision(self, decision, user_input)
+        if daily_brief_reference:
+            from core.daily_brief import bind_daily_brief_decision
+
+            decision, reference_action_error = bind_daily_brief_decision(
+                decision, daily_brief_reference
+            )
+            if reference_action_error:
+                self._log_thought(
+                    "SYSTEM", "daily_brief_action_rejected", reference_action_error[:200]
+                )
+                self.chat_history.add_ai_message(reference_action_error)
+                self._save_chat_memory()
+                self.permissions.clear_plan_grants()
+                return reference_action_error
         action = decision.get("action", "chat")
 
         # TIER 2: open a task record for anything that actually DOES something.
         # Pure chat needs no record — nothing can be left half-finished by it.
         if action in ("tool", "multi_tool", "code"):
-            self.tasks.start(user_input)
-
-        decision = normalize_decision(self, decision, user_input)
-        action = decision.get("action", "chat")
+            self.tasks.start(execution_goal)
 
         manager = getattr(self, "run_manager", None)
         if manager is not None:
+            previous_run_id = manager.last_run_id
             response = manager.execute(
-                user_input, decision,
+                execution_goal, decision,
                 lambda: dispatch_decision(self, decision, user_input, recalled),
             )
+            if (explicit_run_reissue and manager.last_run_id
+                    and manager.last_run_id != previous_run_id):
+                try:
+                    manager.store.link_explicit_reissue(
+                        daily_brief_reference.source_id, manager.last_run_id
+                    )
+                except Exception as link_err:
+                    # The fresh run already completed or stopped. A metadata-link
+                    # failure must never replay it or replace its actual outcome.
+                    self._log_thought(
+                        "RUN", "reissue_link_failed",
+                        f"{type(link_err).__name__}: {str(link_err)[:160]}",
+                    )
         else:
             response = dispatch_decision(self, decision, user_input, recalled)
 

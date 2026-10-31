@@ -21,8 +21,9 @@ SINGLE_READ_TOOLS = frozenset({
     "read_file", "get_file_info", "list_workspace", "grep_in_workspace",
     "git_status", "git_diff", "git_list_repos", "list_monthly_goals",
     "list_weekly_plan", "list_reminders", "get_market_price", "get_crypto_stats",
-    "analyze_crypto_technical", "search_gmail", "get_gmail_message",
-    "get_gmail_thread", "stealth_search", "smart_scrape", "read_document",
+    "get_daily_brief", "analyze_crypto_technical", "search_gmail", "get_gmail_message",
+    "get_gmail_thread", "list_calendar_events", "stealth_search", "smart_scrape",
+    "read_document",
 })
 
 
@@ -33,7 +34,7 @@ def _fold(text: str) -> str:
 
 _COMPLEX = re.compile(
     r"\b(?:then|afterwards|after that|research|investigate|debug|refactor|implement|"
-    r"compare sources|multiple sources|step by step|roi|sau do|nghien cuu|"
+    r"compare sources|multiple sources|step by step|sau do|nghien cuu|"
     r"dieu tra|sua loi|nhieu nguon|tung buoc)\b", re.I)
 _REFERENCE = re.compile(r"\{{1,2}\s*(?:prev|step[_ ]?\d+)(?:\.output)?\s*\}{1,2}", re.I)
 _GREETING = re.compile(

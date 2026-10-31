@@ -11,10 +11,12 @@ import tempfile
 import unittest
 import threading
 import copy
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from zoneinfo import ZoneInfo
 
 from core.harness.models import Lane, RunPolicy, RunState
 from core.harness.store import RunStore
@@ -26,12 +28,17 @@ class LaneTests(unittest.TestCase):
     def choose(self, request, action="tool", name="get_weather", args=None, **flags):
         decision = {"action": action, "tool_name": name, "tool_args": args or {"city": "Hanoi"}}
         decision.update(flags.pop("decision_fields", {}))
-        return classify(request, decision, known_tools={"get_weather", "send_gmail_message", "new_tool"},
+        return classify(request, decision, known_tools={
+                            "get_weather", "get_current_time", "send_gmail_message", "new_tool"},
                         risky_tools={"send_gmail_message"}, **flags).lane
 
     def test_easy_paths(self):
         self.assertEqual(self.choose("Explain gravity", "chat"), Lane.FAST)
         self.assertEqual(self.choose("Hanoi weather?"), Lane.SINGLE)
+        self.assertEqual(
+            self.choose("mấy giờ rồi", name="get_current_time", args={}),
+            Lane.SINGLE,
+        )
 
     def test_mutations_never_obey_fast_model_hint(self):
         self.assertEqual(self.choose("send this", name="send_gmail_message",
@@ -98,6 +105,24 @@ class StorageTests(unittest.TestCase):
             self.store.transition(run, RunState.RUNNING)
         with self.assertRaises(ValueError):
             self.store.start_step(run, "read_file", {})
+
+    def test_explicit_reissue_links_ids_without_inheriting_consent(self):
+        source = self.store.create("unfinished report", Lane.HARNESS, "test")
+        self.store.transition(source, RunState.RUNNING)
+        self.store.transition(source, RunState.INTERRUPTED)
+        followup = self.store.create("unfinished report", Lane.SINGLE, "fresh")
+        self.store.transition(followup, RunState.RUNNING)
+        self.store.transition(followup, RunState.COMPLETED)
+
+        self.store.link_explicit_reissue(source, followup)
+        old = self.store.get(source)
+        new = self.store.get(followup)
+        self.assertEqual(old["state"], "cancelled")
+        event = json.loads(old["events"][-1]["payload"])
+        self.assertEqual(event["followup_run"], followup)
+        self.assertFalse(event["approval_inherited"])
+        self.assertFalse(event["historical_args_reused"])
+        self.assertEqual(new["events"][-1]["kind"], "reissue_of")
 
     def test_parallel_results_are_atomic_and_bounded(self):
         run = self.store.create("several reads", Lane.HARNESS, "multi")
@@ -312,6 +337,20 @@ class ReplayTests(unittest.TestCase):
             "get_weather": "Hanoi: 30 C / 86 F",
             "read_file": "RAW evidence: 42",
             "get_current_time": "2026-10-30 UTC",
+            "complete_todo": "Todo completed",
+            "get_daily_brief": json.dumps({
+                "schema_version": 1,
+                "date": "2026-10-31",
+                "timezone": "Asia/Ho_Chi_Minh",
+                "items": [{
+                    "reference": "D1", "source_type": "weekly_task", "source_id": "12",
+                    "title": "Finish the report", "priority": 80, "status": "scheduled",
+                    "due_at": "2026-10-31T10:00+07:00", "monthly_goal": None,
+                }],
+                "monthly_goals": [], "omitted_count": 0,
+                "source_counts": {"weekly_tasks": 1, "reminders": 0, "todos": 0, "runs": 0},
+                "unavailable_sources": [],
+            }),
             "search_gmail": '[{"id":"abc123", "subject":"Grounded subject"}]',
             "get_gmail_message": "Message Id: abc123; body: Grounded content",
             "send_gmail_message": "Message Id: abc123",
@@ -319,7 +358,7 @@ class ReplayTests(unittest.TestCase):
         }
         core._tool_map = {name: SimpleNamespace(name=name) for name in self.results}
         core._tools = list(core._tool_map.values())
-        core._parallel_safe = {"read_file", "get_current_time", "get_weather"}
+        core._parallel_safe = {"read_file", "get_current_time", "get_weather", "get_daily_brief"}
         core._tool_list_str = ", ".join(core._tool_map)
 
         def route(*args):
@@ -398,6 +437,163 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual([name for name, _ in self.calls], ["get_weather"])
         self.assertEqual(self.last_run()["state"], "completed")
         self.assertEqual(self.last_run()["lane"], "single_step")
+
+    def test_single_time_result_is_presented_once_by_worker(self):
+        self.decision = {"action": "tool", "tool_name": "get_current_time", "tool_args": {}}
+        response = self.core.process("mấy giờ rồi")
+        self.assertIn("Grounded", response)
+        self.assertEqual([name for name, _ in self.calls], ["get_current_time"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("2026-10-30 UTC", self.prompts[0])
+        self.assertEqual(self.evaluations, [])
+        self.assertEqual(self.last_run()["lane"], "single_step")
+
+    def test_presentation_failure_returns_raw_without_replaying_tool(self):
+        self.decision = {"action": "tool", "tool_name": "get_current_time", "tool_args": {}}
+        self.core.worker.generate = lambda prompt: (_ for _ in ()).throw(ValueError("bad provider JSON"))
+        response = self.core.process("mấy giờ rồi")
+        self.assertIn("2026-10-30 UTC", response)
+        self.assertEqual([name for name, _ in self.calls], ["get_current_time"])
+        self.assertEqual(self.last_run()["state"], "completed")
+
+    def test_status_is_grounded_then_presented_without_internal_lane_names(self):
+        self.decision = {"action": "tool", "tool_name": "get_weather", "tool_args": {"city": "Hanoi"}}
+        self.core.process("weather in Hanoi?")
+        self.prompts.clear()
+        response = self.core.process("what are you doing?")
+        self.assertIn("Grounded", response)
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("Deterministic status", self.prompts[0])
+        self.assertIn("Do not expose internal lane names", self.prompts[0])
+        self.assertEqual(len(self.routes), 1)
+
+    def test_daily_brief_is_one_read_then_one_grounded_presentation(self):
+        self.decision = {"action": "tool", "tool_name": "get_daily_brief", "tool_args": {}}
+        response = self.core.process("Hôm nay tôi cần làm gì?")
+        self.assertIn("Grounded", response)
+        self.assertEqual([name for name, _ in self.calls], ["get_daily_brief"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("Finish the report", self.prompts[0])
+        self.assertIn("Preserve the given priority order", self.prompts[0])
+        self.assertEqual(self.evaluations, [])
+        self.assertEqual(self.last_run()["lane"], "single_step")
+
+    def test_daily_brief_provider_failure_uses_human_readable_fallback(self):
+        self.decision = {"action": "tool", "tool_name": "get_daily_brief", "tool_args": {}}
+        self.core.worker.generate = lambda prompt: (_ for _ in ()).throw(
+            ValueError("provider rejects formatting request")
+        )
+        response = self.core.process("Hôm nay tôi cần làm gì?")
+        self.assertIn("D1: Finish the report", response)
+        self.assertIn("đã lên lịch", response)
+        self.assertNotIn("schema_version", response)
+        self.assertNotIn("source_id", response)
+        self.assertEqual([name for name, _ in self.calls], ["get_daily_brief"])
+        self.assertTrue(any(log[1] == "format_fallback" for log in self.logs))
+
+    def test_daily_brief_reference_is_verified_before_normal_tool_routing(self):
+        from core.daily_brief import DailyBriefReferenceStore
+
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        DailyBriefReferenceStore(
+            self.core.base_dir / "ciel_data" / "state" / "daily_brief.json",
+            "Asia/Ho_Chi_Minh",
+        ).save({
+            "date": now.date().isoformat(),
+            "generated_at": now.isoformat(),
+            "items": [{
+                "reference": "D1", "source_type": "todo", "source_id": "17",
+                "title": "Submit expense report",
+            }],
+        }, now=now)
+        self.decision = {
+            "action": "tool", "tool_name": "complete_todo", "tool_args": {"todo_id": 999}
+        }
+
+        self.core.process("complete D1")
+        router_input = self.routes[0][0]
+        self.assertIn("source_id=17", router_input)
+        self.assertIn("complete_todo(todo_id=source_id)", router_input)
+        self.assertEqual(self.calls, [("complete_todo", {"todo_id": 17})])
+
+    def test_stale_daily_brief_reference_never_reaches_router(self):
+        from core.daily_brief import DailyBriefReferenceStore
+
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        path = self.core.base_dir / "ciel_data" / "state" / "daily_brief.json"
+        DailyBriefReferenceStore(path, "Asia/Ho_Chi_Minh").save({
+            "date": now.date().isoformat(),
+            "generated_at": now.isoformat(),
+            "items": [{
+                "reference": "D1", "source_type": "todo", "source_id": "17",
+                "title": "Submit expense report",
+            }],
+        }, now=now)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["expires_at"] = (now - timedelta(seconds=1)).isoformat()
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        response = self.core.process("complete D1")
+        self.assertIn("stale or expired", response)
+        self.assertEqual(self.routes, [])
+        self.assertEqual(self.calls, [])
+
+    def test_mismatched_daily_brief_action_executes_nothing(self):
+        from core.daily_brief import DailyBriefReferenceStore
+
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        DailyBriefReferenceStore(
+            self.core.base_dir / "ciel_data" / "state" / "daily_brief.json",
+            "Asia/Ho_Chi_Minh",
+        ).save({
+            "date": now.date().isoformat(),
+            "generated_at": now.isoformat(),
+            "items": [{
+                "reference": "D1", "source_type": "todo", "source_id": "17",
+                "title": "Submit expense report",
+            }],
+        }, now=now)
+        self.decision = {
+            "action": "tool", "tool_name": "complete_weekly_task",
+            "tool_args": {"task_id": 17},
+        }
+
+        response = self.core.process("complete D1")
+        self.assertIn("D1 is a todo", response)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.core.run_manager.store.recent(), [])
+
+    def test_explicit_run_reference_creates_fresh_run_and_links_without_consent(self):
+        from core.daily_brief import DailyBriefReferenceStore
+
+        source = self.core.run_manager.store.create("Resume analysis", Lane.HARNESS, "test")
+        self.core.run_manager.store.transition(source, RunState.RUNNING)
+        self.core.run_manager.store.transition(source, RunState.INTERRUPTED)
+        now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        DailyBriefReferenceStore(
+            self.core.base_dir / "ciel_data" / "state" / "daily_brief.json",
+            "Asia/Ho_Chi_Minh",
+        ).save({
+            "date": now.date().isoformat(),
+            "generated_at": now.isoformat(),
+            "items": [{
+                "reference": "D1", "source_type": "run", "source_id": source,
+                "title": "Resume analysis",
+            }],
+        }, now=now)
+        self.decision = {
+            "action": "tool", "tool_name": "get_weather", "tool_args": {"city": "Hanoi"}
+        }
+
+        self.core.process("resume D1")
+        followup = self.last_run()
+        old = self.core.run_manager.store.get(source)
+        self.assertEqual(followup["goal"], "Resume analysis")
+        self.assertEqual(old["state"], "cancelled")
+        link = json.loads(old["events"][-1]["payload"])
+        self.assertFalse(link["approval_inherited"])
+        self.assertFalse(link["historical_args_reused"])
+        self.assertNotIn("args", link)
 
     def test_multi_tool_synthesizes_once_from_raw_facts(self):
         self.decision = {"action": "multi_tool", "tools": [

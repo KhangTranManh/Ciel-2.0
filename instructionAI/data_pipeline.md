@@ -16,10 +16,16 @@ notification state because they have different authority and retention rules.
 | `ciel_data/runs.db` | `core/harness/store.py` | Runtime runs, steps, bounded artifacts and events; one-time legacy task import | Never injected; status metadata only |
 | `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals, weekly actions, and one-time reminders | Through planner/reminder tools and triggers |
 | `ciel_workspace/todos.json` | productivity tools | Immediate unscheduled checklist | Through todo tools/triggers |
+| `ciel_data/state/daily_brief.json` | `core/daily_brief.py` | Bounded same-day D-reference identity snapshot | Only after deterministic reference validation |
 | `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |
 | `ciel_data/state/deferred.json` | `core/permissions.py` | Blocked unattended actions | Summary only; never replayed |
 | `ciel_data/logs/thoughts.log` | core logger | Chronological audit and usage | Read by diagnostics/triggers; streamed to API clients only when `CIEL_API_STREAM_THOUGHTS=true` |
 | `ciel_data/gmail_token.json` | `skills/external/gmail_ops.py` | Gmail OAuth access/refresh token | Never; replaced by re-authorizing when it expires |
+
+`core/daily_brief.py` does not own task data. It derives a bounded projection over
+planner, todo, and run metadata. Its small state file stores only D-reference, source
+type/ID, title, generation/expiry time, date, and timezone; it contains no due/status
+copy, run argument/artifact, pending confirmation, permission, or consent.
 
 ## Per-turn context flow
 
@@ -179,7 +185,7 @@ triggers:
 
 ```dotenv
 PROACTIVE_ENABLED=true
-PROACTIVE_TRIGGERS=monthly_plan,weekly_plan,reminder_due
+PROACTIVE_TRIGGERS=daily_brief,monthly_plan,weekly_plan,reminder_due
 ```
 
 `PLANNER_TIMEZONE`, `PLANNER_MONTHLY_*`, and `PLANNER_WEEKLY_*` define local schedule
@@ -195,7 +201,8 @@ Sunday `6`.
 3. general condition triggers from `core/triggers.py`;
 4. planner triggers from `core/planner_triggers.py`;
 5. reminder triggers from `core/reminder_triggers.py`;
-6. one `TriggerEngine` attached to `Scheduler`.
+6. Daily Brief trigger and optional external context;
+7. one `TriggerEngine` attached to `Scheduler`.
 
 The scheduler polls Python checks. A trigger returns `None` or a `Notification`; it does
 not decide delivery policy.
@@ -208,6 +215,84 @@ not decide delivery policy.
 4. daily interruption budget;
 5. first live channel that accepts delivery;
 6. digest fallback when no channel succeeds.
+
+## Daily Brief Phase 1
+
+`get_daily_brief` answers on-demand questions about today's work. The collector uses
+`PLANNER_TIMEZONE`, then deterministically combines:
+
+- active weekly tasks scheduled for the requested day plus unscheduled tasks in that week;
+- pending reminders that are overdue or inside the bounded look-ahead window;
+- open immediate todos;
+- run goal/state/timestamps only for `interrupted` and `waiting_for_approval` runs;
+- up to five active monthly goals as context, never as invented daily actions.
+
+Priority order is overdue reminder, near reminder, scheduled daily action, later
+reminder, waiting/interrupted run, unscheduled weekly action, then loose todo. The result
+is capped, reports omitted items and unavailable sources, and reaches Worker once for
+persona/language presentation. Run arguments and artifacts never enter the projection.
+Imported runs whose reason is `legacy_history` are audit-only and never become current
+Daily Brief actions. If the Worker presentation call fails, a deterministic prose
+renderer preserves the grounded items without exposing the JSON transport schema.
+Phase 1 has no snapshot, reference-action resolution, scheduler trigger, Gmail, weather,
+or Calendar integration.
+
+## Daily Brief Phase 2
+
+After a successful current-day brief, `DailyBriefReferenceStore` atomically replaces
+`ciel_data/state/daily_brief.json` with at most 20 identity records. A brief requested
+for another date clears that snapshot. Resolution requires the explicit `D` prefix,
+exactly one distinct D-number, the configured local date, and both persisted and
+configured TTL validity. Missing, stale, unknown, duplicated, or multi-reference input
+stops before Router invocation.
+
+A valid identity enters `ContextAssembler` as a critical reference-data block. The
+Brain still interprets the current action, while Python binds selected tools back to the
+verified source ID and title: todo completion, weekly completion/update, reminder
+creation/cancellation, and weekly scheduling all continue through their existing tool,
+validation, permission, and run boundaries. Unsupported source/tool combinations stop
+without execution.
+
+An explicit interrupted/waiting run retry uses only the stored public goal as a fresh
+run goal. After a new run is actually created, `RunStore` links the two run IDs and
+closes the old record with `approval_inherited=false` and
+`historical_args_reused=false`. It never reads or copies historical steps, artifacts,
+pending confirmations, plan grants, or consent. Phase 2 still has no proactive delivery.
+
+## Daily Brief Phase 3
+
+`daily_brief` is a separately named proactive trigger and remains off unless both
+`PROACTIVE_ENABLED=true` and `PROACTIVE_TRIGGERS` include it. It uses
+`PLANNER_TIMEZONE` with `DAILY_BRIEF_HOUR` and `DAILY_BRIEF_MINUTE`, and evaluates at or
+after that local time so a process started late can catch up on the current day.
+
+The background path invokes no model. It collects the same bounded local projection,
+atomically writes the identity-only D-reference snapshot, renders deterministic
+Vietnamese prose, and emits `daily_brief:<YYYY-MM-DD>` only when at least one action is
+present. The shared Notifier routes it to a live channel (Telegram on the API/Telegram
+service), retries after provider failure, removes any temporary digest copy after a
+successful retry, and persists cooldown state only after success. Ordinary cooldown
+polls remain absent from `thoughts.log`.
+
+## Daily Brief Phase 4
+
+External context runs only for explicitly enabled sources. Gmail contributes at most
+five unread Primary records containing From, Subject, and Date—never body or snippet.
+Weather contributes one current-condition object with city, condition, Celsius,
+feels-like Celsius, and humidity. Calendar contributes at most ten upcoming records
+containing only title/start/end/all-day metadata. These fields are presentation context;
+they never enter the D-reference identity snapshot.
+
+Each provider call is isolated. Failure adds `gmail`, `weather`, or `calendar` to
+`external_unavailable` while preserving the local brief and successful external
+sources. An empty local action list remains silent for proactive delivery even if
+external context exists.
+
+Calendar uses `skills/external/calendar_ops.py` and a separate
+`ciel_data/calendar_token.json`. `list_calendar_events` is a read-only tool but stays
+sequential because the pack closures share one Google API transport. Create, update,
+and delete pass through normal exact-call confirmation; unattended requests become
+DEFER and are never replayed automatically.
 
 Successful delivery updates state only after the channel returns success. A provider
 failure therefore remains retryable.
@@ -239,6 +324,11 @@ immediate todos.
 `thoughts.log` is append-only chronological evidence for debugging, trigger checks,
 cost reporting, and prompt harnesses. Its CRLF-normalized parser contract is documented
 in `SKILL.md` and `conventions.md`.
+
+The optional `capability_loss` trigger snapshots ToolManager's secret-free startup
+statuses. Only `unavailable` and `error` packs become notifications; `ready`, `disabled`,
+and `not_configured` states stay silent. Stable module/reason keys use Notifier cooldown
+and persistence, so repeated scheduler polls or restarts do not spam the same outage.
 
 Provider calls emit model ID and input/output/total token counts when available. Usage
 is operational evidence, not durable project knowledge; dated numbers belong in

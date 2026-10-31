@@ -6,7 +6,7 @@ import httpx
 from tenacity import (
     retry,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -29,7 +29,7 @@ from ..config import (
     BASE_URL,
 )
 from ..utils.logger import log
-from ..utils.usage import extract_usage
+from ..utils.usage import extract_usage, invoke_with_latency
 
 
 # Transient errors the Worker should retry on
@@ -50,10 +50,24 @@ WORKER_TRANSIENT_ERRORS = (
 )
 
 
+def _reasoning_effort_gateway_error(error: BaseException | None) -> bool:
+    """Recognize one transient custom-gateway compatibility rejection."""
+    if error is None or type(error).__name__ != "BadRequestError":
+        return False
+    message = str(error).lower()
+    return "reasoning_effort" in message or "reasoning effort" in message
+
+
+def _is_worker_retryable_error(error: BaseException) -> bool:
+    return isinstance(error, WORKER_TRANSIENT_ERRORS) or _reasoning_effort_gateway_error(error)
+
+
 def _worker_retry_limit(error: BaseException | None) -> int:
     """Keep malformed provider bodies bounded more tightly than network outages."""
     if isinstance(error, json.JSONDecodeError):
         return min(RETRY_MAX_ATTEMPTS, 3)
+    if _reasoning_effort_gateway_error(error):
+        return min(RETRY_MAX_ATTEMPTS, 2)
     return RETRY_MAX_ATTEMPTS
 
 
@@ -132,6 +146,7 @@ class Worker:
         # where usage is {"input","output","total"}. None by default so Worker stays
         # usable standalone.
         self.on_call = None
+        self.on_latency = None
 
         if WORKER_PROVIDER.lower() == "deepseek":
             self._llm = ChatOpenAI(
@@ -200,7 +215,7 @@ class Worker:
     @retry(
         stop=_stop_worker_retry,
         wait=wait_exponential(multiplier=RETRY_INITIAL_WAIT, max=RETRY_MAX_WAIT),
-        retry=retry_if_exception_type(WORKER_TRANSIENT_ERRORS),
+        retry=retry_if_exception(_is_worker_retryable_error),
         before_sleep=_log_worker_retry,
     )
     def generate(self, task: str, context: str = "") -> str:
@@ -216,7 +231,10 @@ class Worker:
             HumanMessage(content=prompt),
         ]
 
-        response = self._llm.invoke(messages)
+        response = invoke_with_latency(
+            self._llm, messages, component="worker", model=WORKER_MODEL,
+            on_latency=getattr(self, "on_latency", None),
+        )
         if self.on_call:
             try:
                 self.on_call(WORKER_MODEL, extract_usage(response))
@@ -236,7 +254,10 @@ class Worker:
         # of silently returning "" a second time.
         if not content:
             log.worker("Empty response — retrying once before giving up")
-            response = self._llm.invoke(messages)
+            response = invoke_with_latency(
+                self._llm, messages, component="worker", model=WORKER_MODEL,
+                on_latency=getattr(self, "on_latency", None),
+            )
             if self.on_call:
                 try:
                     self.on_call(WORKER_MODEL, extract_usage(response))

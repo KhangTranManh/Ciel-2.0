@@ -368,6 +368,11 @@ class Notifier:
                     self._last_sent[note.key] = now
                     self._count += 1
                     self._bump_repeat_locked(note.key, now)
+                    # A previous provider failure may have queued this same stable key
+                    # for digest. Once the retry succeeds, keeping that copy would send
+                    # the already-delivered notification a second time.
+                    self._digest = [item for item in self._digest
+                                    if item.get("key") != note.key]
                     if urgency == ASK:
                         self._pending_ack[note.key] = {
                             "at": now, "channel": ch.name, "text": note.render(),

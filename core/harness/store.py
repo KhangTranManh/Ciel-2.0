@@ -146,6 +146,40 @@ class RunStore:
                 self._event(db, row["run_id"], "pending_resolved", {
                     "cancelled": cancelled, "followup_run": followup_run, "approval_inherited": False})
 
+    def link_explicit_reissue(self, source_run: str, followup_run: str):
+        """Close one referenced unfinished run after a fresh run was created.
+
+        Only IDs and the no-consent fact are linked. Historical step arguments,
+        artifacts and approvals are deliberately not read or copied.
+        """
+        if not source_run or not followup_run or source_run == followup_run:
+            raise ValueError("Reissue requires distinct source and follow-up runs")
+        with self._connection() as db:
+            source = db.execute(
+                "SELECT state,reason FROM runs WHERE id=?", (source_run,)
+            ).fetchone()
+            followup = db.execute(
+                "SELECT state FROM runs WHERE id=?", (followup_run,)
+            ).fetchone()
+            if not source or not followup:
+                raise KeyError(source_run if not source else followup_run)
+            if source["reason"] == "legacy_history":
+                raise ValueError("Legacy audit runs cannot be reissued")
+            if source["state"] not in {"interrupted", "waiting_for_approval"}:
+                raise ValueError("Only unfinished runs can be explicitly reissued")
+            db.execute(
+                "UPDATE runs SET state='cancelled',updated_at=? WHERE id=?",
+                (time.time(), source_run),
+            )
+            payload = {
+                "source_run": source_run,
+                "followup_run": followup_run,
+                "approval_inherited": False,
+                "historical_args_reused": False,
+            }
+            self._event(db, source_run, "explicit_reissue", payload)
+            self._event(db, followup_run, "reissue_of", payload)
+
     def finish_step(self, run_id: str, step_id: str, state: str, output: str, cap: int):
         if state not in {"completed", "failed", "cancelled", "waiting_for_approval"}:
             raise ValueError("Invalid step outcome")

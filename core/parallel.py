@@ -42,7 +42,7 @@ _DEFAULT_PARALLEL_SAFE = frozenset({
     # Gmail steps therefore stay sequential until each call owns its own client.
     # misc reads / pure computation
     "get_weather", "calculate", "get_current_time", "get_fact", "list_todos",
-    "list_monthly_goals", "list_weekly_plan",
+    "list_monthly_goals", "list_weekly_plan", "get_daily_brief",
 })
 
 # Matches one OR two braces, mirroring CielCore._STEP_REF_RE: a step written {step_1}

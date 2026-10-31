@@ -9,7 +9,8 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
         appended (structured tool output — the JSON search_gmail/stealth_search/etc.
         actually returned) alongside the normal human-facing return value. Internal
         plumbing for `_run_steps`'s {prev}/{step_N} chaining — see its call site.
-        """
+    """
+    import json
     import os
     import re
     from core.llm_connector import CONTEXT_RECENT_TURNS_BUDGET
@@ -411,7 +412,7 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
     elif tool_name == "smart_scrape":
         # Let the Worker read up to 40,000 characters of the scraped website
         clean_text = result_text[:40000]
-    elif tool_name == "stealth_search":
+    elif tool_name in {"stealth_search", "get_daily_brief"}:
         # Search hits now carry a Published date + Source per result, so a full page
         # of results no longer fits in the generic 2,000-char budget — truncating
         # here silently dropped the last hits before the Worker ever saw them.
@@ -429,7 +430,17 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
         "stealth_search", "smart_scrape", "read_document",
         "search_gmail", "get_gmail_message", "get_gmail_thread",
     }
-    if tool_name in _RETRIEVAL_TOOLS:
+    if tool_name == "get_daily_brief":
+        lead_line = "Present this structured Daily Brief as a practical plan for the day.\n"
+        rule_one = (
+            "1. Preserve the given priority order and cover every item. Use each D-number "
+            "as its visible reference. State due times and overdue/upcoming status when "
+            "present. Monthly goals are context only, never invent them as daily tasks. "
+            "If items is empty, say there is no recorded work for the day. If a source is "
+            "unavailable, mention that limitation briefly. Do not expose schema_version, "
+            "source_type, source_id, or other internal field names.\n"
+        )
+    elif tool_name in _RETRIEVAL_TOOLS:
         lead_line = ("Turn this tool output into a clear, information-dense answer.\n")
         rule_one = (
             "1. COMPLETENESS OVER BREVITY: cover EVERY distinct item/finding in the raw "
@@ -482,6 +493,31 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
             f"wording/language verbatim, and never echo a raw key name — write a real sentence."
     )
     self._log_thought("WORKER", "format_task", format_task)
-    formatted = self.worker.generate(format_task)
-    self._log_thought("WORKER", "format_response", formatted)
-    return formatted
+    try:
+        formatted = self.worker.generate(format_task)
+        self._log_thought("WORKER", "format_response", formatted)
+        return formatted
+    except Exception as exc:
+        # The tool has already completed. A transient provider/JSON failure in the
+        # presentation pass must not erase its grounded result or replay a mutation.
+        if tool_name == "get_daily_brief":
+            try:
+                from core.daily_brief import render_daily_brief
+                fallback = render_daily_brief(
+                    json.loads(result_text), self._detect_language(user_input)
+                )
+                self._log_thought(
+                    "WORKER", "format_fallback",
+                    f"{type(exc).__name__}: deterministic Daily Brief renderer used.",
+                )
+                return fallback
+            except Exception as fallback_exc:
+                self._log_thought(
+                    "WORKER", "format_fallback_failed",
+                    f"{type(fallback_exc).__name__}: {str(fallback_exc)[:160]}",
+                )
+        self._log_thought(
+            "WORKER", "format_failed",
+            f"{type(exc).__name__}: {str(exc)[:160]} - returned deterministic tool result.",
+        )
+        return result_text

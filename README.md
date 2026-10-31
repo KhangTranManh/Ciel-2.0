@@ -206,11 +206,18 @@ Timed requests use `add_reminder`, `list_reminders`, and `cancel_reminder`. `add
 only creates an unscheduled checklist item and never promises a notification. Reminder
 text uses `title`; `message` is accepted as a compatibility alias for provider plans.
 
+`get_daily_brief` combines today's weekly tasks, open todos, upcoming reminders, and
+unfinished run metadata into one prioritized view. Its visible `D1...Dn` references are
+valid only for the latest current-day brief and expire by TTL; actions such as
+completion, reminder creation, weekly rescheduling, or explicit run retry still pass
+through the normal tools and safety checks. The snapshot stores identity only, never
+run arguments, artifacts, approvals, or consent.
+
 Automatic summaries are opt-in:
 
 ```dotenv
 PROACTIVE_ENABLED=true
-PROACTIVE_TRIGGERS=monthly_plan,weekly_plan,reminder_due
+PROACTIVE_TRIGGERS=capability_loss,daily_brief,monthly_plan,weekly_plan,reminder_due
 PLANNER_TIMEZONE=Asia/Ho_Chi_Minh
 PLANNER_MONTHLY_DAY=1
 PLANNER_MONTHLY_HOUR=8
@@ -218,13 +225,35 @@ PLANNER_MONTHLY_MINUTE=0
 PLANNER_WEEKLY_WEEKDAY=0
 PLANNER_WEEKLY_HOUR=8
 PLANNER_WEEKLY_MINUTE=0
+DAILY_BRIEF_HOUR=8
+DAILY_BRIEF_MINUTE=0
+DAILY_BRIEF_REFERENCE_TTL_SECONDS=43200
+# Optional external context; each source fails independently.
+DAILY_BRIEF_GMAIL_ENABLED=false
+DAILY_BRIEF_GMAIL_MAX_RESULTS=3
+DAILY_BRIEF_WEATHER_ENABLED=false
+DAILY_BRIEF_WEATHER_CITY=Ho Chi Minh City
+DAILY_BRIEF_CALENDAR_ENABLED=false
+DAILY_BRIEF_CALENDAR_MAX_RESULTS=5
+DAILY_BRIEF_CALENDAR_LOOKAHEAD_HOURS=24
 ```
 
-Successful deliveries use stable month/week keys in `ciel_data/state/notify.json`, so
-container restarts and repeated trigger polls do not resend the same summary. Failed
-deliveries remain retryable. Reminder keys use `reminder:<id>` and the database row is
-closed only after a successful delivery; routine cooldown polls do not flood the audit
-log.
+The `daily_brief` trigger catches up after its configured local time, remains silent
+when there are no actionable items, and uses `daily_brief:<YYYY-MM-DD>`. Successful
+daily/monthly/weekly deliveries persist in `ciel_data/state/notify.json`, so container
+restarts and repeated trigger polls do not resend the same summary. Failed deliveries
+remain retryable. Reminder keys use `reminder:<id>` and the database row is closed only
+after a successful delivery; routine cooldown polls do not flood the audit log.
+The opt-in `capability_loss` trigger reports startup tool-pack failures such as an
+expired Gmail authorization through the same persistent cooldown path. Packs that are
+disabled intentionally or have never been configured do not produce alerts.
+
+Calendar is a separate optional skill pack. It uses
+`ciel_data/calendar_token.json` (authorized for the Google Calendar scope) and
+`CALENDAR_ID=primary` by default. `list_calendar_events` is read-only; creating,
+updating, or deleting an event always uses the ordinary confirmation and unattended
+deferral rules. Daily Brief enrichment includes only bounded event title/time metadata,
+never descriptions, attendees, or attachments.
 
 ## Safety model
 

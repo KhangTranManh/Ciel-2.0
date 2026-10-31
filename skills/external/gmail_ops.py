@@ -5,9 +5,9 @@ from pathlib import Path
 from langchain_core.tools import StructuredTool
 from langchain_google_community import GmailToolkit
 from langchain_google_community.gmail.utils import (
-    build_resource_service,
     get_gmail_credentials,
 )
+from core.gmail_client import build_gmail_api_service
 
 GMAIL_SYSTEM_PROMPT = """
 [GMAIL ARMORY & COMMUNICATIONS PROTOCOL]
@@ -170,7 +170,7 @@ def get_gmail_tools() -> dict:
 
         token_file.parent.mkdir(parents=True, exist_ok=True)
         credentials = _get_gmail_credentials_compat(token_file, credentials_file)
-        api_resource = build_resource_service(credentials=credentials)
+        api_resource = build_gmail_api_service(credentials=credentials)
         toolkit = GmailToolkit(api_resource=api_resource)
         tools = toolkit.get_tools()
         if not tools:

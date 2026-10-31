@@ -5,10 +5,14 @@ import asyncio
 from types import SimpleNamespace
 
 from core.tool_manager import ToolManager
+from core.capability_triggers import build_capability_loss_triggers
+from core.notifier import Notifier
+from core.triggers import TriggerEngine
 from scripts.harness.attribution import trace_target
 from scripts.prompt_harness import _tag_self_correction_reasoning, _target_for
 from skills.external.gmail_ops import _gmail_failure_reason
 from skills.internal.productivity_ops import _normalize_weather_temperature
+from agent_system.utils.usage import format_latency, format_usage, invoke_with_latency
 
 _passed, _failed = 0, []
 
@@ -90,11 +94,100 @@ def test_health_payload() -> None:
         main_api.ciel_agent = saved
 
 
+def test_capability_loss_notification() -> None:
+    print("\n[5] Capability loss alerts are opt-in, safe, and deduplicated")
+    statuses = [
+        {"module": "gmail_ops", "state": "unavailable",
+         "reason": "oauth_or_credentials_error", "exception": "private provider text"},
+        {"module": "calendar_ops", "state": "not_configured",
+         "reason": "token_missing"},
+        {"module": "vision_ops", "state": "disabled",
+         "reason": "disabled_by_configuration"},
+        {"module": "todo_ops", "state": "ready", "reason": "tools_loaded"},
+    ]
+    check("disabled unless explicitly selected",
+          build_capability_loss_triggers(enabled_names=(), statuses=statuses) == [])
+    triggers = build_capability_loss_triggers(
+        enabled_names=("capability_loss",), statuses=statuses
+    )
+    check("only unexpected failure states alert", len(triggers) == 1)
+    note = triggers[0].check(1000.0)
+    check("uses stable classified identity",
+          note.key == "capability_loss:gmail_ops:oauth_or_credentials_error")
+    check("does not retain raw provider exception text", "private" not in note.render())
+    check("gives an actionable Gmail recovery step", "Authorize Gmail" in note.action)
+
+    class Channel:
+        name = "test"
+
+        def __init__(self):
+            self.sent = []
+
+        def is_live(self, _now):
+            return True
+
+        def send(self, sent_note, _now):
+            self.sent.append(sent_note.key)
+            return True
+
+    channel = Channel()
+    notifier = Notifier(channels=(channel,), daily_budget=8)
+    engine = TriggerEngine(notifier, triggers)
+    first = engine.tick(1000.0)
+    second = engine.tick(1301.0)
+    check("first startup finding is delivered", first[0][1].status == "delivered")
+    check("same finding is suppressed by cooldown",
+          second[0][1].status == "suppressed" and len(channel.sent) == 1)
+
+
+def test_latency_telemetry_contract() -> None:
+    print("\n[6] LLM latency telemetry is separate and failure-transparent")
+    check("LLM_CALL usage format is unchanged",
+          format_usage("model-a", {"input": 2, "output": 3, "total": 5})
+          == "model=model-a in=2 out=3 total=5")
+    check("latency format contains metadata only",
+          format_latency("worker", "model-a", 12, "success")
+          == "component=worker model=model-a duration_ms=12 outcome=success")
+
+    events = []
+
+    class Client:
+        def __init__(self, fail=False):
+            self.fail = fail
+
+        def invoke(self, _messages):
+            if self.fail:
+                raise RuntimeError("private provider failure")
+            return "provider-result"
+
+    callback = lambda *event: events.append(event)
+    result = invoke_with_latency(
+        Client(), [], component="brain", model="model-b", on_latency=callback
+    )
+    check("successful result passes through unchanged", result == "provider-result")
+    check("successful attempt emits one timing",
+          len(events) == 1 and events[0][3] == "success")
+    try:
+        invoke_with_latency(
+            Client(fail=True), [], component="worker", model="model-c",
+            on_latency=callback,
+        )
+    except RuntimeError as exc:
+        same_error = str(exc) == "private provider failure"
+    else:
+        same_error = False
+    check("provider errors still propagate unchanged", same_error)
+    check("failed attempt emits timing without exception text",
+          len(events) == 2 and events[1][3] == "error" and len(events[1]) == 4)
+
+
 def main() -> int:
     test_gmail_readiness()
     test_weather_normalization()
     test_harness_categories()
     test_health_payload()
+    test_capability_loss_notification()
+    test_latency_telemetry_contract()
     total = _passed + len(_failed)
     print(f"\nRESULT: {_passed}/{total} passed")
     if _failed:
