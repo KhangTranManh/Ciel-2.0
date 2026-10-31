@@ -29,6 +29,10 @@ Current baseline:
   same-day `D1...Dn` action references and opt-in catch-up delivery through the shared
   proactive Telegram path. Optional Gmail metadata, current weather, and Calendar event
   metadata fail independently; Calendar mutations retain ordinary confirmation rules.
+- Ciel Native Calendar Phase 1 adds provider-independent one-off timed/all-day event
+  storage in `planner.db` plus bounded read-only list/detail tools. Native mutations,
+  Daily Brief integration, alerts, recurrence, and provider synchronization remain
+  later phases.
 - No graphical client is currently shipped. Remote clients use the API WebSocket
   protocol and must fail closed on confirmation requests.
 
@@ -191,8 +195,9 @@ Living files outside this directory:
     injected. `ciel_data/user_model.json` is bounded push context and rejects secret-like
     keys or values. These stores never merge.
 
-22. Durable tasks, conversational memory, plans, reminders, and todos are distinct.
-    Monthly goals, weekly tasks, and one-time reminders live in
+22. Durable tasks, conversational memory, plans, reminders, native calendar events,
+    and todos are distinct. Monthly goals, weekly tasks, one-time reminders, and native
+    one-off calendar events live in
     `ciel_data/planner.db`; immediate unscheduled todos remain in
     `ciel_workspace/todos.json`. `core/daily_brief.py` derives a bounded view across
     those stores and `runs.db`; its identity-only `ciel_data/state/daily_brief.json`
@@ -238,8 +243,10 @@ Living files outside this directory:
     Trigger actions describe outcomes: delivery and digest
     are logged, while routine cooldown suppression is not emitted on every poll.
 
-27. `core/planner_store.py` is the only planner/reminder SQL boundary. SQLite writes are atomic,
-    adds are idempotent, and completion retains history.
+27. `core/planner_store.py` is the only planner/reminder/native-calendar SQL boundary.
+    SQLite writes are atomic, adds are idempotent, and completion/cancellation retains
+    history. Native timed events store UTC instants plus an IANA display timezone;
+    all-day events store local date bounds without fake midnight instants.
 
 ### Deployment, testing, and documentation
 

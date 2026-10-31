@@ -22,7 +22,8 @@ SINGLE_READ_TOOLS = frozenset({
     "git_status", "git_diff", "git_list_repos", "list_monthly_goals",
     "list_weekly_plan", "list_reminders", "get_market_price", "get_crypto_stats",
     "get_daily_brief", "analyze_crypto_technical", "search_gmail", "get_gmail_message",
-    "get_gmail_thread", "list_calendar_events", "stealth_search", "smart_scrape",
+    "get_gmail_thread", "list_calendar_events", "list_native_calendar_events",
+    "get_native_calendar_event", "stealth_search", "smart_scrape",
     "read_document",
 })
 

@@ -428,6 +428,14 @@ class CielCore:
             "Read upcoming Calendar event metadata. Args: optional lookahead_hours, "
             "max_results, calendar_id. This is read-only."
         ),
+        "list_native_calendar_events": (
+            "Read Ciel-owned native events, independent of Google. Optional ISO "
+            "range_start/range_end, timezone_name, include_cancelled, limit."
+        ),
+        "get_native_calendar_event": (
+            "Read one Ciel-owned native event by numeric event_id, including private "
+            "notes/location only when explicitly requested."
+        ),
         "create_calendar_event": (
             "Create Calendar event. Required: summary, ISO start, ISO end; optional "
             "timezone_name/calendar_id. Requires confirmation."
@@ -456,6 +464,8 @@ class CielCore:
         "list_reminders",
         "get_daily_brief",
         "list_calendar_events",
+        "list_native_calendar_events",
+        "get_native_calendar_event",
         # Local state changes: only their bounded success/error envelope is
         # formatted; file contents and private state are not read by this pass.
         "write_file",
@@ -508,6 +518,7 @@ class CielCore:
         "get_daily_brief",
         "list_calendar_events", "create_calendar_event", "update_calendar_event",
         "delete_calendar_event",
+        "list_native_calendar_events", "get_native_calendar_event",
     }
 
     def _log_thought(self, actor: str, action: str, content: str):

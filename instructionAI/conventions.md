@@ -72,13 +72,14 @@ continuation, or retry. “The model should call it once” is not a valid safeg
 
 ## Planner conventions
 
-Monthly planning, weekly planning, and one-time reminders use separate tool packs and
-one storage boundary:
+Monthly planning, weekly planning, one-time reminders, and native calendar events use
+separate tool packs and one storage boundary:
 
 - `core/planner_store.py` owns all SQL and schema initialization.
 - `skills/internal/monthly_plan_ops.py` owns monthly goal tools.
 - `skills/internal/weekly_plan_ops.py` owns weekly task tools.
 - `skills/internal/reminder_ops.py` owns one-time reminder tools.
+- `skills/internal/native_calendar_ops.py` owns bounded native-calendar read tools.
 - `core/planner_triggers.py` reads plans and creates notifications; it does not mutate
   plans.
 - `core/reminder_triggers.py` reads due reminders and closes them only from notifier
@@ -94,6 +95,9 @@ Formats:
 - Reminder deadline: ISO-8601; naive values are interpreted in the supplied IANA timezone
   and stored as UTC.
 - Reminder status: `pending`, `delivered`, or `cancelled`.
+- Timed native event: UTC start/end plus one IANA display timezone.
+- All-day native event: `YYYY-MM-DD` start and exclusive end date; no UTC midnight.
+- Native event status: `active` or `cancelled`.
 - Reminder text uses canonical argument `title`; `message` is a compatibility alias at
   the tool boundary because provider plans may use either noun.
 
@@ -107,6 +111,9 @@ Identity and history:
 - Equivalent reminders use case-insensitive title plus UTC deadline for idempotence.
 - Timed requests use `add_reminder`; immediate unscheduled todos remain in
   `ciel_workspace/todos.json` and never imply a notification.
+- Native event uniqueness is case-insensitive title plus normalized timed/all-day range
+  and timezone. Alert offsets are unique per event. Phase 1 has no model-facing native
+  mutation or alert delivery path.
 
 Daily Brief references are display handles, not durable task IDs. The latest current-day
 brief may persist at most 20 entries containing only `D-number + source type/ID + title`.
@@ -299,7 +306,8 @@ python -m backtest.run_all --skip-exploratory
 
 Focused suites may run directly. Planner behavior belongs in
 `backtest/test_planner.py`; reminder persistence and delivery behavior belongs in
-`backtest/test_reminders.py`; email rendering, send confirmation, and dedupe belong in
+`backtest/test_reminders.py`; native event storage/read safety belongs in
+`backtest/test_native_calendar.py`; email rendering, send confirmation, and dedupe belong in
 `backtest/test_outbound.py`; API token checks belong in `backtest/test_api_auth.py`
 (FastAPI `TestClient` without entering its context, so Ciel never starts); pure
 safeguards belong in the closest maintained unit suite. Do not add permanent

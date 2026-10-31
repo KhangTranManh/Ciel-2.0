@@ -19,6 +19,9 @@ from zoneinfo import ZoneInfo
 
 VALID_STATUSES = frozenset({"active", "completed", "cancelled"})
 REMINDER_STATUSES = frozenset({"pending", "delivered", "cancelled"})
+CALENDAR_EVENT_STATUSES = frozenset({"active", "cancelled"})
+MAX_CALENDAR_ALERTS = 8
+MAX_CALENDAR_ALERT_OFFSET_MINUTES = 525_600
 
 
 def _utc_now() -> str:
@@ -89,6 +92,83 @@ def normalize_reminder_due(value: str, timezone_name: str) -> tuple[str, str]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=zone)
     return parsed.astimezone(timezone.utc).isoformat(timespec="seconds"), zone.key
+
+
+def normalize_calendar_time(value: str, timezone_name: str) -> tuple[str, str]:
+    """Return an absolute UTC instant and canonical IANA display timezone.
+
+    A naive wall time is accepted only when it maps to exactly one instant in the
+    requested timezone. DST gaps and folds are rejected so a model/user must provide
+    an explicit numeric offset instead of Ciel silently choosing the wrong occurrence.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("calendar time cannot be empty")
+    zone_name = str(timezone_name or "").strip()
+    if not zone_name:
+        raise ValueError("timezone cannot be empty")
+    try:
+        zone = ZoneInfo(zone_name)
+    except Exception as exc:
+        raise ValueError(
+            "timezone must be a valid IANA name, for example Asia/Ho_Chi_Minh"
+        ) from exc
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "calendar time must be ISO-8601, for example 2026-11-02T09:30"
+        ) from exc
+
+    if parsed.tzinfo is None:
+        candidates: list[datetime] = []
+        for fold in (0, 1):
+            candidate = parsed.replace(tzinfo=zone, fold=fold)
+            round_trip = candidate.astimezone(timezone.utc).astimezone(zone)
+            if round_trip.replace(tzinfo=None) == parsed:
+                candidates.append(candidate)
+        if not candidates:
+            raise ValueError(
+                "local calendar time does not exist in that timezone; provide an "
+                "explicit ISO-8601 offset"
+            )
+        offsets = {candidate.utcoffset() for candidate in candidates}
+        if len(offsets) > 1:
+            raise ValueError(
+                "local calendar time is ambiguous in that timezone; provide an "
+                "explicit ISO-8601 offset"
+            )
+        parsed = candidates[0]
+
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds"), zone.key
+
+
+def normalize_calendar_date(value: str, field: str) -> str:
+    raw = str(value or "").strip()
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{field} must use YYYY-MM-DD") from exc
+    return parsed.isoformat()
+
+
+def _normalize_alert_offsets(values) -> list[int]:
+    if values is None:
+        values = ()
+    elif isinstance(values, (str, int)):
+        values = (values,)
+    offsets: set[int] = set()
+    for raw in values:
+        try:
+            offset = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("calendar alert offsets must be whole minutes") from exc
+        if offset < 0 or offset > MAX_CALENDAR_ALERT_OFFSET_MINUTES:
+            raise ValueError("calendar alert offset must be between 0 and 525600 minutes")
+        offsets.add(offset)
+    if len(offsets) > MAX_CALENDAR_ALERTS:
+        raise ValueError(f"a calendar event supports at most {MAX_CALENDAR_ALERTS} alerts")
+    return sorted(offsets)
 
 
 class PlannerStore:
@@ -167,7 +247,55 @@ class PlannerStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_reminder_identity
                     ON reminders(lower(title), due_at_utc);
 
-                PRAGMA user_version = 2;
+                CREATE TABLE IF NOT EXISTS calendar_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    start_at_utc TEXT NULL,
+                    end_at_utc TEXT NULL,
+                    timezone TEXT NOT NULL,
+                    all_day INTEGER NOT NULL DEFAULT 0 CHECK (all_day IN (0, 1)),
+                    start_date TEXT NULL,
+                    end_date_exclusive TEXT NULL,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'cancelled')),
+                    location TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    schedule_version INTEGER NOT NULL DEFAULT 1
+                        CHECK (schedule_version >= 1),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK (
+                        (all_day = 0 AND start_at_utc IS NOT NULL
+                            AND end_at_utc IS NOT NULL AND start_date IS NULL
+                            AND end_date_exclusive IS NULL)
+                        OR
+                        (all_day = 1 AND start_at_utc IS NULL
+                            AND end_at_utc IS NULL AND start_date IS NOT NULL
+                            AND end_date_exclusive IS NOT NULL)
+                    )
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_calendar_event_identity
+                    ON calendar_events(
+                        lower(title), all_day, timezone,
+                        ifnull(start_at_utc, ''), ifnull(end_at_utc, ''),
+                        ifnull(start_date, ''), ifnull(end_date_exclusive, '')
+                    );
+
+                CREATE TABLE IF NOT EXISTS calendar_event_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    offset_minutes INTEGER NOT NULL
+                        CHECK (offset_minutes BETWEEN 0 AND 525600),
+                    delivered_at TEXT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (event_id) REFERENCES calendar_events(id)
+                        ON DELETE CASCADE,
+                    UNIQUE (event_id, offset_minutes)
+                );
+
+                PRAGMA user_version = 3;
                 """
             )
 
@@ -183,6 +311,13 @@ class PlannerStore:
         if len(title) > 300:
             raise ValueError("title must be 300 characters or fewer")
         return title
+
+    @staticmethod
+    def _calendar_text(value: str, *, field: str, maximum: int) -> str:
+        text = str(value or "").strip()
+        if len(text) > maximum:
+            raise ValueError(f"{field} must be {maximum} characters or fewer")
+        return text
 
     # ---------------------------------------------------------------- monthly goals
     def add_monthly_goal(self, month: str, title: str, notes: str = "") -> tuple[dict, bool]:
@@ -496,3 +631,190 @@ class PlannerStore:
             if cur.rowcount != 1 and row["status"] != "delivered":
                 raise ValueError(f"reminder #{reminder_id} is {row['status']}")
         return self._row(row)
+
+    # ----------------------------------------------------------- native calendar
+    def _calendar_event_with_alerts(
+        self, conn: sqlite3.Connection, event_id: int
+    ) -> dict | None:
+        row = conn.execute(
+            "SELECT * FROM calendar_events WHERE id = ?", (int(event_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        event = dict(row)
+        event["all_day"] = bool(event["all_day"])
+        event["alert_offsets"] = [
+            int(alert["offset_minutes"])
+            for alert in conn.execute(
+                """SELECT offset_minutes FROM calendar_event_alerts
+                   WHERE event_id = ? ORDER BY offset_minutes""",
+                (int(event_id),),
+            ).fetchall()
+        ]
+        return event
+
+    def add_calendar_event(
+        self,
+        title: str,
+        *,
+        timezone_name: str,
+        start_at: str = "",
+        end_at: str = "",
+        all_day: bool = False,
+        start_date: str = "",
+        end_date_exclusive: str = "",
+        location: str = "",
+        notes: str = "",
+        alert_offsets=(),
+    ) -> tuple[dict, bool]:
+        """Create one native event; equivalent retries return the existing row."""
+        title = self._title(title)
+        location = self._calendar_text(location, field="location", maximum=300)
+        notes = self._calendar_text(notes, field="notes", maximum=4000)
+        alerts = _normalize_alert_offsets(alert_offsets)
+        if isinstance(all_day, bool):
+            pass
+        elif isinstance(all_day, int) and all_day in (0, 1):
+            all_day = bool(all_day)
+        else:
+            raise ValueError("all_day must be true or false")
+
+        zone_name = str(timezone_name or "").strip()
+        try:
+            zone_name = ZoneInfo(zone_name).key
+        except Exception as exc:
+            raise ValueError(
+                "timezone must be a valid IANA name, for example Asia/Ho_Chi_Minh"
+            ) from exc
+
+        raw_start = str(start_at or "").strip()
+        raw_end = str(end_at or "").strip()
+        raw_start_date = str(start_date or "").strip()
+        raw_end_date = str(end_date_exclusive or "").strip()
+        if all_day:
+            if raw_start or raw_end:
+                raise ValueError("all-day events must not mix dateTime values with dates")
+            start_date_value = normalize_calendar_date(raw_start_date, "start_date")
+            end_date_value = normalize_calendar_date(
+                raw_end_date, "end_date_exclusive"
+            )
+            if date.fromisoformat(end_date_value) <= date.fromisoformat(start_date_value):
+                raise ValueError("all-day event end must be after start")
+            start_utc = end_utc = None
+        else:
+            if raw_start_date or raw_end_date:
+                raise ValueError("timed events must not mix date values with dateTime values")
+            start_utc, zone_name = normalize_calendar_time(raw_start, zone_name)
+            end_utc, _ = normalize_calendar_time(raw_end, zone_name)
+            if datetime.fromisoformat(end_utc) <= datetime.fromisoformat(start_utc):
+                raise ValueError("calendar event end must be after start")
+            start_date_value = end_date_value = None
+
+        stamp = _utc_now()
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO calendar_events
+                       (title, start_at_utc, end_at_utc, timezone, all_day,
+                        start_date, end_date_exclusive, status, location, notes,
+                        schedule_version, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1, ?, ?)""",
+                    (
+                        title, start_utc, end_utc, zone_name, int(all_day),
+                        start_date_value, end_date_value, location, notes, stamp, stamp,
+                    ),
+                )
+                created = cur.rowcount == 1
+                row = conn.execute(
+                    """SELECT id FROM calendar_events
+                       WHERE lower(title) = lower(?) AND all_day = ? AND timezone = ?
+                         AND ifnull(start_at_utc, '') = ifnull(?, '')
+                         AND ifnull(end_at_utc, '') = ifnull(?, '')
+                         AND ifnull(start_date, '') = ifnull(?, '')
+                         AND ifnull(end_date_exclusive, '') = ifnull(?, '')""",
+                    (
+                        title, int(all_day), zone_name, start_utc, end_utc,
+                        start_date_value, end_date_value,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("calendar event could not be stored")
+                event_id = int(row["id"])
+                if created:
+                    conn.executemany(
+                        """INSERT INTO calendar_event_alerts
+                           (event_id, offset_minutes, delivered_at, created_at, updated_at)
+                           VALUES (?, ?, NULL, ?, ?)""",
+                        [(event_id, offset, stamp, stamp) for offset in alerts],
+                    )
+                elif alerts:
+                    existing_alerts = [
+                        int(item["offset_minutes"])
+                        for item in conn.execute(
+                            """SELECT offset_minutes FROM calendar_event_alerts
+                               WHERE event_id = ? ORDER BY offset_minutes""",
+                            (event_id,),
+                        ).fetchall()
+                    ]
+                    if existing_alerts != alerts:
+                        raise ValueError(
+                            "an equivalent calendar event exists with different alerts"
+                        )
+                event = self._calendar_event_with_alerts(conn, event_id)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("calendar event violates the native calendar schema") from exc
+        if event is None:
+            raise ValueError("calendar event could not be read after storage")
+        return event, created
+
+    def get_calendar_event(self, event_id: int) -> dict | None:
+        with self._connect() as conn:
+            return self._calendar_event_with_alerts(conn, int(event_id))
+
+    def list_calendar_events(
+        self,
+        range_start: str,
+        range_end: str,
+        *,
+        timezone_name: str,
+        include_cancelled: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List native events overlapping the half-open range ``[start, end)``."""
+        start_utc, zone_name = normalize_calendar_time(range_start, timezone_name)
+        end_utc, _ = normalize_calendar_time(range_end, zone_name)
+        start_instant = datetime.fromisoformat(start_utc)
+        end_instant = datetime.fromisoformat(end_utc)
+        if end_instant <= start_instant:
+            raise ValueError("calendar range end must be after start")
+
+        zone = ZoneInfo(zone_name)
+        local_start = start_instant.astimezone(zone)
+        local_end = end_instant.astimezone(zone)
+        range_start_date = local_start.date().isoformat()
+        end_date = local_end.date()
+        if local_end.timetz().replace(tzinfo=None) != datetime.min.time():
+            end_date += timedelta(days=1)
+        range_end_date_exclusive = end_date.isoformat()
+
+        sql = """SELECT * FROM calendar_events
+                 WHERE ((all_day = 0 AND start_at_utc < ? AND end_at_utc > ?)
+                    OR (all_day = 1 AND start_date < ?
+                        AND end_date_exclusive > ?))"""
+        args: list[Any] = [
+            end_utc, start_utc, range_end_date_exclusive, range_start_date
+        ]
+        if not include_cancelled:
+            sql += " AND status = 'active'"
+        sql += """ ORDER BY
+                    CASE WHEN all_day = 1 THEN start_date ELSE start_at_utc END,
+                    all_day DESC, id LIMIT ?"""
+        args.append(max(1, min(int(limit), 100)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+            events = []
+            for row in rows:
+                event = self._calendar_event_with_alerts(conn, int(row["id"]))
+                if event is not None:
+                    events.append(event)
+            return events

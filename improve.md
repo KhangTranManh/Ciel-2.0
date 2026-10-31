@@ -312,6 +312,127 @@ mutations are ASK/DEFER; focused and unified unit regression are green.
 
 ---
 
+### Feature — Ciel Native Calendar — **PHASE 1 DONE**
+
+Phase 1 implements native one-off event storage and bounded read tools. No create,
+update, cancel, Daily Brief integration, trigger, or alert delivery is exposed yet.
+Later phases do not begin before the preceding phase's pass criteria hold.
+
+#### Goal and boundaries
+
+Ciel owns a private calendar without requiring Google Calendar or another provider.
+The native calendar is a schedule, not another task list:
+
+- a weekly task is work to complete;
+- a todo is an immediate unscheduled checklist item;
+- a reminder is one notification at one deadline;
+- a calendar event reserves a time interval and may own zero or more alert offsets.
+
+Native events live in `ciel_data/planner.db`, with `core/planner_store.py` remaining the
+only SQL boundary. They do not copy into todos or reminders. Daily Brief may derive a
+bounded view from them, while `ciel_data/state/daily_brief.json` remains identity-only
+and never becomes event storage. Google/Outlook/CalDAV synchronization is not required
+for the native feature and belongs behind a later provider adapter.
+
+#### Storage contract
+
+The initial schema adds two owned tables:
+
+```text
+calendar_events
+  id, title, start_at_utc, end_at_utc, timezone, all_day,
+  start_date, end_date_exclusive, status, location, notes,
+  schedule_version, created_at, updated_at
+
+calendar_event_alerts
+  id, event_id, offset_minutes, delivered_at, created_at, updated_at
+```
+
+Timed events use absolute UTC start/end plus an IANA display timezone. All-day events
+use local dates with an exclusive end date and do not invent midnight UTC instants.
+Exactly one timed/all-day representation is valid. End must be after start, titles and
+optional text are bounded, alert offsets are non-negative and bounded, and equivalent
+retries are idempotent. Cancellation retains history instead of deleting rows.
+
+`schedule_version` changes only when start/end, all-day dates, timezone, status, or
+alert offsets change. Cosmetic edits such as title/location/notes do not increment it,
+so they cannot cause an already delivered alert to be sent again.
+
+#### Phase 1 — Native storage and read-only tools
+
+- [x] Add atomic schema migration and `PlannerStore` event/alert read methods.
+- [x] Add `list_native_calendar_events` and `get_native_calendar_event`; the distinct
+      names prevent collision with the optional Google `list_calendar_events` tool.
+- [x] Support one-off timed and all-day events; recurrence is explicitly excluded.
+- [x] Keep list output bounded and exclude notes/location unless one event is
+      explicitly read.
+
+**Pass when:** migration is repeatable; invalid/mixed timed and all-day rows execute no
+write; UTC/IANA normalization covers DST boundaries; range queries include overlapping
+events correctly; equivalent retries do not duplicate rows; existing planner/reminder
+tests and unified unit regression stay green.
+
+- Focused pass: **8/8** (`backtest.test_native_calendar`), plus planner 32/32,
+  reminders 23/23, Daily Brief 20/20, plan validation 12/12, operational readiness
+  29/29, and quality guards 67/67.
+- Unified unit regression: **18/18 suites PASS**.
+- Pass date: **2026-11-01**
+
+#### Phase 2 — Mutations and Daily Brief integration
+
+- [ ] Add create, update, and cancel tools through ordinary plan validation and
+      permission review; native reads are `AUTO`, mutations are `ASK` attended and
+      `DEFER` unattended.
+- [ ] Add bounded native event title/time to Daily Brief without exposing notes or
+      location by default and without suppressing other sources on failure.
+- [ ] Extend same-day D-references with `native_calendar_event` identity only; update or
+      cancel binds back to the verified event ID and never trusts a model-guessed ID.
+
+**Pass when:** create/update/cancel are atomic and idempotent; permission denial changes
+nothing; stale or mismatched D-references execute nothing; event notes never enter the
+Brief snapshot; one calendar failure does not erase tasks, todos, reminders, runs, or
+other external context; focused and unified regression are green.
+
+#### Phase 3 — Event alerts through the existing Notifier
+
+- [ ] Add opt-in `calendar_event_due` scheduler trigger with configurable bounded
+      catch-up window and one or more offsets per event.
+- [ ] Use notification identity
+      `calendar_event:<event_id>:<schedule_version>:<offset_minutes>`.
+- [ ] Mark an alert delivered only after provider success or persisted notifier dedupe;
+      failed sends remain retryable and routine polling stays audit-silent.
+- [ ] If `calendar_event_due` is disabled, creating an event without alerts remains
+      valid, while a request that includes alerts fails atomically and honestly.
+- [ ] Reschedule/cancel invalidates old pending identities by source state; it never
+      deletes notifier history or replays an alert from an old schedule version.
+
+**Pass when:** before-time checks are silent; each configured offset delivers once;
+failure retries; restart does not duplicate; cosmetic edits do not re-alert; time/alert
+changes use the new schedule version; cancelled/past-window events stay silent; Docker
+startup and a live Telegram delivery smoke pass without a second Ciel process.
+
+#### Phase 4 — Recurrence and interoperability (deferred)
+
+- [ ] Define a bounded recurrence subset only after Phases 1–3 are stable; expansion
+      must be range-bounded and exceptions must not rewrite unrelated occurrences.
+- [ ] Add ICS export first, then reviewed ICS import with deterministic duplicate keys.
+- [ ] Add optional Google, Outlook, or CalDAV adapters without changing the native
+      event contract or making an external provider the source of truth by accident.
+
+**Pass when:** recurrence cannot create unbounded rows/work; timezone/DST examples are
+deterministic; import retries are idempotent; provider failure leaves native events and
+alerts usable; conflict ownership is explicit and covered by tests.
+
+#### Non-goals for the first three phases
+
+- No multi-user/shared calendars, invitation email, attendee management, or free/busy.
+- No automatic conversion between tasks, reminders, and events.
+- No silent external synchronization or background mutation.
+- No graphical calendar requirement; tools, Daily Brief, Telegram, and the existing API
+  remain sufficient until the native contracts pass.
+
+---
+
 ### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **DEFINED**
 
 > Level B không phụ thuộc feature này. Implement theo phase.

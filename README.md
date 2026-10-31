@@ -191,6 +191,7 @@ Plans are durable structured data, not chat history:
 - Monthly outcomes: `ciel_data/planner.db::monthly_goals`
 - Weekly actions: `ciel_data/planner.db::weekly_tasks`
 - One-time alerts: `ciel_data/planner.db::reminders`
+- Native scheduled events: `ciel_data/planner.db::calendar_events`
 - Immediate unscheduled tasks: `ciel_workspace/todos.json`
 
 Available planner tools:
@@ -205,6 +206,12 @@ Available planner tools:
 Timed requests use `add_reminder`, `list_reminders`, and `cancel_reminder`. `add_todo`
 only creates an unscheduled checklist item and never promises a notification. Reminder
 text uses `title`; `message` is accepted as a compatibility alias for provider plans.
+
+Native Calendar Phase 1 is independent of Google. `list_native_calendar_events` reads a
+bounded ISO-8601 range, while `get_native_calendar_event` reads one event's full detail.
+Timed and all-day events are stored separately and recurrence is not yet supported.
+Create/update/cancel tools, Daily Brief integration, and event-alert delivery remain
+later phases; the current native tools cannot mutate the calendar.
 
 `get_daily_brief` combines today's weekly tasks, open todos, upcoming reminders, and
 unfinished run metadata into one prioritized view. Its visible `D1...Dn` references are
@@ -333,6 +340,9 @@ python -m backtest.test_planner
 
 # Reminder persistence, retry, dedupe, and tool suite
 python -m backtest.test_reminders
+
+# Native calendar storage, time normalization, and bounded read tools
+python -m backtest.test_native_calendar
 
 # Focused safety and routing suites
 python -m backtest.test_quality_guards

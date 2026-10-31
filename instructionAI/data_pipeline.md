@@ -14,7 +14,7 @@ notification state because they have different authority and retention rules.
 | `ciel_data/user_model.json` | `core/user_model.py` | Preferences with provenance | Bounded, secret-rejecting |
 | `ciel_data/state/tasks.json` | `core/task_state.py` | Durable job lifecycle | Status path, not routing |
 | `ciel_data/runs.db` | `core/harness/store.py` | Runtime runs, steps, bounded artifacts and events; one-time legacy task import | Never injected; status metadata only |
-| `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals, weekly actions, and one-time reminders | Through planner/reminder tools and triggers |
+| `ciel_data/planner.db` | `core/planner_store.py` | Monthly goals, weekly actions, one-time reminders, and native calendar events | Through planner/reminder/native-calendar tools and triggers |
 | `ciel_workspace/todos.json` | productivity tools | Immediate unscheduled checklist | Through todo tools/triggers |
 | `ciel_data/state/daily_brief.json` | `core/daily_brief.py` | Bounded same-day D-reference identity snapshot | Only after deterministic reference validation |
 | `ciel_data/state/notify.json` | `core/notifier.py` | Cooldowns, budget, repeat state | Never |
@@ -157,7 +157,7 @@ recorded only after the tool returns.
 
 ## Planner data
 
-`PlannerStore` owns a SQLite database with three tables:
+`PlannerStore` owns a SQLite database with five tables:
 
 ```text
 monthly_goals
@@ -170,15 +170,34 @@ weekly_tasks
 reminders
   id, title, due_at_utc, timezone, status,
   notified_at, created_at, updated_at
+
+calendar_events
+  id, title, start_at_utc, end_at_utc, timezone, all_day,
+  start_date, end_date_exclusive, status, location, notes,
+  schedule_version, created_at, updated_at
+
+calendar_event_alerts
+  id, event_id, offset_minutes, delivered_at, created_at, updated_at
 ```
 
 Monthly goals are high-level outcomes. Weekly tasks are concrete actions and may link
-to a monthly goal. Reminders are one-time timed notifications. Immediate todos remain a
-separate lightweight unscheduled checklist.
+to a monthly goal. Reminders are one-time timed notifications. Native calendar events
+reserve intervals and remain distinct from tasks/reminders; Phase 1 exposes only
+`list_native_calendar_events` and `get_native_calendar_event`. Timed rows store UTC
+instants plus an IANA display timezone. All-day rows store local start and exclusive end
+dates, so timezone conversion cannot shift them to another day. Immediate todos remain
+a separate lightweight unscheduled checklist.
 
 SQLite settings include foreign keys, a busy timeout, per-operation connections, and
 transactional writes. Unique indexes make equivalent retries idempotent. Completion
 retains history rather than deleting records.
+
+Native Calendar Phase 1 rejects nonexistent or ambiguous naive DST wall times; callers
+must supply an explicit ISO-8601 offset. Range reads use half-open overlap and are
+bounded. List output excludes notes/location, while an explicit single-event read may
+return them. The two read tools are AUTO, single-step eligible, and independently
+parallel-safe. Native mutations, Daily Brief references, alert delivery, recurrence,
+and external synchronization are not Phase 1 capabilities.
 
 Planner tools are always available. Planner announcements require named proactive
 triggers:

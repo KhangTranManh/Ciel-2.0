@@ -47,7 +47,7 @@ core/
   triggers.py                  Deterministic condition checks and trigger engine
   capability_triggers.py       Opt-in startup capability-loss notifications
   proactive_setup.py           Shared CLI/API/Telegram trigger wiring
-  planner_store.py             SQLite boundary for plans and one-time reminders
+  planner_store.py             SQLite boundary for plans, reminders, native events
   daily_brief.py               Daily aggregation, priority, and bounded D-reference identity
   daily_brief_context.py       Fail-open bounded Gmail/weather/Calendar enrichment
   gmail_client.py              Current/legacy Gmail service-builder boundary
@@ -64,7 +64,8 @@ api/
 
 skills/
   _result.py                   Standard tool result envelope
-  internal/*_ops.py            Files, reports, memory, todos, planner tools
+  internal/*_ops.py            Files, reports, memory, todos, planner/calendar tools
+  internal/native_calendar_ops.py  Bounded provider-independent native event reads
   external/*_ops.py            Gmail, Telegram, web, trading, GitHub tools
   external/calendar_ops.py     Separate Calendar reads and confirmed mutations
 
@@ -261,15 +262,18 @@ Planning data is intentionally separate from memory:
 Monthly goal ─┐
               ├─> ciel_data/planner.db ─> PlannerStore ─> monthly/weekly tools
 Weekly task ──┤                                  │
-Reminder ─────┘                                  ├─> planner triggers ─> Notifier
+Reminder ─────┤                                  ├─> planner triggers ─> Notifier
+Native event ─┘                                  ├─> native calendar read tools
                                                 └─> reminder trigger ─> Notifier
 Immediate todo ─> ciel_workspace/todos.json ────────────────┘
 ```
 
 `monthly_goals` stores high-level outcomes. `weekly_tasks` stores concrete actions and
 may reference a monthly goal. `reminders` stores one-time timed notifications separately
-from the unscheduled todo checklist. Adds use unique identities for retry idempotence;
-completion or delivery changes status and retains history.
+from the unscheduled todo checklist. `calendar_events` stores provider-independent
+one-off timed/all-day intervals, with `calendar_event_alerts` reserved for later
+delivery phases. Phase 1 exposes bounded list/detail reads only. Adds use unique
+identities for retry idempotence; completion, delivery, or cancellation retains history.
 
 Monthly and weekly triggers are catch-up checks: once the configured local time has
 passed, they may still announce later in that period. Stable period keys prevent a

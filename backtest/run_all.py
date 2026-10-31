@@ -131,6 +131,12 @@ SUITES: list[Suite] = [
         "SQLite monthly/weekly plans, separate tools, catch-up triggers, and dedupe",
     ),
     Suite(
+        "native_calendar",
+        "backtest.test_native_calendar",
+        "unit",
+        "Native event schema, time normalization, bounded reads, and tool safety",
+    ),
+    Suite(
         "daily_brief",
         "backtest.test_daily_brief",
         "unit",
