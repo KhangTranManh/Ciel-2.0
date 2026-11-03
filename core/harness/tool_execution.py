@@ -77,6 +77,20 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
             tool_args = dict(tool_args)
             tool_args["query"] = new_q
 
+    if tool_name in {"stealth_search", "smart_scrape"}:
+        from core.search_research import SearchTurnState
+        with self._log_lock:
+            state = getattr(self, "_search_turn_state", None)
+            if state is None:
+                state = self._search_turn_state = SearchTurnState()
+        active = getattr(self, "_active_lookup", None) or {}
+        tool_args, web_stop = state.reserve(
+            tool_name, tool_args, user_input, active_urls=active.get("urls", []),
+        )
+        if web_stop:
+            self._log_thought("SEARCH", "bounded_stop", f"{tool_name}: {web_stop}")
+            return f"[TOOL_ERROR] Guided web research stopped: {web_stop}."
+
     # TELEGRAM INBOUND PROTECT: never write/append into telegram_uploads unless the
     # Master explicitly asks to overwrite that upload. Found live: write-safeguard
     # + "đã lưu tại" false positive clobbered the just-downloaded file with a summary.
@@ -225,6 +239,19 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
 
     result = self.tool_manager.execute_tool(tool_name, tool_args)
     result_text = self.tool_manager.format_tool_result(result)
+    if tool_name in {"stealth_search", "smart_scrape"}:
+        from core.search_research import scrape_failed
+        failed_web_read = tool_name == "smart_scrape" and scrape_failed(result_text)
+        failed_web_search = tool_name == "stealth_search" and result_text.startswith(
+            ("Search API Error:", "Error:")
+        )
+        if failed_web_read or failed_web_search:
+            # These older web tools return failure prose inside a successful
+            # ToolManager envelope. Surface it as a failed step before it can be
+            # cached as a successful lookup or rewritten by a Worker.
+            self._log_thought("SEARCH", "provider_or_page_failed",
+                              f"{tool_name}: {result_text[:180]}")
+            return f"[TOOL_ERROR] {tool_name}: {result_text[:800]}"
     # Ground truth is the dict's own `success` flag, not a text guess. Bug found
     # live: tool_manager.format_tool_result() renders ANY failure as "[{code}] msg"
     # where `code` is whatever the skill author chose (VISION_LOOP_ERROR,
@@ -240,7 +267,9 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
     is_error = isinstance(result, dict) and result.get("success") is False
 
     # SELF-HEALING HOOK (UP TO 3 ATTEMPTS)
-    max_attempts = 3
+    # Web retries must pass through SearchTurnState, not the generic argument
+    # healer's direct ToolManager replay (which cannot count or vet the new URL).
+    max_attempts = 0 if tool_name in {"stealth_search", "smart_scrape"} else 3
     attempt = 1
     current_args = tool_args
     manager = getattr(self, "run_manager", None)
@@ -364,6 +393,9 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
         )
 
     self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
+
+    if tool_name == "stealth_search":
+        state.observe(tool_name, result_text)
 
     # Collect only successful, read-only evidence. ActiveSubject owns the allow-list
     # and strips secrets, recipients, paths, URLs and command-like values.

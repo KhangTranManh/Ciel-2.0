@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -133,11 +134,13 @@ def _google_news_rss(query: str, max_results: int, lang: str):
         if len(body) < 30 or body[:40] == title[:40]:         # RSS body is often just a link
             body = title
         rows.append({"title": title, "url": (item.findtext("link") or "").strip(),
-                     "body": body, "date": date, "age": age, "dt": dt, "source": source})
+                     "body": body, "date": date, "age": age, "dt": dt,
+                     "source": source, "provider": "Google News RSS"})
     return rows
 
 
 _SERPAPI_TBS = {"d": "qdr:d", "w": "qdr:w", "m": "qdr:m", "y": "qdr:y"}
+_SERPAPI_STATUS = threading.local()
 
 _RELATIVE_AGE_RE = re.compile(
     r"^\s*(\d+)\s*(phút|giờ|ngày|tuần|tháng|năm|"
@@ -185,6 +188,7 @@ def _serpapi_search(query: str, max_results: int, timelimit: str) -> list:
     `tbs=qdr:X` is Google's own native recency filter, mapped from `timelimit`."""
     api_key = os.getenv("SEARCH_API_KEY", "")
     if not api_key:
+        _SERPAPI_STATUS.value = "missing_key"
         return []
     endpoint = os.getenv("API_ENDPOINT", "https://serpapi.com/search?engine=google")
 
@@ -196,7 +200,11 @@ def _serpapi_search(query: str, max_results: int, timelimit: str) -> list:
         resp = requests.get(endpoint, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
+        if data.get("error"):
+            _SERPAPI_STATUS.value = "failed"
+            return []
     except Exception:
+        _SERPAPI_STATUS.value = "failed"
         return []
 
     rows = []
@@ -211,7 +219,9 @@ def _serpapi_search(query: str, max_results: int, timelimit: str) -> list:
             "body": item.get("snippet", ""),
             "date": date, "age": age, "dt": dt,
             "source": item.get("source") or (urlparse(item.get("link", "")).netloc or ""),
+            "provider": "Google (SerpApi)",
         })
+    _SERPAPI_STATUS.value = "ok" if rows else "no_hits"
     return rows
 
 
@@ -335,6 +345,53 @@ def _merge_rows(primary: list, extra: list, limit: int) -> list:
             break
     return out
 
+
+_SOCIAL_HOSTS = ("facebook.com", "tiktok.com", "instagram.com", "reddit.com",
+                 "x.com", "twitter.com", "youtube.com")
+_QUERY_FILLER = _GENERIC_NEWS_WORDS | {
+    "giá", "bao", "nhiêu", "price", "of", "is", "the", "what", "how", "much",
+}
+
+
+def _rank_rows(rows: list, query: str) -> list:
+    """Prefer concrete relevant evidence; never blacklist an explicitly asked source."""
+    terms = {w for w in re.findall(r"[\wÀ-ỹ]+", (query or "").casefold())
+             if len(w) > 2 and w not in _QUERY_FILLER}
+    social_requested = any(h in (query or "").casefold() for h in
+                           ("facebook", "tiktok", "instagram", "reddit", "youtube", "twitter", "x.com"))
+
+    def score(row):
+        title = (row.get("title") or "").casefold()
+        body = (row.get("body") or "").casefold()
+        host = (urlparse(row.get("url") or "").hostname or "").lower()
+        matched_title = sum(w in title for w in terms)
+        matched_body = sum(w in body for w in terms)
+        social = any(host == h or host.endswith("." + h) for h in _SOCIAL_HOSTS)
+        return (4 * matched_title + matched_body
+                + (3 if row.get("dt") else 0)
+                + (2 if len(body) >= 35 and body != title else 0)
+                - (8 if social and not social_requested else 0))
+
+    by_url = {}
+    for row in rows:
+        url = (row.get("url") or "").strip()
+        if not url or urlparse(url).scheme not in {"http", "https"}:
+            continue
+        url_key = url.lower().split("#", 1)[0]
+        previous = by_url.get(url_key)
+        if previous is None or score(row) > score(previous):
+            by_url[url_key] = row
+    best = {}
+    for row in by_url.values():
+        url = (row.get("url") or "").strip()
+        title_key = " ".join((row.get("title") or "").casefold().split())
+        publisher_key = (row.get("source") or urlparse(url).hostname or "").casefold()
+        key = (title_key, publisher_key) if len(title_key) >= 20 else url.lower().split("#", 1)[0]
+        previous = best.get(key)
+        if previous is None or score(row) > score(previous):
+            best[key] = row
+    return sorted(best.values(), key=score, reverse=True)
+
 WEB_AGENT_SYSTEM_PROMPT = """[CIEL STEALTH WEB AGENT]
 Role: You have live internet access to search and read websites.
 
@@ -343,17 +400,12 @@ TOOLS:
 2. `smart_scrape`: Read the full content of a specific URL. It converts the webpage into clean Markdown.
 
 RULES OF ENGAGEMENT:
-1. ALWAYS use `stealth_search` first if you don't know the answer to a current event, news, or technical documentation question.
-2. If the search snippets are not enough, use `smart_scrape` on the most relevant URL to read the full article.
-3. NEVER guess information if it's recent (post-2024). Search the web.
-4. When summarizing scraped data, keep it extremely concise.
-5. Provide URLs as citations if requested.
-
-SEARCH TERMINATION AND DEGRADATION RULES:
-6. Do not issue the same search query more than twice. If the first attempt returns incomplete results (missing prices, mismatched currency, absent specs), you MUST change strategy before searching again: reformulate the query, add or remove constraints, or target a different source type.
-7. If a price is found in a currency that does not match the requested currency, convert it using a reasonable current exchange rate and clearly note the conversion.
-8. After exhausting two distinct search strategies without obtaining complete data, stop searching and return the best available partial answer. Clearly label any gaps (e.g., "Price not found," "Spec unavailable") rather than treating missing data as a reason to search again.
-9. Treat incomplete results as a reportable outcome: present what was found, state what is missing, and do not loop indefinitely seeking a perfect answer."""
+1. Search when the user needs current or uncertain public facts; do not invent them.
+2. Search results are leads. If snippets are thin, read one exact result URL with smart_scrape.
+3. Change the query when evidence is irrelevant or a page cannot be read. Never repeat the same query or URL in one turn.
+4. Cite URLs actually returned or read. An unknown publication date stays unknown.
+5. Preserve price value, currency, unit, source, and observation time; do not invent a conversion rate.
+6. Stop within the shared per-turn budget and report unresolved gaps honestly."""
 
 
 def _article_url_from_scrape_input(value: str) -> str:
@@ -381,6 +433,10 @@ def get_web_tools() -> dict:
             """
             try:
                 from ddgs import DDGS
+                _SERPAPI_STATUS.value = "not_used"
+                max_results = max(1, min(int(max_results), 10))
+                if timelimit not in {"", "d", "w", "m", "y"}:
+                    return "Search API Error: timelimit must be d, w, m, y, or empty."
 
                 q_low = (query or "").lower()
                 is_news_intent = any(t in q_low for t in _RECENCY_TERMS)
@@ -454,6 +510,7 @@ def get_web_tools() -> dict:
                                         "title": r.get("title"), "url": r.get("url"),
                                         "body": r.get("body"), "date": d, "age": age,
                                         "dt": dt, "source": r.get("source", ""),
+                                        "provider": "DDG news",
                                     })
                                 if rows:
                                     source_used = "DDG news (RSS fallback)"
@@ -468,49 +525,40 @@ def get_web_tools() -> dict:
                                 rows.append({
                                     "title": r.get("title"), "url": r.get("href"),
                                     "body": r.get("body"), "date": "", "age": "",
-                                    "dt": None, "source": "",
+                                    "dt": None, "source": (urlparse(r.get("href") or "").netloc or ""),
+                                    "provider": "DDG web",
                                 })
                                 if len(rows) >= max_results:
                                     break
                             if rows and source_used == "web":
                                 source_used = "web"
-                elif len(rows) < max_results and not generic_news:
-                    # Topical SerpApi hit but thin — top up from RSS when news-intent.
-                    if is_news_intent:
-                        try:
-                            rss = _google_news_rss(
-                                query, fetch_n, _detect_query_lang(query)
-                            )
-                            if rss:
-                                rows = _merge_rows(rows, rss, fetch_n)
-                                source_used = f"{source_used} + News RSS"
-                        except Exception:
-                            pass
+                elif is_news_intent and not generic_news:
+                    # Always compare topical web hits with dated RSS. A full page
+                    # of stale SerpApi hits must not suppress a fresh RSS result.
+                    try:
+                        rss = _google_news_rss(query, fetch_n, _detect_query_lang(query))
+                        if rss:
+                            rows = _merge_rows(rows, rss, fetch_n)
+                            source_used = f"{source_used} + News RSS"
+                    except Exception:
+                        pass
 
-                # Enforce the recency window on real dates (DuckDuckGo's own timelimit
-                # proved unreliable). Undated items are kept — they are not provably stale.
-                #
-                # Found live: this used to require `len(fresh) >= 3` before applying the
-                # filter, so a niche/low-coverage query (e.g. Vietnamese "world news
-                # roundup") with only 1-2 genuinely fresh hits fell through to the FULL
-                # unfiltered pool — a real request for `timelimit="d"` (past 2 days)
-                # silently returned an article 216 days old. The tool was still honest
-                # (real Published date + computed age shown), but the recency request
-                # itself was defeated. Now: use whatever fresh results exist, even just
-                # one — fewer honest results beats padding with old ones. Only fall back
-                # to the unfiltered pool when NOTHING survives the window at all.
+                # A current-news request needs dated evidence. Unknown publication
+                # dates are not proven current, and old hits must never be restored
+                # just because no fresh candidate survived.
                 if timelimit in _WINDOW_DAYS:
                     cutoff = datetime.now(timezone.utc) - timedelta(days=_WINDOW_DAYS[timelimit])
-                    fresh = [r for r in rows if r.get("dt") is None or r["dt"] >= cutoff]
-                    if fresh:
-                        rows = fresh
+                    rows = [r for r in rows if r.get("dt") is not None and r["dt"] >= cutoff]
                 # NOTE: do NOT truncate to max_results yet — the landing-page filter below
                 # needs the larger pool, otherwise its "keep everything if <3 survive"
                 # guard trips and lets index pages back in.
 
                 today = datetime.now().strftime("%Y-%m-%d")
+                primary_status = getattr(_SERPAPI_STATUS, "value", "not_used")
                 if not rows:
-                    return f"No results found for '{query}' (as of {today}, timelimit={timelimit or 'all'})."
+                    return (f"No results found for '{query}' (as of {today}, "
+                            f"timelimit={timelimit or 'all'}). "
+                            f"[SEARCH_PROVIDER_STATUS primary={primary_status}]")
 
                 # Drop landing pages + dated roundup shells ("…nổi bật trong ngày 15/5"
                 # with an old embedded day). Prefer a short honest list over padding.
@@ -527,11 +575,7 @@ def get_web_tools() -> dict:
 
                 keep = [r for r in rows if _keep_hit(r)]
                 dropped = len(rows) - len(keep)
-                # Only fall back to the unfiltered pool when filtering wiped everything
-                # AND the query was not generic news (for generic news, empty-after-
-                # filter is better than reintroducing baolangson-style shells).
-                if not keep and rows and not generic_news:
-                    keep, dropped = rows, 0
+                keep = _rank_rows(keep, query)
                 keep = keep[:max_results]          # trim only after filtering
 
                 window = {"d": "past day", "w": "past week", "m": "past month",
@@ -541,12 +585,13 @@ def get_web_tools() -> dict:
                         f"No usable results for '{query}' (as of {today}, "
                         f"recency: {window}, source: {source_used}). "
                         f"[{dropped} hit(s) dropped as landing pages or stale "
-                        f"dated roundups.] Do NOT invent headlines; say no solid "
+                        f"dated roundups; primary={primary_status}.] Do NOT invent headlines; say no solid "
                         f"news results were available."
                     )
 
                 output = (f"Search Results for '{query}' (as of {today}, recency: {window}, "
-                          f"source: {source_used}):\n")
+                          f"source: {source_used}):\n"
+                          f"[SEARCH_PROVIDER_STATUS primary={primary_status}]\n")
                 for i, r in enumerate(keep, 1):
                     output += f"{i}. Title: {r['title']}\n"
                     if r["date"]:
@@ -555,6 +600,8 @@ def get_web_tools() -> dict:
                         output += "   Published: UNKNOWN (web result — no date available; do NOT state a date for this item)\n"
                     if r["source"]:
                         output += f"   Source: {r['source']}\n"
+                    if r.get("provider"):
+                        output += f"   Provider: {r['provider']}\n"
                     output += f"   URL: {r['url']}\n"
                     # RSS carries no real summary — its <description> is just the headline
                     # again. Emit the snippet only when it adds something beyond the title.
@@ -571,7 +618,7 @@ def get_web_tools() -> dict:
                 output += (
                     "[SYSTEM HINT: Report each item's Published date. Never invent a "
                     "date for an UNKNOWN item. Prefer items with a real Snippet. If "
-                    "snippets are missing or thin, use smart_scrape on 2–3 article "
+                    "snippets are missing or thin, use smart_scrape on up to 2 article "
                     "URLs before summarizing — do not list bare titles as the digest.]"
                 )
                 return output
@@ -583,7 +630,7 @@ def get_web_tools() -> dict:
         search_tool = StructuredTool.from_function(
             func=stealth_search,
             name="stealth_search",
-            description="Search the internet using DuckDuckGo. YOU MUST USE THIS to look up live information, news, or facts you do not know."
+            description="Search live web/news (SerpApi, Google News RSS, DDG); return URLs, source, date and snippets. Use for current or uncertain public facts."
         )
 
         def smart_scrape(url: str) -> str:
@@ -606,6 +653,9 @@ def get_web_tools() -> dict:
                     prefix = f"[SMART_SCRAPE] Extracted article URL: {article_url}\n\n" if extracted else ""
                     return prefix + text[:30000] + ("\n...[Truncated for length]" if len(text) > 30000 else "")
                 else:
+                    if response.status_code == 403 and urlparse(article_url).hostname == "news.google.com":
+                        return ("Failed to scrape URL. Google News RSS link blocked direct reading; "
+                                "search the exact headline to find the publisher's article URL.")
                     return f"Failed to scrape URL. Status code: {response.status_code}. The site might have advanced bot protection."
             except Exception as e:
                 return f"Scrape Error: {e}"

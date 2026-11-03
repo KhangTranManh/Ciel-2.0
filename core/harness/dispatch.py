@@ -32,6 +32,16 @@ def dispatch_decision(self, decision, user_input, recalled):
             tool_args = self._enforce_subject(dict(tool_args), user_input)
         tool_args = self._resolve_referential_recipient(tool_name, tool_args, user_input)
 
+        if tool_name == "stealth_search":
+            # A web lookup is research, not a finished answer. Keep its raw hits
+            # available to the bounded observe/re-plan loop and synthesize once
+            # after any useful second query or page read.
+            response = self.execute_multi_tool(
+                [{"tool_name": tool_name, "tool_args": tool_args}], hint, user_input,
+                model_requested=bool(decision.get("needs_followup")),
+            )
+            return response
+
         response = self.execute_tool(tool_name, tool_args, hint, user_input)
         # Single-tool path does not go through _run_steps, so record it here.
         self.tasks.record_step(tool_name, response)

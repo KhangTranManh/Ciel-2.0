@@ -87,10 +87,15 @@ Open at least:
 
 ### Level C — Portable / hybrid-local ready
 - [x] Level B (2026-08-06)  
-- [ ] Minimal `.env` documented (providers, models, keys, base URLs)  
+- [x] Minimal `.env` documented (providers, models, keys, base URLs)
 - [ ] New machine: clone + env + unit `run_all` PASS + 5 live smokes  
 - [ ] If local model: ≥20/20 Brain route JSON parse + live suites not mass-red  
 - [ ] Full local 3-role not required if hybrid is solid
+
+**2026-11-03 evidence:** added a copyable, secret-free `.env.example` for the
+standard two-model OpenAI-compatible topology and documented the minimal setup in
+`README.md`. Operational-readiness checks pass 35/35 and unified unit regression
+passes 19/19 suites. A clean new-machine setup plus five live smokes remains open.
 
 **Current local-model evidence:** a Qwen3 8B Ollama trial was acceptable for basic
 chat but did not reliably follow the tool-routing contract. It is not the default Brain
@@ -433,11 +438,11 @@ alerts usable; conflict ownership is explicit and covered by tests.
 
 ---
 
-### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **DEFINED**
+### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **PHASES 0–1 DONE**
 
 > Level B không phụ thuộc feature này. Implement theo phase.
 
-#### Phase 0 — Inbound path awareness (testable NOW, no new tools)
+#### Phase 0 — Inbound path awareness and headless image analysis — **DONE**
 **Already in code:** Telegram photo/document → download → `ciel_workspace/telegram_uploads/{ts}_{name}` → inbox note:
 
 ```text
@@ -453,6 +458,15 @@ alerts usable; conflict ownership is explicit and covered by tests.
 3. If asked “gửi tóm tắt qua Telegram”: `send_telegram` runs (or honest fail if token missing).
 
 **Regression:** `test_quality_guards` (write-intent + telegram_uploads write block).
+
+Headless deployments load `image_file_ops` independently from display-dependent
+`vision_ops`. Focused regression covers registration, bounded image conversion,
+provider invocation/failure, and sandbox denial. Live VPS acceptance on 2026-11-02
+successfully analyzed three Telegram uploads (esports, poker, and a kitten), including
+a grounded follow-up; the audit shows exact saved paths passed to
+`describe_image_file` and successful tool results rather than guessed descriptions.
+Focused image regression passes 4/4 and the 2026-11-03 unified unit gate passes
+19/19 suites.
 
 #### Phase 1 — HTML analysis report — **DONE**
 - Template `email_template/analysis_report.html` + `build_analysis_report_html(..., output_path=)`.  
@@ -507,7 +521,10 @@ Unchecked items still need a focused test before they are closed.
   Telegram poller inside the API process before deploying the app against the VPS.
   Implemented through `CIEL_API_TELEGRAM`, covered by `test_api_server`, and deployed
   as the healthy `ciel` container on the VPS on 2026-10-28.
-- [ ] **Search quality**: Vietnamese price/news queries return Facebook/TikTok pages.
+- [ ] **Guided web research**: Ciel should decide when to search, choose and refine
+  queries from evidence, and answer with traceable sources. Vietnamese price/news
+  queries currently return weak Facebook/TikTok pages. Keep this open until the
+  bounded workflow and pass criteria below hold.
 - [ ] **Cost**: Brain averages ~14.6k input tokens per routing call (~22k tokens per
   request); the tool list is the main contributor.
 
@@ -518,6 +535,119 @@ Provider attempts emit separate `PERF/LLM_LATENCY` metadata without changing the
 `LLM_CALL` line or retaining exception/prompt/response text. Focused checks: Daily Brief
 20/20, operational readiness 29/29, proactive 153/153, quality guards 67/67, run harness
 54/54, conversation 92/92. Unified unit regression: **17/17 suites PASS**.
+
+### Guided web research — a grounded search loop
+
+**User outcome:** For a current or uncertain question, Ciel searches when useful,
+changes approach if the first evidence is insufficient, and gives an answer whose
+important claims link to the sources actually read. If the evidence cannot support
+an answer, Ciel says what remains unverified. This is the *technique* of
+model-guided, grounded search, not a Gemini or Google Search integration.
+
+**Scope:** Reuse Brain planning/evaluation, the existing bounded continuation and
+recovery paths, `stealth_search`, `smart_scrape`, and the final Worker synthesis.
+Keep SerpApi, Google News RSS, DDG, and specialized market tools as the evidence
+sources; Python retains control of tool validity, limits, and source checks. Do not
+add a model role, search provider, or new public tool arguments in this phase.
+
+**Decision contract (one user turn):**
+
+1. **Route.** Brain uses the existing `chat`/`tool`/`multi_tool` route and plan
+   contract to answer directly, call a market-price tool, or call web search.
+   Explicit live/current
+   requests require a live tool; stable knowledge and requests limited to the
+   user's own data do not trigger web search automatically. A follow-up may use
+   the bounded Active Subject, but its explicit current wording wins.
+2. **Search.** Brain supplies a concrete query and optional recency constraint.
+   `stealth_search` returns a bounded evidence set. Internally, each hit keeps
+   `title`, `url`, `publisher`, `provider`, `snippet`, and `published_at` (nullable);
+   provider and publisher are not interchangeable. Keep the current public tool
+   arguments and human-readable result format compatible.
+3. **Assess.** Python rejects invalid URLs, repeated calls, provider errors, and
+   evidence that cannot satisfy hard constraints (for example, an undated result
+   for a requested same-day event). It flags structurally thin evidence (title
+   only, missing date, generic page). Where relevance or factual coverage is
+   ambiguous, Brain assesses the bounded result and identifies a specific missing
+   fact; its judgment cannot override the hard checks.
+4. **Continue or stop.** If evidence is sufficient, stop searching. Otherwise
+   Brain may choose exactly one useful next action: a materially changed query,
+   or `smart_scrape` of an exact URL from the result set (or a URL explicitly
+   supplied by the user). A failed provider may fall back to another available
+   provider, but repeating the same failing request is not progress. If no valid
+   action or budget remains, stop and report the gap.
+5. **Synthesize.** Worker receives the raw evidence once, after the search loop.
+   It answers the user's question, cites the evidence beside material claims,
+   distinguishes publication date from observation time, and marks unsupported
+   details as unknown. A search hit is a lead, not proof merely because it ranks
+   highly; scrape a source when the snippet is too thin.
+
+**Hard limits:** Across initial routing, ordinary continuation, and chat fallback
+combined, allow at most two distinct search queries and two distinct page reads
+per user turn, with at most four web tool calls total. The existing
+`AGENT_LOOP_MAX_ROUNDS`/`AGENT_LOOP_MAX_SECONDS` and run-manager limits remain
+additional ceilings; this feature never raises them. Normalize whitespace/case
+for duplicate-query checks and canonicalize result URLs for duplicate-page checks.
+Do not launch a new Brain call merely to confirm an obviously sufficient result.
+These limits apply even when a tool fails or the model asks to continue.
+
+**Implementation boundary:** Put search evidence and sufficiency signals beside
+the web tool and `core/harness/signals.py`; make `core/continuation.py` recognize
+a search-specific evidence gap; enforce the shared per-turn web budget and URL/
+query novelty before `core/harness/planner.py` executes another step. Reuse the
+existing plan validator and permission path. The chat knowledge-gap fallback in
+`core/harness/recovery.py` must consume the same budget and evidence policy rather
+than running an independent retry. Do not introduce a separate search agent or
+second final answer. Search result text is untrusted page content, not instructions.
+
+- [ ] Brain decides whether live evidence is needed and proposes a specific first
+      query (or the existing market-price tool for a supported symbol). A known,
+      stable answer should not incur a search merely because the tool is available.
+- [ ] Normalize search hits across providers, deduplicate URLs/articles, and retain
+      source, URL, and reported publication date. For ordinary factual news/price
+      questions, favor relevant primary or specific article pages over social posts
+      and generic landing pages; explicit social-media requests remain eligible.
+- [ ] After each result, deterministic checks distinguish usable evidence from no
+      results, provider error, stale/undated hits, duplicate hits, and snippets too
+      thin to support the requested claim. Never infer an event date from a crawl
+      date or restore rejected hits just to fill `max_results`.
+- [ ] When evidence is thin, Brain may propose a *different* query or an exact
+      result URL to read with `smart_scrape`; validate that proposal before execution.
+      Use the existing turn/time budgets, cap distinct query attempts and page reads,
+      reject repeated queries/URLs, and stop as soon as evidence is sufficient.
+      A provider failure is not treated as evidence that the answer is false.
+- [ ] Pass raw evidence to Worker once at the final synthesis boundary. Cite the
+      source beside consequential claims; do not cite a URL that was not returned or
+      read. Preserve requested recency, and for prices preserve value, currency,
+      unit, source, and observation time. If those cannot be verified, say so plainly.
+
+**Acceptance:** Freeze at least 10 real requests before implementation: four
+Vietnamese news, three price, two general lookup, and one explicit social-media
+request. At least 8/10 final answers must use relevant evidence, not merely show
+a useful result in the top three. Every dated claim and numeric price must be
+traceable to returned evidence. Demonstrate both a sufficient first search (no
+unneeded retry) and an insufficient first search (one useful changed query or
+targeted page read), with no repeated attempts or budget overrun. Explicit social
+requests retain their intended sources; stale or undated results are not presented
+as current; zero-credible-result cases say so plainly. Cover provider outage,
+missing key, deduplication, and all-rejected candidates offline, then pass
+`python -m backtest.run_all --unit-only` and three live Telegram searches. Record
+the query set and before/after outcomes without keys or private messages.
+
+**Non-goals:** Copying Google's search index or proprietary ranking, adding the
+Gemini API, a general web crawler, a universal domain blacklist, automatic paid
+provider switching, or a new prompt-harness product.
+
+**2026-11-03 implementation status:** The local runtime now uses one shared web
+budget, structural evidence-gap continuation, one final synthesis for a routed
+search, URL-grounded page reads/citations, stricter recency and deduplication,
+source-aware ranking, and secret-free primary-provider status. A failed Google
+News RSS page read can re-plan to an exact-headline query. Focused guided-search
+tests pass 9/9, run-harness tests pass 58/58, and the final unified unit run
+passes 20/20 suites. A local live search showed a narrow query with no fresh
+hits and a revised query with fresh RSS hits; a Google News RSS URL returned 403
+on direct read, which is now handled as a recoverable failure. The checkbox stays
+open until a fixed 10-query answer-quality benchmark and three live Telegram
+searches pass; no VPS deployment is implied by local tests.
 
 ## P2 — Personal coworker (not IDE agent)
 

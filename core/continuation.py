@@ -142,7 +142,14 @@ class StepRecord:
         """Stable identity used for no-progress detection. Args are canonicalised so
         that re-ordered keys do not read as a different call."""
         try:
-            a = json.dumps(self.args, sort_keys=True, ensure_ascii=False, default=str)
+            args = dict(self.args or {})
+            if self.tool_name == "stealth_search" and "query" in args:
+                from core.search_research import normalize_query
+                args = {"query": normalize_query(str(args["query"]))}
+            elif self.tool_name == "smart_scrape" and "url" in args:
+                from core.search_research import canonical_url
+                args["url"] = canonical_url(str(args["url"])) or str(args["url"])
+            a = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
         except Exception:
             a = str(self.args)
         return f"{self.tool_name}::{a}"
@@ -217,7 +224,7 @@ class ContinuationPolicy:
 
     @staticmethod
     def assess(user_input: str, executed: list, budget: LoopBudget,
-               model_requested: bool = False) -> Assessment:
+               model_requested: bool = False, search_state=None) -> Assessment:
         """Should we spend one planner call to look again?
 
         `model_requested` carries an OPTIONAL hint from the plan (`needs_followup`).
@@ -238,6 +245,23 @@ class ContinuationPolicy:
             # Nothing ran, so there is nothing to observe. A pure chat turn or a plan
             # that produced no tool calls must not trigger a loop.
             return Assessment(False, "stop: no steps executed, nothing to observe")
+
+        # Search-specific evidence gap. This is a structural signal, not a model
+        # self-report: a title-only or undated hit is not proof of a current claim.
+        # A later page read already deepened that search, so do not re-plan on an
+        # older search record. All web paths share SearchTurnState's tighter cap.
+        if search_state is not None:
+            from core.search_research import evidence_gap, scrape_failed
+            last_web = next((s for s in reversed(executed)
+                             if s.tool_name in {"stealth_search", "smart_scrape"}), None)
+            if last_web is not None and last_web.tool_name == "stealth_search":
+                gap = evidence_gap(user_input, last_web.result, last_web.args)
+                if gap and search_state.can_continue(last_web.result, user_input,
+                                                     last_web.args):
+                    return Assessment(True, f"search evidence gap: {gap}")
+            elif (last_web is not None and last_web.tool_name == "smart_scrape"
+                  and scrape_failed(last_web.result) and search_state.can_recover_scrape()):
+                return Assessment(True, "search evidence gap: page_read_failed")
 
         # S1 — the request itself is conditional; a flat plan could not express it.
         if ContinuationPolicy.request_is_conditional(user_input):

@@ -101,7 +101,18 @@ source myenv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a private `.env` in the repository root. Do not commit it.
+Copy the maintained minimal template, then edit the private `.env`. Do not commit it.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+```bash
+cp .env.example .env
+```
+
+The six required values for the standard OpenAI-compatible setup are the two provider
+selectors, two model names, provider key, and base URL:
 
 ```dotenv
 # Standard two-model topology
@@ -112,7 +123,7 @@ CODER_MODEL=<worker-model>
 API_KEY=<provider-key>
 BASE_URL=https://provider.example/v1
 
-# Optional roles remain off
+# Safe defaults
 ROUTER_ASSISTANT_ENABLED=false
 MIDDLEWARE_ENABLED=false
 
@@ -120,20 +131,13 @@ MIDDLEWARE_ENABLED=false
 SAFETY_OPEN=true
 DISABLE_SAFETY_GATE=false
 
-# Optional Telegram interface
-TELEGRAM_BOT_TOKEN=<bot-token>
-TELEGRAM_CHAT_ID=<numeric-chat-id>
-
-# Disable capabilities unavailable on a headless server
-DISABLED_SKILL_MODULES=vision_ops
-
-# Required before the API is reachable from another device
-CIEL_API_TOKEN=<long-random-string>
 ```
 
 `CODER_MODEL` is the Worker model variable. `WORKER_MODEL` is not read from `.env`.
-Provider-specific options and all feature flags are defined in
-`agent_system/config.py`.
+`VISION_MODEL` is optional and defaults to `BRAIN_MODEL`. Telegram, remote API,
+headless Docker, and proactive examples are commented in `.env.example`; enable only
+the interfaces you use. Provider-specific options and all feature flags are defined
+in `agent_system/config.py`.
 
 ## Run
 

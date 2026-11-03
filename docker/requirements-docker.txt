@@ -63,6 +63,7 @@ requests
 # --- Document Reading ---
 pypdf
 python-docx
+Pillow
 
 # --- Voice output (server-safe: cloud TTS, no hardware) ---
 edge-tts

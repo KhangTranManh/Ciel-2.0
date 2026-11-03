@@ -839,6 +839,86 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(self.last_run()["lane"], "harness_run")
         self.assertEqual(len(self.last_run()["steps"]), 2)
 
+    def test_guided_search_stops_after_sufficient_first_result(self):
+        from backtest.test_guided_search import GOOD
+        self.results["stealth_search"] = GOOD
+        self.core._tool_map["stealth_search"] = SimpleNamespace(name="stealth_search")
+        self.core.tool_manager.tools.append(self.core._tool_map["stealth_search"])
+        self.decision = {"action": "tool", "tool_name": "stealth_search",
+                         "tool_args": {"query": "Vietnam news"}}
+        response = self.core.process("latest Vietnam news")
+        self.assertIn("Grounded", response)
+        self.assertEqual([name for name, _ in self.calls], ["stealth_search"])
+        self.assertEqual(len(self.routes), 1)
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("WEB EVIDENCE", self.prompts[0])
+
+    def test_guided_search_reads_thin_result_then_synthesizes_once(self):
+        from backtest.test_guided_search import THIN
+        self.results["stealth_search"] = THIN
+        self.results["smart_scrape"] = "Full article: the event happened in Hanoi today."
+        for name in ("stealth_search", "smart_scrape"):
+            self.core._tool_map[name] = SimpleNamespace(name=name)
+            self.core.tool_manager.tools.append(self.core._tool_map[name])
+        plans = iter([
+            {"action": "tool", "tool_name": "stealth_search",
+             "tool_args": {"query": "Vietnam news"}},
+            {"action": "tool", "tool_name": "smart_scrape",
+             "tool_args": {"url": "https://example.com/news/event"}},
+        ])
+        self.core.router.route = lambda *args: self.routes.append(args) or next(plans)
+        response = self.core.process("latest Vietnam news")
+        self.assertIn("Grounded", response)
+        self.assertEqual([name for name, _ in self.calls], ["stealth_search", "smart_scrape"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("Full article", self.prompts[0])
+        self.assertEqual(len(self.last_run()["steps"]), 2)
+
+    def test_guided_search_budget_blocks_third_query_before_provider(self):
+        from backtest.test_guided_search import GOOD
+        self.results["stealth_search"] = GOOD
+        self.core._tool_map["stealth_search"] = SimpleNamespace(name="stealth_search")
+        self.core.tool_manager.tools.append(self.core._tool_map["stealth_search"])
+        self.decision = {"action": "multi_tool", "tools": [
+            {"tool_name": "stealth_search", "tool_args": {"query": query}}
+            for query in ("Vietnam news", "Vietnam update", "Vietnam third query")
+        ]}
+        self.core.process("latest Vietnam news")
+        self.assertEqual([name for name, _ in self.calls],
+                         ["stealth_search", "stealth_search"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertIn("search-query limit reached", self.prompts[0])
+
+    def test_guided_search_recovers_failed_rss_page_with_new_query(self):
+        from backtest.test_guided_search import GOOD, THIN
+        self.results["stealth_search"] = THIN
+        self.results["smart_scrape"] = "Failed to scrape URL. Status code: 403."
+        for name in ("stealth_search", "smart_scrape"):
+            self.core._tool_map[name] = SimpleNamespace(name=name)
+            self.core.tool_manager.tools.append(self.core._tool_map[name])
+        plans = iter([
+            {"action": "tool", "tool_name": "stealth_search",
+             "tool_args": {"query": "Vietnam news"}},
+            {"action": "tool", "tool_name": "smart_scrape",
+             "tool_args": {"url": "https://example.com/news/event"}},
+            {"action": "tool", "tool_name": "stealth_search",
+             "tool_args": {"query": "Vietnam event official"}},
+        ])
+        self.core.router.route = lambda *args: self.routes.append(args) or next(plans)
+        actual = self.core.tool_manager.execute_tool
+        def execute(name, args):
+            result = actual(name, args)
+            if name == "stealth_search" and args.get("query") == "Vietnam event official":
+                result["data"] = GOOD
+            return result
+        self.core.tool_manager.execute_tool = execute
+        response = self.core.process("latest Vietnam news")
+        self.assertIn("Grounded", response)
+        self.assertEqual([name for name, _ in self.calls],
+                         ["stealth_search", "smart_scrape", "stealth_search"])
+        self.assertEqual(len(self.prompts), 1)
+        self.assertEqual(self.last_run()["state"], "completed")
+
 
 def main():
     parser = argparse.ArgumentParser()

@@ -33,6 +33,8 @@ Current baseline:
   storage in `planner.db` plus bounded read-only list/detail tools. Native mutations,
   Daily Brief integration, alerts, recurrence, and provider synchronization remain
   later phases.
+- Telegram image uploads are analyzed on headless deployments through independent
+  `image_file_ops`; live VPS acceptance passed with three real uploads on 2026-11-02.
 - No graphical client is currently shipped. Remote clients use the API WebSocket
   protocol and must fail closed on confirmation requests.
 
@@ -264,8 +266,9 @@ Living files outside this directory:
     8000 is bound to `127.0.0.1`. `.env`, credentials, and persistent data stay bind-mounted and
     are never replaced by source deployment.
 
-30. Headless deployments disable `vision_ops` at load time through
-    `DISABLED_SKILL_MODULES`; runtime denial lists remain a separate control.
+30. Headless deployments disable display-dependent `vision_ops` at load time through
+    `DISABLED_SKILL_MODULES`; `image_file_ops` remains available for sandboxed uploads,
+    and runtime denial lists remain a separate control.
 
 31. Regression lives in `backtest/run_all.py` and maintained `backtest/test_*.py`
     modules. Live smokes use isolated temporary state and clean up after themselves.

@@ -175,6 +175,17 @@ formatter-provider failure returns the original tool result and never replays th
 A referenced source that is empty, cancelled, or failed produces
 `SKIPPED_DEPENDENCY`; its consumer is not run.
 
+Web research is an exception to ordinary single-step presentation: a routed
+`stealth_search` uses the raw-evidence finalizer so a thin result may lead to one
+bounded changed query or a grounded `smart_scrape` before Worker speaks. Search
+hits retain publisher, provider, publication date (or unknown), URL, and snippet.
+Rank article evidence over unrequested social pages, but retain explicit social
+requests. A recency filter never restores stale or undated hits when no fresh
+results remain. The shared `SearchTurnState` cap covers every web path in a turn;
+generic argument healing may not replay web tools outside that cap. A failed
+scrape is a failed step, not a successful active lookup. Source URLs in the final
+answer must be among observed search hits or pages read in that turn.
+
 ## Context conventions
 
 New prompt context enters through `ContextAssembler.add(name, text, priority)`. Direct
@@ -372,7 +383,9 @@ High-risk changes requiring broad regression and explicit review:
   mail; presentation logic handles the remaining curation.
 - Missing `SEARCH_API_KEY` silently falls back to weaker web sources. CI and runtime
   configuration must both carry the key when primary search is required.
-- Headless Docker cannot load screen vision reliably; disable `vision_ops` there.
+- Headless Docker disables `vision_ops` for screen control. Image-file analysis is
+  independently provided by `image_file_ops` and uses the configured vision provider;
+  Telegram uploads remain sandboxed inputs.
 - PowerShell pipelines require explicit UTF-8 before passing Vietnamese text to Python.
 - A Gmail `invalid_grant` at startup leaves Ciel running with 0 Gmail tools; the fix is a
   new `ciel_data/gmail_token.json`, not a new `credentials.json` (see

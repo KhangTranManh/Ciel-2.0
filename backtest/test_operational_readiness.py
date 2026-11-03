@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.tool_manager import ToolManager
@@ -181,6 +182,36 @@ def test_latency_telemetry_contract() -> None:
           len(events) == 2 and events[1][3] == "error" and len(events[1]) == 4)
 
 
+def test_minimal_env_example() -> None:
+    print("\n[7] Minimal environment template is safe and complete")
+    path = Path(__file__).resolve().parent.parent / ".env.example"
+    check("tracked environment template exists", path.is_file())
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    values = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    required = {
+        "BRAIN_PROVIDER", "BRAIN_MODEL", "WORKER_PROVIDER", "CODER_MODEL",
+        "API_KEY", "BASE_URL",
+    }
+    check("documents every standard provider input", required <= values.keys(), repr(values.keys()))
+    check("uses CODER_MODEL rather than ignored WORKER_MODEL",
+          "CODER_MODEL" in values and "WORKER_MODEL" not in values)
+    check("keeps optional model roles disabled",
+          values.get("ROUTER_ASSISTANT_ENABLED") == "false"
+          and values.get("MIDDLEWARE_ENABLED") == "false")
+    check("keeps destructive confirmation enabled",
+          values.get("DISABLE_SAFETY_GATE") == "false")
+    check("contains placeholders, not a deployed credential",
+          "replace-with-provider-key" in text
+          and "TELEGRAM_BOT_TOKEN" not in values
+          and "CIEL_API_TOKEN" not in values)
+
+
 def main() -> int:
     test_gmail_readiness()
     test_weather_normalization()
@@ -188,6 +219,7 @@ def main() -> int:
     test_health_payload()
     test_capability_loss_notification()
     test_latency_telemetry_contract()
+    test_minimal_env_example()
     total = _passed + len(_failed)
     print(f"\nRESULT: {_passed}/{total} passed")
     if _failed:

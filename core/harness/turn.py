@@ -10,6 +10,7 @@ def process_turn(self, user_input: str) -> str:
     """Full pipeline: recall → route → execute → respond."""
     import json
     from core import rag_manager
+    from core.search_research import SearchTurnState
     import traceback
     from agent_system.utils.logger import log
     self.chat_history.add_user_message(user_input)
@@ -21,6 +22,9 @@ def process_turn(self, user_input: str) -> str:
     with self._log_lock:
         self._sent_this_turn = set()
         self._telegram_delivery_sent_this_turn = False
+        # All web paths in this turn share one budget, including correction and
+        # the chat knowledge-gap fallback. No provider/model can reset it.
+        self._search_turn_state = SearchTurnState()
     self._clear_active_lookup_for_new_turn(user_input)
     try:
         active_subject_note = self.active_subject.begin_turn()

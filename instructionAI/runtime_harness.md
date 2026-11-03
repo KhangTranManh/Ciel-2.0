@@ -36,6 +36,18 @@ A failed single read or a chat knowledge-gap search can escalate within the same
 run, retaining evidence. Clear greetings use only one Worker call. Other ordinary
 chat still uses the existing Brain routing and response-side context services.
 
+Guided web research routes a single `stealth_search` through the raw-evidence
+multi-step finalizer. A structural gap (no hits, missing date for a current claim,
+title-only or off-topic results, or missing price evidence) can trigger the existing
+observe/re-plan loop. A failed page read can trigger a different query or another
+grounded page read. `core/search_research.py` owns one per-turn ceiling shared by
+initial planning, correction, continuation, and chat fallback: two distinct
+queries, two distinct page reads, four web calls total. It rejects duplicate calls
+and page URLs not returned by search, explicitly supplied by the user, or retained
+by a still-valid active lookup. The existing run and loop time/step ceilings still
+apply. Worker synthesizes once from the accumulated raw evidence; unobserved
+generated citation URLs are removed.
+
 For ordinary user-facing tools, the tool result is grounded evidence rather than the
 final voice. A maintained allow-list sends that bounded result through Worker once so
 time, weather, local file-write confirmations, todos, plans and reminders are answered
@@ -67,6 +79,7 @@ successful deterministic tool result without replaying the tool.
 | `repair.py` | Parameter/script repair; Python syntax validation with `ast.parse` |
 | `code_generation.py` | Code generation; harness writes through the shared tool boundary |
 | `signals.py` | Intent, failure, placeholder and risk signals; no model dependencies |
+| `../search_research.py` | Per-turn web budget, URL provenance, structural evidence gaps, citation URL check |
 
 `CielCore` retains compatible public methods delegating to these services. Existing
 signal imports are re-exported from the connector, and dynamic configuration exports

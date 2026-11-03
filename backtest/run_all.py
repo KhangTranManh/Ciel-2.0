@@ -113,6 +113,12 @@ SUITES: list[Suite] = [
         "Lane selection, durable runs, limits, escalation, and offline workflow replays",
     ),
     Suite(
+        "guided_search",
+        "backtest.test_guided_search",
+        "unit",
+        "Bounded research, source provenance, ranking and recency (0 network)",
+    ),
+    Suite(
         "plan_validation",
         "backtest.test_plan_validation",
         "unit",
@@ -135,6 +141,12 @@ SUITES: list[Suite] = [
         "backtest.test_native_calendar",
         "unit",
         "Native event schema, time normalization, bounded reads, and tool safety",
+    ),
+    Suite(
+        "image_file",
+        "backtest.test_image_file",
+        "unit",
+        "Headless image upload analysis and provider failures",
     ),
     Suite(
         "daily_brief",
