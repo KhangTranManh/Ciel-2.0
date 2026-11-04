@@ -1,0 +1,46 @@
+{
+  "source_sha256": "f19e8c7d2187913de7cf1633d1a88ff7d6153d09ea8a1322527f111e3db53279",
+  "v2_sha256": "138d37981c90270ad36f7d78275a4962b92ca4f44a08eeeb5261682a3982ed91",
+  "original_layers_unchanged_by_pixel_hash_bbox_visibility_and_order": true,
+  "neutral_diff_max_rgba": 0,
+  "neutral_diff_mean_rgba": 0.0,
+  "neutral_diff_changed_pixels": 0,
+  "new_layers": [
+    {
+      "name": "mouth-interior-draft",
+      "bbox": [
+        816,
+        412,
+        844,
+        428
+      ],
+      "z_order": "above face-clean and below mouth",
+      "visible_at_neutral": false,
+      "purpose": "Optional draft mouth interior",
+      "method": "AI generated; cropped and scaled to canvas",
+      "confidence": "low",
+      "palette_comparison": {
+        "comparison_layer": "mouth",
+        "draft_mean_rgb_alpha_gt_128": [133.7, 73.4, 73.7],
+        "source_mean_rgb_alpha_gt_128": [204.2, 134.9, 120.2],
+        "euclidean_distance_between_mean_rgb": 104.45,
+        "limitation": "A dark cavity and the original closed mouth are different materials. The colors were not sampled from source pixels and cannot be considered palette-matched without artist review."
+      },
+      "issues": [
+        "Teeth, cavity and tongue are inferred, not visible in source",
+        "Position and scale are approximate",
+        "Human artist review and rigging visibility controls required",
+        "Not an approved animation-ready asset"
+      ]
+    }
+  ],
+  "remaining": [
+    "Eyelids and blink shapes need artwork; generated closed-eye references did not match the original lashes closely enough and were not added",
+    "Hidden overlap coverage requires inspection and painting",
+    "Combined arm and accessories remain unsplit",
+    "The mouth interior is hidden, inferred and not approved for animation"
+  ],
+  "naming": "New layer uses lowercase-hyphen naming. Original back hair and front hair use spaces and were preserved as requested.",
+  "neutral_verification": "Original and v2 reopened in psd-tools and composited to RGBA; max=0, mean=0, changed pixels=0. Existing layer order, bbox, visibility and decoded pixel hashes match.",
+  "review_images": ["mouth-comparison-4x.png", "eyes-isolated-4x.png", "closed-eye-r-concept.png", "closed-eye-l-concept.png", "neutral-diff.png"]
+}
