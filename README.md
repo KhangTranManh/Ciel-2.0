@@ -27,7 +27,10 @@ both are disabled by default and reuse one of the two standard model identities.
 - Multi-tool branches remain raw until one final Worker synthesis; failed dependencies
   stop their consumers, and Gmail reads sharing one API client stay sequential.
 - Provider timeouts return an explicit incomplete-turn response instead of leaving a
-  misleading `Processing...` state; router audit decisions are normalized JSON.
+  misleading `Processing...` state. Router decisions are normalized and action-schema
+  validated; malformed or incomplete routes retry instead of silently becoming chat.
+- Headless image analysis supports sandboxed uploads and explicitly selected image
+  assets inside the active repository through a bounded read-only resolver.
 - Telegram, CLI, and remote API clients share the same `CielCore` runtime.
 
 The living roadmap and evidence are maintained in [improve.md](improve.md). Stable
@@ -37,7 +40,7 @@ engineering rules live in [instructionAI/SKILL.md](instructionAI/SKILL.md).
 
 ```mermaid
 flowchart LR
-    U[User / Telegram / UI] --> C[Bounded context]
+    U[CLI / Telegram / remote API client] --> C[Bounded context]
     C --> B[Brain / Router]
     B --> V[Plan validator]
     V --> P[Permission policy]
@@ -61,6 +64,7 @@ and notification cooldowns.
 | Conditional continuation | `core/continuation.py`, `core/task_state.py` |
 | Plan safety | `core/plan_validation.py`, `core/permissions.py` |
 | Context and follow-ups | `core/context.py`, `core/active_subject.py` |
+| Image-file analysis | `skills/internal/image_file_ops.py` with bounded read-only path resolution |
 | Memory | ChromaDB RAG, `facts.json`, `user_model.json` |
 | Proactivity | `core/triggers.py`, `core/notifier.py`, `core/proactive_setup.py` |
 | Planning and reminders | `core/planner_store.py`, `core/planner_triggers.py`, `core/reminder_triggers.py` |
@@ -270,13 +274,19 @@ never descriptions, attendees, or attachments.
 
 - `SAFETY_OPEN` controls Brain content filtering only.
 - `DISABLE_SAFETY_GATE` controls destructive-tool confirmation only.
+- Missing, unknown, or malformed Brain route actions are rejected and retried before
+  lane selection; they never silently default to chat.
 - Unknown or malformed multi-tool plans stop before execution.
 - Failed or empty referenced steps stop dependent tools before invalid arguments run.
-- Deterministic auth/network/allowlist failures skip model-driven argument healing.
+- Deterministic auth/network/allowlist/permission failures skip model-driven argument
+  healing.
 - Risky unattended actions are deferred; silence is never consent.
 - Outbound sends are deduplicated per recipient and turn; an email is reported as sent
   only after Gmail confirms it.
-- File tools are sandboxed to `ciel_workspace/` and `agent_output/`.
+- General file tools are sandboxed to `ciel_workspace/` and `agent_output/`.
+  `describe_image_file` may additionally read a supported, explicitly selected image
+  inside the active repository; traversal, symlink escape, unsupported extensions, and
+  oversized files are rejected, and the exception grants no write access.
 - The API requires `CIEL_API_TOKEN` (when set) on every route except `/health`, and
   denies any risky action whose confirmation cannot be delivered.
 - Error text leaving the process (container log, tool results, API/Telegram replies)
@@ -348,6 +358,9 @@ python -m backtest.test_reminders
 # Native calendar storage, time normalization, and bounded read tools
 python -m backtest.test_native_calendar
 
+# Headless/project image path bounds and provider handling
+python -m unittest backtest.test_image_file
+
 # Focused safety and routing suites
 python -m backtest.test_quality_guards
 python -m backtest.test_plan_validation
@@ -377,7 +390,6 @@ scripts/            Maintenance utilities and bounded prompt harness
 docker/             Dockerfile, docker-compose.yml (Ciel + Cloudflare tunnel), deployment guide
 instructionAI/      Stable project memory for future AI sessions
 improve.md          Living roadmap and pass criteria
-note.md             Dated operational journal
 ```
 
 ## Documentation

@@ -147,6 +147,14 @@ canonical string. Stronger models may paraphrase placeholders.
 File tools operate under `ciel_workspace/` and, for generated outputs,
 `agent_output/`. Resolved paths escaping those roots raise `PermissionError`.
 
+`describe_image_file` has one read-only exception for project artwork: a concrete image
+path may resolve inside the active repository (`CIEL_REPO_PATH`, or the checkout root
+locally). The resolver accepts only supported image extensions, rejects traversal and
+symlink escape after canonical resolution, enforces a byte-size limit, and never grants
+write access. General file/document tools retain the two-zone sandbox. Image bytes are
+sent to the configured vision provider, so this exception is intentionally limited to
+explicitly selected image assets rather than arbitrary project files.
+
 Docker images contain no `.git`. Compose mounts the host checkout read-only at `/repo`
 and sets `CIEL_REPO_PATH=/repo`, which becomes the `[WORKING DIRECTORY]` note, so git
 tools can read status, diff, and log but cannot commit or push from a container. The
@@ -174,6 +182,7 @@ Recovery is bounded:
 - tool healing has a fixed attempt ceiling;
 - syntax is validated before repaired code is saved;
 - environmental and non-repairable failures skip model-based retries;
+- structured permission failures such as `PERMISSION_DENIED` skip argument healing;
 - a failed corrective attempt cannot replace an already successful result;
 - deterministic failure signals cannot be overruled by a model saying “satisfied.”
 

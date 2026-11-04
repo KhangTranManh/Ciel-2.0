@@ -223,7 +223,7 @@ def process_turn(self, user_input: str) -> str:
                 self._save_chat_memory()
                 self.permissions.clear_plan_grants()
                 return reference_action_error
-        action = decision.get("action", "chat")
+        action = decision.get("action")
 
         # TIER 2: open a task record for anything that actually DOES something.
         # Pure chat needs no record — nothing can be left half-finished by it.

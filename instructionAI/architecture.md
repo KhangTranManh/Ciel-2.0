@@ -32,7 +32,7 @@ core/
   llm_connector.py             Model/context/domain services and compatibility entry points
   harness/                     Modular turn, plan, tool, recovery and finalization services;
                                optional three-lane manager and durable run database
-  router.py                    Route parsing and intent normalization
+  router.py                    Route parsing, action-schema validation, intent normalization
   plan_validation.py           Pure pre-execution multi-tool validation
   continuation.py              Deterministic observe/re-plan policy and budgets
   parallel.py                  Dependency-aware, opt-in parallel execution
@@ -64,7 +64,7 @@ api/
 
 skills/
   _result.py                   Standard tool result envelope
-  internal/*_ops.py            Files, reports, memory, todos, planner/calendar tools
+  internal/*_ops.py            Files, image analysis, reports, memory, todos, planner/calendar tools
   internal/native_calendar_ops.py  Bounded provider-independent native event reads
   external/*_ops.py            Gmail, Telegram, web, trading, GitHub tools
   external/calendar_ops.py     Separate Calendar reads and confirmed mutations
@@ -79,8 +79,8 @@ scripts/
   harness/                     Attribution, contract, sanitize, policy, model adapters, AST apply/rollback
                                and bounded full-project report generation
   harness_policy.json          Exact editable file::symbol allow-list
-docker/                        Image (with git), dependencies, separate Compose services;
-                               host checkout mounted read-only at /repo
+docker/                        Runtime image, one Ciel service and optional cloudflared;
+                               host checkout mounted read-only at /repo (image has no .git)
 instructionAI/                 Stable project knowledge
 ```
 
@@ -93,7 +93,8 @@ flowchart TD
     CORE --> CTX[ContextAssembler]
     CORE --> SUBJECT[ActiveSubject]
     CORE --> BRAIN[Brain / Router]
-    BRAIN --> VALIDATE[PlanValidator]
+    BRAIN --> ROUTE[Route schema validator]
+    ROUTE --> VALIDATE[PlanValidator]
     VALIDATE --> PERM[PermissionPolicy]
     PERM --> EXEC[ToolManager + Parallel executor]
     EXEC --> RECOVERY[RecoveryManager]
@@ -108,7 +109,7 @@ flowchart TD
     PTRIG --> TRIG
     PLANNER --> RTRIG[Reminder triggers]
     RTRIG --> TRIG
-    NOTIFY --> CHANNEL[CLI / Telegram / future App channel]
+    NOTIFY --> CHANNEL[CLI / Telegram / remote API client]
 ```
 
 ## Turn lifecycle
@@ -128,8 +129,11 @@ the shared conversation/tool behavior in both modes.
 4. `ActiveSubject.begin_turn()` contributes one compact topic snapshot to the Brain.
    Recent raw turns are deliberately excluded from routing.
 5. Brain returns `chat`, `tool`, `code`, or `multi_tool` JSON. Recoverable fenced/prose
-   wrappers are normalized before the canonical route event is logged; contract drift is
-   counted separately as `route_non_strict`.
+   wrappers are normalized, then Python validates the action and its required fields
+   before lane selection. Missing/unknown actions and malformed action fields emit
+   `route_invalid`, raise `ValueError`, and use the bounded Brain retry policy; they
+   never default to chat. Valid contract drift is counted separately as
+   `route_non_strict` before the canonical route event is logged.
 6. Deterministic route guards resolve explicit lookup follow-ups and block unsupported
    chat promises such as “I am searching now” without a tool execution handle.
 7. Multi-tool plans are normalized and validated before permission review.
@@ -140,8 +144,9 @@ the shared conversation/tool behavior in both modes.
    remain sequential.
 10. Tool results are checked for deterministic failure signals. Recovery may retry or
     select another loaded tool within bounded attempts. Auth, network, allowlist,
-    missing-command, and unavailable-tool failures skip argument healing. Empty or failed
-    referenced outputs stop their dependent step instead of becoming an argument.
+    permission, missing-command, and unavailable-tool failures skip argument healing.
+    Empty or failed referenced outputs stop their dependent step instead of becoming an
+    argument.
 11. Worker composes the final response from the real request and grounded results.
     Recent turns are available here, on the response side only. In every multi-tool
     execution, data steps skip per-step formatting and one synthesis reads their raw
@@ -157,6 +162,10 @@ the shared conversation/tool behavior in both modes.
 Brain receives the user request, bounded non-conversational context, the compact active
 subject, and loaded tool descriptions. It plans and evaluates but does not speak to the
 user directly.
+
+Its JSON is an untrusted proposal until `core/router.py` validates the selected action
+and action-specific fields. Invalid objects are retried by the existing provider retry
+boundary and are not passed to the lane classifier or dispatcher.
 
 The chat route's `task` and hidden reasoning are hints for Worker. They cannot replace
 the original user message. This keeps language matching, persona, and recent-turn
@@ -364,7 +373,9 @@ Important constraints:
 - Port 8000 is published on `127.0.0.1` only; public access is the tunnel.
 - Headless containers disable `vision_ops` unless a real display stack is supplied.
 - The image has no `.git`; the host checkout is mounted read-only at `/repo` with
-  `CIEL_REPO_PATH=/repo`, and the image installs `git` for it. Editing the Dockerfile's
+  `CIEL_REPO_PATH=/repo`, and the image installs `git` for it. This same root bounds
+  read-only inspection of explicitly selected project image assets; general file tools
+  remain confined to `ciel_workspace/` and `agent_output/`. Editing the Dockerfile's
   `apt-get` layer invalidates every later layer, so that rebuild reinstalls PyTorch and
   takes several minutes; code-only rebuilds reuse the cached layers.
 - The container shell is Linux, so `os_ops` offers the POSIX allowlist there.

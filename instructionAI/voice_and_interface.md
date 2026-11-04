@@ -2,7 +2,7 @@
 
 ## Interface principle
 
-Voice, CLI, API/UI, and Telegram are transport layers over the same `AgentLoop` and
+Voice, CLI, API/WebSocket, and Telegram are transport layers over the same `AgentLoop` and
 `CielCore`. They do not define different personas, routing rules, tools, permissions, or
 memory semantics.
 
@@ -121,11 +121,11 @@ runs. A normal tool name means one per-call decision.
 
 ## Remote client requirements
 
-No graphical client is currently shipped. A future client connects to `WS /ws`, obtains
-its server address and `CIEL_API_TOKEN` through runtime configuration, and implements
-the documented frames. It must show `confirm_request` to the user and send
+No graphical client is shipped. A compatible remote client connects to `WS /ws`,
+obtains its server address and `CIEL_API_TOKEN` through runtime configuration, and
+implements the documented frames. It must show `confirm_request` to the user and send
 `confirm_response` only for an explicit decision. Lost connections, timeouts, malformed
-frames, and unavailable confirmation UI must deny the request.
+frames, and an unavailable confirmation surface must deny the request.
 
 ## Telegram
 
@@ -157,12 +157,12 @@ state plus the `[Telegram] Bot online` startup log.
 - Telegram channel for API and Telegram modes.
 
 The backend `AppChannel` abstraction exists, but `main_api.py` does not yet publish
-proactive notification frames to the WebSocket. Consequently an API/UI deployment
-routes proactive messages to Telegram even while the UI is open.
+proactive notification frames to the WebSocket. Consequently an API deployment routes
+proactive messages to Telegram even while a remote client is connected.
 
-Deferred approvals are stored but do not yet have a dedicated UI queue. A future panel
-must offer “reissue this request,” not “approve and replay,” because stale mutating work
-is deliberately non-replayable.
+Deferred approvals are stored but the WebSocket protocol has no approval queue. If a
+remote client exposes them, it must offer “reissue this request,” rather than “approve
+and replay,” because stale mutating work is deliberately non-replayable.
 
 ## Cancellation contract
 
@@ -180,7 +180,8 @@ termination. Killing a tool mid-write or mid-send is not supported.
 
 - Tool lists remain backend-driven through `GET /skills`.
 - Every new front end wires confirmation before it can invoke tools.
-- One controller/bus remains the UI modality seam; only the transport touches `/ws`.
+- One controller/bus remains the remote-client modality seam; only the transport
+  touches `/ws`.
 - TTS normalization remains server-side and shared.
 - Raw audit logs remain outside the user-facing transcript.
 - Active Subject, recent turns, and Telegram file metadata remain core contracts; an

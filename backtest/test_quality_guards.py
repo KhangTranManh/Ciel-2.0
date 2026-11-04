@@ -349,6 +349,21 @@ def test_router_json_normalization():
         rejected = True
     check("a JSON value that is not an object is rejected", rejected)
 
+    for label, invalid in (
+        ("missing action", '{"hidden_thought":{"reasoning":"use a tool"}}'),
+        ("unknown action", '{"action":"maybe","task":"hello"}'),
+        ("chat missing task", '{"action":"chat"}'),
+        ("tool missing arguments", '{"action":"tool","tool_name":"calculate"}'),
+        ("tool arguments not an object", '{"action":"tool","tool_name":"calculate","tool_args":[]}'),
+        ("empty multi-tool plan", '{"action":"multi_tool","tools":[]}'),
+    ):
+        rejected = False
+        try:
+            _parse_route_decision(invalid)
+        except ValueError:
+            rejected = True
+        check(f"{label} is rejected instead of becoming chat", rejected)
+
 
 def test_unfixable_tool_error_classification():
     print("\n[11] Deterministic tool failures do not enter argument healing")
@@ -358,6 +373,8 @@ def test_unfixable_tool_error_classification():
           _is_unfixable_tool_error("execute_shell_command", "[NOT_ALLOWLISTED] sudo is blocked"))
     check("missing registered tool is unfixable",
           _is_unfixable_tool_error("send_gmail_message", "[TOOL_NOT_FOUND] tool not registered"))
+    check("structured permission denial is unfixable",
+          _is_unfixable_tool_error("describe_image_file", "[PERMISSION_DENIED] outside project"))
     check("OAuth invalid_grant is unfixable",
           _is_unfixable_tool_error("search_gmail", "invalid_grant: Token has been expired"))
     check("SSL transport failure is unfixable",

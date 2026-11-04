@@ -339,7 +339,7 @@ _HEALING_SKIP_PATTERNS = re.compile(
     r"forbidden by its|\[not_allowlisted\]|\[(?:tool_)?not_found\]|"
     r"tool.{0,80}(?:not registered|not loaded|not found)|"
     r"invalid_grant|authentication (?:failed|required)|unauthorized|"
-    r"permission denied|access denied|certificate verify failed|"
+    r"permission(?:[_\s-]+)denied|access denied|certificate verify failed|"
     r"(?:ssl|tls)(?:error| failure|:)|connection (?:reset|aborted|refused)|"
     r"command not found|is not recognized as an internal or external command|"
     r"/(?:bin/)?(?:sh|bash):.{0,120}not found",

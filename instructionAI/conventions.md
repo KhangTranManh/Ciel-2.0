@@ -140,8 +140,19 @@ provider event ID.
 
 ## Router and plan JSON
 
-Normalized route actions are `chat`, `tool`, `code`, and `multi_tool`. Tool steps have a
-loaded tool name and object-shaped `args`.
+Brain route actions are `chat`, `tool`, `code`, and `multi_tool`. Every route is
+schema-validated before lane selection:
+
+- `chat` requires a non-empty string `task`.
+- `tool` requires a non-empty `tool_name` and object-shaped `tool_args`.
+- `code` requires a non-empty `task` and `filename`.
+- `multi_tool` requires a non-empty `tools` list; every step requires `tool_name` and
+  object-shaped `tool_args`.
+
+Missing or unknown actions are invalid. They raise `ValueError` inside the bounded
+Brain retry boundary and must never be interpreted as chat by a downstream default.
+The dispatcher retains a defensive action check in case a future internal caller
+bypasses the Router.
 
 ```json
 {
@@ -163,7 +174,8 @@ reference, or tool-existence checks in route-specific branches.
 
 Successful `BRAIN/route_decision` audit bodies are normalized JSON. A recoverable
 fenced or prose-wrapped object emits `BRAIN/route_non_strict`; readers never need to
-parse malformed text from the canonical event.
+parse malformed text from the canonical event. An action-schema failure emits the
+bounded reason as `BRAIN/route_invalid` without copying the provider's malformed prose.
 
 Multi-tool steps return raw evidence to one final Worker synthesis. Per-step Worker
 formatting remains available for single-tool responses only. The single-tool formatter
@@ -219,6 +231,13 @@ User-operable file tools are restricted to:
 
 - `ciel_workspace/` for input and work-in-progress files.
 - `agent_output/` for generated deliverables.
+
+`describe_image_file` is the only project-file exception. It may read a concrete image
+inside the active repository (`CIEL_REPO_PATH`, or the checkout root locally), but it
+cannot write there. It accepts only the maintained image-extension allow-list, resolves
+the canonical path before checking containment, blocks traversal and symlink escape,
+and rejects files over the byte-size limit before provider invocation. Do not reuse
+this resolver for arbitrary text, credentials, or general project-file access.
 
 Telegram uploads land under `ciel_workspace/telegram_uploads/`. They are treated as
 received inputs, not as write instructions. Reports derived from uploads go to
@@ -299,7 +318,7 @@ never executes external or mutating tools as part of the combined run.
 - Confirmation timeout or lost client returns false.
 - Cancellation requests the next safe step boundary.
 - Telegram checks the chat allow-list before routing.
-- UI tool lists come from `GET /skills`; front-end capability lists are not hardcoded.
+- Remote-client tool lists come from `GET /skills`; capability lists are not hardcoded.
 - Text-to-speech uses the backend normalizer; the persona is not simplified for voice.
 Remote clients must implement the documented WebSocket frames.
 - Server address and API token are runtime settings in a client, never build constants.
@@ -349,7 +368,7 @@ Usually safe when covered by focused tests:
 
 - adding a read-only auto-discovered tool pack;
 - adding a trigger with a stable identity and explicit threshold;
-- changing UI layout behind the existing bus and protocol;
+- changing a remote-client layout behind the existing bus and protocol;
 - adding a provider through the existing model factory;
 - extending planner fields through a migration owned by `PlannerStore`.
 
@@ -395,8 +414,9 @@ High-risk changes requiring broad regression and explicit review:
 - Changing the Dockerfile `apt-get` layer forces a multi-minute rebuild (PyTorch
   reinstalls); code-only changes rebuild from cache in seconds plus image export.
 - Argument healing is reserved for potentially repairable input/format failures.
-  Deterministic auth, network, allowlist, missing-command, and unavailable-tool errors
-  retain their original cause and skip model-driven argument retries.
+  Deterministic auth, network, allowlist, permission (including structured
+  `PERMISSION_DENIED`), missing-command, and unavailable-tool errors retain their
+  original cause and skip model-driven argument retries.
 - OpenAI-compatible gateways may occasionally return an empty, HTML, SSE, or truncated
   body that raises `json.JSONDecodeError` inside `response.json()`. Worker treats that
   exact parse failure as transient and retries through its existing backoff for at most

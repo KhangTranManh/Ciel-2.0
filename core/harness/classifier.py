@@ -59,7 +59,7 @@ def classify(user_input: str, decision: Mapping, *, known_tools=(), risky_tools=
         return LaneDecision(Lane.HARNESS, "background_work")
     if failed_prior:
         return LaneDecision(Lane.HARNESS, "failed_step_recovery")
-    action = decision.get("action", "chat")
+    action = decision.get("action")
     if action in {"multi_tool", "code"}:
         return LaneDecision(Lane.HARNESS, "multi_step_or_code")
     if decision.get("lane") == Lane.HARNESS.value or decision.get("needs_followup"):

@@ -3,7 +3,7 @@ name: ciel-2.0
 description: >
   Modular personal AI assistant with a two-model Brain/Router and Worker pipeline,
   deterministic tool safeguards, bounded conversational context, hybrid memory,
-  proactive scheduling, and CLI, API/UI, and Telegram interfaces.
+  proactive scheduling, and CLI, API/WebSocket, and Telegram interfaces.
 ---
 
 # Ciel 2.0 — Project Memory Entry Point
@@ -172,10 +172,13 @@ Living files outside this directory:
     Middleware is email-scoped, bounded, and fail-open; it cannot discard grounded tool
     values because they look unfamiliar.
 
-16. File operations stay inside `ciel_workspace/` and `agent_output/`. Windows paths
-    received by Linux containers are remapped only when they contain one of those
-    sandbox zones. Telegram uploads are immutable transport inputs unless overwrite is
-    explicitly requested.
+16. File operations stay inside `ciel_workspace/` and `agent_output/`. The read-only
+    `describe_image_file` tool may additionally inspect an explicitly named image inside
+    the active repository; it accepts only supported image extensions, resolves paths
+    against the repository, blocks traversal/symlink escape, enforces a size bound, and
+    grants no write access. Windows paths received by Linux containers are remapped only
+    when they contain a recognized sandbox zone. Telegram uploads are immutable
+    transport inputs unless overwrite is explicitly requested.
 
 ### Context and memory
 
@@ -324,6 +327,11 @@ Living files outside this directory:
     model (`ToolManager.get_dynamic_prompt` is unused). Behaviour the model must know
     belongs in the tool name/description (first 80 characters reach the Brain), in
     `_TOOL_HINTS`, in deterministic tool errors, or in the router prompt.
+
+41. Brain route objects are schema-validated before lane selection. Missing/unknown
+    actions or action-specific fields raise `ValueError` and use the bounded provider
+    retry policy; they never silently default to chat. Deterministic permission denials
+    skip model-driven argument healing.
 
 ## Safe next-work rule
 

@@ -101,7 +101,54 @@ def _parse_route_decision(raw: str) -> tuple[dict, bool]:
 
     if not isinstance(parsed, dict):
         raise ValueError("Router LLM reply must be a JSON object")
+    _validate_route_decision(parsed)
     return parsed, strict
+
+
+def _validate_route_decision(parsed: dict) -> None:
+    """Reject incomplete routes before any caller can default them to chat.
+
+    The Brain occasionally returns only ``hidden_thought``.  Treating a missing
+    action as conversation silently discards real tool requests, so the route retry
+    policy must see a ``ValueError`` instead.
+    """
+    action = parsed.get("action")
+    if action not in {"chat", "tool", "code", "multi_tool"}:
+        raise ValueError("Router decision requires a valid action")
+
+    thought = parsed.get("hidden_thought")
+    if thought is not None and not isinstance(thought, dict):
+        raise ValueError("Router hidden_thought must be an object")
+
+    if action == "chat":
+        if not isinstance(parsed.get("task"), str) or not parsed["task"].strip():
+            raise ValueError("Router chat decision requires a non-empty task")
+        return
+
+    if action == "tool":
+        if not isinstance(parsed.get("tool_name"), str) or not parsed["tool_name"].strip():
+            raise ValueError("Router tool decision requires tool_name")
+        if not isinstance(parsed.get("tool_args"), dict):
+            raise ValueError("Router tool decision requires object tool_args")
+        return
+
+    if action == "code":
+        if not isinstance(parsed.get("task"), str) or not parsed["task"].strip():
+            raise ValueError("Router code decision requires a non-empty task")
+        if not isinstance(parsed.get("filename"), str) or not parsed["filename"].strip():
+            raise ValueError("Router code decision requires filename")
+        return
+
+    tools = parsed.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise ValueError("Router multi_tool decision requires a non-empty tools list")
+    for index, step in enumerate(tools, start=1):
+        if not isinstance(step, dict):
+            raise ValueError(f"Router multi_tool step {index} must be an object")
+        if not isinstance(step.get("tool_name"), str) or not step["tool_name"].strip():
+            raise ValueError(f"Router multi_tool step {index} requires tool_name")
+        if not isinstance(step.get("tool_args"), dict):
+            raise ValueError(f"Router multi_tool step {index} requires object tool_args")
 
 
 CIEL_ROUTER_PROMPT = """You are the BRAIN of an AI assistant called Ciel. You analyze user requests and route them.
@@ -446,7 +493,14 @@ class Router:
         # text to the canonical route_decision event. Audit readers can now parse every
         # successful decision deterministically, while route_non_strict measures model
         # contract drift without copying potentially sensitive prompt prose into logs.
-        parsed, strict = _parse_route_decision(raw)
+        try:
+            parsed, strict = _parse_route_decision(raw)
+        except ValueError as exc:
+            # Keep the audit useful without copying malformed provider prose (which
+            # may contain prompt fragments). The retry decorator above will make the
+            # bounded next attempt.
+            self.log_thought("BRAIN", "route_invalid", str(exc)[:240])
+            raise
         if not strict:
             self.log_thought(
                 "BRAIN", "route_non_strict",
@@ -467,6 +521,6 @@ class Router:
             ]
             self.log_thought("BRAIN", "chain_of_thought", "\n".join(thought_lines))
 
-        action = parsed.get("action", "chat")
+        action = parsed["action"]
         log.brain(f"Routed: [{action.upper()}] {parsed.get('task', parsed.get('tool_name', ''))[:60]}")
         return parsed

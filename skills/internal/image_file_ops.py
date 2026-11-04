@@ -1,11 +1,52 @@
 """Headless image-file analysis for files received in the workspace."""
 import base64
 import io
+import os
+from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 from skills._result import make_result
 
 MAX_IMAGE_DIMENSION = 1600
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+ALLOWED_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_readonly_image_path(filename: str) -> Path:
+    """Resolve an image in the sandbox or the current repository, read-only.
+
+    General file tools remain confined to ``ciel_workspace`` and ``agent_output``.
+    Image analysis additionally accepts a concrete image path inside the active
+    repository so an explicitly named project asset can be inspected without moving
+    or rewriting it.  Resolution blocks traversal and symlink escape.
+    """
+    from skills.internal.system_ops import _is_safe_path
+
+    raw = (filename or "").strip()
+    if not raw:
+        raise FileNotFoundError("Image filename is empty")
+    if Path(raw).suffix.casefold() not in ALLOWED_IMAGE_SUFFIXES:
+        raise ValueError("Unsupported image type")
+
+    try:
+        sandbox_path = _is_safe_path(raw)
+    except PermissionError:
+        sandbox_path = None
+    if sandbox_path is not None and sandbox_path.is_file():
+        return sandbox_path
+
+    repo_root = Path(os.getenv("CIEL_REPO_PATH") or BASE_DIR).resolve()
+    candidate = Path(raw.replace("\\", "/"))
+    if candidate.is_absolute():
+        candidate = candidate.resolve()
+    else:
+        candidate = (repo_root / candidate).resolve()
+    if not candidate.is_relative_to(repo_root):
+        raise PermissionError("Image path is outside the workspace and current project")
+    if not candidate.is_file():
+        raise FileNotFoundError("Image file not found")
+    return candidate
 
 
 def _describe_image_file(filename: str, question: str = "") -> dict:
@@ -14,15 +55,18 @@ def _describe_image_file(filename: str, question: str = "") -> dict:
         from langchain_core.messages import HumanMessage
         from langchain_openai import ChatOpenAI
         from agent_system.config import API_KEY, BASE_URL, VISION_MODEL
-        from skills.internal.system_ops import _is_safe_path
     except ImportError:
         return make_result(False, code="MISSING_DEP", message="Image analysis dependencies are unavailable.", tool_name="describe_image_file")
     try:
-        path = _is_safe_path(filename)
+        path = _resolve_readonly_image_path(filename)
     except PermissionError:
-        return make_result(False, code="PERMISSION_DENIED", message="Image path is outside the workspace.", tool_name="describe_image_file")
-    if not path.is_file():
+        return make_result(False, code="PERMISSION_DENIED", message="Image path is outside the workspace and current project.", tool_name="describe_image_file")
+    except FileNotFoundError:
         return make_result(False, code="NOT_FOUND", message="Image file not found.", tool_name="describe_image_file")
+    except ValueError:
+        return make_result(False, code="UNSUPPORTED_IMAGE_TYPE", message="Unsupported image type.", tool_name="describe_image_file")
+    if path.stat().st_size > MAX_IMAGE_BYTES:
+        return make_result(False, code="IMAGE_TOO_LARGE", message="Image file is too large to analyze.", tool_name="describe_image_file")
     try:
         with Image.open(path) as image:
             image.load()
@@ -51,6 +95,6 @@ def get_image_file_tools() -> dict:
     tool = StructuredTool.from_function(
         func=_describe_image_file,
         name="describe_image_file",
-        description="Analyze an uploaded image file in the workspace and answer a question about its visible contents. Pass its path as filename and the user's question as question.",
+        description="Analyze an image in the workspace or current project and answer a question about visible contents. Pass its concrete path as filename and the user's question as question.",
     )
     return {"tools": [tool], "prompt": ""}

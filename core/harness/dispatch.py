@@ -5,7 +5,9 @@ from __future__ import annotations
 
 def dispatch_decision(self, decision, user_input, recalled):
     from core.harness.signals import _EMAIL_RE, _has_send_intent, _has_telegram_delivery_step, _has_telegram_send_intent, _has_write_intent
-    action = decision.get("action", "chat")
+    action = decision.get("action")
+    if action not in {"chat", "tool", "code", "multi_tool"}:
+        raise ValueError("Cannot dispatch a decision without a valid action")
     if action == "tool":
         tool_name = decision.get("tool_name", "")
         tool_args = decision.get("tool_args", {})

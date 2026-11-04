@@ -7,7 +7,7 @@ def normalize_decision(self, decision, user_input):
     from core.llm_connector import AGENT_LOOP_ENABLED
     from core.continuation import ContinuationPolicy
     from core.harness.signals import _EMAIL_RE, _has_send_intent, _has_telegram_send_intent, _has_write_intent
-    action = decision.get("action", "chat")
+    action = decision.get("action")
     # WORKFLOW SAFEGUARD (single-tool case): a compound "look something up,
     # then email me" request sometimes gets under-scoped by the Brain into a
     # single action="tool" call instead of a multi_tool plan — the send-step
