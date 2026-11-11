@@ -14,9 +14,11 @@ def prepare_decision(
     lowered = user_input.lower()
     if getattr(self, "run_manager", None) is not None:
         from .classifier import fast_preflight
+        history = getattr(getattr(self, "chat_history", None), "messages", None) or []
+        last_ai = next((str(m.content) for m in reversed(history) if getattr(m, "type", "") == "ai"), "")
         quick = fast_preflight(user_input, has_pending=bool(self._get_pending_action()),
                                has_open_thread=bool(self._open_thread_note(user_input)),
-                               unattended=self.unattended)
+                               unattended=self.unattended, last_assistant=last_ai)
         if quick is not None:
             return quick, recalled
     # TIER 4 — recall is bounded HERE, at its source. It is the only block whose

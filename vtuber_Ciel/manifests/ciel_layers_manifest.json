@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "project": "Ciel Live2D V1",
+  "source": {
+    "path": "../source/ciel_source.png",
+    "sha256": "a772ea5c3e11fb6fb11e6846c4fb049119861030f6cc7f170fd570fd5574757b",
+    "width": 768,
+    "height": 1376,
+    "pixel_format": "RGB",
+    "background": "light neutral, remove to transparent",
+    "pose": "front-facing relaxed A-pose"
+  },
+  "target": {
+    "format": "Live2D Cubism",
+    "runtime": "VTube Studio",
+    "rig_scope": "bust-up-v1",
+    "preserve_full_source_canvas": true,
+    "side_naming": "anatomical: L/R are the character's left/right",
+    "expected_artmesh_count": {
+      "minimum": 45,
+      "target": 60,
+      "maximum_before_review": 75
+    }
+  },
+  "aws_baseline": {
+    "instance_type": "g6.xlarge",
+    "gpu": "NVIDIA L4",
+    "vram_mib": 23034,
+    "observed_free_vram_mib": 16576,
+    "segmentation": "SeeThrough V3: LayerDiff 3D plus body-part parsing",
+    "depth": "SeeThrough fine-tuned Marigold depth model",
+    "repair_inpainting": "Bounded inpainting crops only after SeeThrough output QA",
+    "inference_resolution": 1280,
+    "group_offload": true,
+    "minimum_free_vram_mib": 14000,
+    "policy": "Never stop or modify unrelated processes; recheck free VRAM before each GPU job"
+  },
+  "layer_order": "back_to_front",
+  "groups": [
+    {
+      "name": "tail",
+      "rig_v1": true,
+      "layers": [
+        "tail_base",
+        "tail_middle",
+        "tail_tip"
+      ],
+      "notes": "Reconstruct the portions hidden behind the torso and legs. Preserve the dark maroon outline and color."
+    },
+    {
+      "name": "back_hair",
+      "rig_v1": true,
+      "layers": [
+        "back_hair_center",
+        "back_hair_L_inner",
+        "back_hair_L_outer",
+        "back_hair_R_inner",
+        "back_hair_R_outer"
+      ],
+      "notes": "Each long lock must have hidden root coverage behind the head and shoulder."
+    },
+    {
+      "name": "lower_body_preserved",
+      "rig_v1": false,
+      "layers": [
+        "pants_waist",
+        "pants_L",
+        "pants_R",
+        "boot_L",
+        "boot_R",
+        "belt_red",
+        "belt_loop_L",
+        "belt_loop_R",
+        "belt_ring_L",
+        "belt_ring_R"
+      ],
+      "notes": "Separate enough to preserve a future full-body upgrade; do not spend V1 rigging time below the hip."
+    },
+    {
+      "name": "torso",
+      "rig_v1": true,
+      "layers": [
+        "torso_base",
+        "neck",
+        "white_top",
+        "yellow_collar",
+        "shoulder_puff_L",
+        "shoulder_puff_R"
+      ],
+      "notes": "White top must include coverage behind both arms and the collar. Keep garment shading as source pixels where visible."
+    },
+    {
+      "name": "arms",
+      "rig_v1": false,
+      "layers": [
+        "upper_arm_L",
+        "upper_arm_R",
+        "black_sleeve_L",
+        "black_sleeve_R",
+        "hand_L",
+        "hand_R"
+      ],
+      "notes": "Keep as separately movable artwork, but no hand tracking in V1. Fingers remain grouped per hand unless deformation tests require a split."
+    },
+    {
+      "name": "head_base",
+      "rig_v1": true,
+      "layers": [
+        "ear_L",
+        "ear_R",
+        "face_base",
+        "nose"
+      ],
+      "notes": "Face base must be reconstructed under all bangs. Ears need hidden inner coverage for small head angles."
+    },
+    {
+      "name": "brows",
+      "rig_v1": true,
+      "layers": [
+        "eyebrow_L",
+        "eyebrow_R"
+      ],
+      "notes": "Recover full brow shapes behind bangs so expressions do not expose cut edges."
+    },
+    {
+      "name": "eye_L",
+      "rig_v1": true,
+      "layers": [
+        "eye_L_white",
+        "eye_L_iris",
+        "eye_L_pupil",
+        "eye_L_highlight_primary",
+        "eye_L_highlight_secondary",
+        "eye_L_upper_lash",
+        "eye_L_lower_lash",
+        "eye_L_closed_lid"
+      ],
+      "notes": "Reconstruct a complete iris/white behind the lids. Closed lid is new reviewed artwork, not a SeeThrough extraction."
+    },
+    {
+      "name": "eye_R",
+      "rig_v1": true,
+      "layers": [
+        "eye_R_white",
+        "eye_R_iris",
+        "eye_R_pupil",
+        "eye_R_highlight_primary",
+        "eye_R_highlight_secondary",
+        "eye_R_upper_lash",
+        "eye_R_lower_lash",
+        "eye_R_closed_lid"
+      ],
+      "notes": "Match the left eye structure while preserving source asymmetry. Do not mirror blindly."
+    },
+    {
+      "name": "mouth",
+      "rig_v1": true,
+      "layers": [
+        "mouth_line",
+        "mouth_upper_lip",
+        "mouth_lower_lip",
+        "mouth_inner",
+        "mouth_teeth",
+        "mouth_tongue"
+      ],
+      "notes": "Source neutral mouth remains authoritative. Interior, teeth and tongue are new reviewed artwork for open states."
+    },
+    {
+      "name": "front_hair",
+      "rig_v1": true,
+      "layers": [
+        "bang_center",
+        "bang_L_1",
+        "bang_L_2",
+        "bang_R_1",
+        "bang_R_2",
+        "temple_lock_L",
+        "temple_lock_R",
+        "top_hair"
+      ],
+      "notes": "Split by natural strand boundaries. Every moving strand needs root overlap and clean alpha without white background fringe."
+    }
+  ],
+  "seethrough_mapping": {
+    "front hair": "front_hair",
+    "back hair": "back_hair",
+    "face": "head_base/face_base",
+    "eyebrow": "brows, then split L/R",
+    "eyelash": "eyes, then split L/R and upper/lower",
+    "irides": "eyes, then split L/R and iris/pupil/highlights",
+    "eyewhite": "eyes, then split L/R",
+    "ears": "head_base, then split L/R",
+    "nose": "head_base/nose",
+    "mouth": "mouth/mouth_line",
+    "neck": "torso/neck",
+    "neckwear": "torso/yellow_collar",
+    "topwear": "torso/white_top",
+    "handwear": "arms/black_sleeves",
+    "bottomwear": "lower_body_preserved/pants",
+    "footwear": "lower_body_preserved/boots",
+    "tail": "tail, then split base/middle/tip",
+    "objects": "belt and shoulder accessories; review manually"
+  },
+  "hidden_coverage": [
+    "full forehead and face beneath front hair",
+    "complete eye whites, irises and pupils beneath lashes",
+    "complete eyebrows beneath bangs",
+    "neck and white top behind hair and arms",
+    "hair roots behind head, shoulders and arms",
+    "tail continuation behind torso and legs",
+    "mouth cavity for open-mouth states"
+  ],
+  "parameters_v1": [
+    "ParamAngleX",
+    "ParamAngleY",
+    "ParamAngleZ",
+    "ParamBodyAngleX",
+    "ParamEyeLOpen",
+    "ParamEyeROpen",
+    "ParamEyeBallX",
+    "ParamEyeBallY",
+    "ParamBrowLY",
+    "ParamBrowRY",
+    "ParamMouthOpenY",
+    "ParamMouthForm",
+    "ParamBreath"
+  ],
+  "qa_gates": [
+    "Neutral reconstruction matches the source at native resolution",
+    "No visible light-background fringe on transparent edges",
+    "No missing eye, mouth, finger, hair or tail pixels",
+    "Every moving layer has sufficient hidden overlap",
+    "No generated region is accepted without a visual comparison",
+    "PSD layer names are unique and retain canvas alignment",
+    "Head-angle extremes do not expose holes beneath hair",
+    "Blink and mouth transitions do not double or ghost",
+    "VTube Studio receives blink, gaze and lip-sync parameters"
+  ]
+}

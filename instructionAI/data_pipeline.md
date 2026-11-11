@@ -101,7 +101,17 @@ One URL can proceed directly. Several URLs require an explicit “all” request
 choice. A new topic clears the state. The channel cannot become a general history or
 route to mutating tools.
 
-## Long-term RAG
+## Knowledge index (documents + action history)
+
+`core/knowledge_index.py` is the replacement for raw-conversation RAG, off by default
+(`KNOWLEDGE_INDEX_ENABLED`). `core/action_log.py` records short action summaries from
+successful side-effect tools using call arguments only; volatile subjects (prices,
+markets, weather, news) keep the event but never digits. `recall_past_actions` and
+`search_my_documents` are AUTO reads that return dated history, never current evidence.
+`LEGACY_RAG_ENABLED=false` stops old recall and archiving while leaving the old
+collection untouched.
+
+## Long-term RAG (legacy)
 
 ChromaDB stores semantic conversation memories using the collection's established
 sentence-transformer embedding function. Runtime retrieval:

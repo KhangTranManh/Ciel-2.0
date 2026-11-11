@@ -199,7 +199,8 @@ def process_turn(self, user_input: str) -> str:
                 "Or any other path inside those folders.")
 
     # RAG RECALL: Search long-term memory for relevant past context
-    recalled = rag_manager.search_similar(user_input)
+    from agent_system import config as _cfg
+    recalled = rag_manager.search_similar(user_input) if _cfg.LEGACY_RAG_ENABLED else ""
     if recalled:
         recalled = self._refine_recalled_context(recalled)
         self._log_thought("RAG", "recalled", recalled[:300])

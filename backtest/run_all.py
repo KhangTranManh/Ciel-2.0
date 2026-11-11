@@ -149,6 +149,12 @@ SUITES: list[Suite] = [
         "Docs/actions index: hash sync, subject collapse, staleness, budgeted recall",
     ),
     Suite(
+        "action_log",
+        "backtest.test_action_log",
+        "unit",
+        "Action records, knowledge tools permissions, legacy RAG flag",
+    ),
+    Suite(
         "image_file",
         "backtest.test_image_file",
         "unit",

@@ -60,6 +60,26 @@ class LaneTests(unittest.TestCase):
             with self.subTest(request=request, flags=flags):
                 self.assertEqual(self.choose(request, **flags), Lane.HARNESS)
 
+    def test_small_talk_skips_brain_only_for_pure_banter(self):
+        for text in ("Gà quá gà", "chán quá Ciel", "hong thích", "lười", "cứng thế"):
+            with self.subTest(text=text):
+                self.assertEqual(fast_preflight(text)["action"], "chat")
+        # intent, questions, continuations, names/preferences, numbers, paths: Brain decides
+        for text in ("gửi mail cho A", "giá vàng hôm nay", "làm đi", "Tiếp tục", "Có thể",
+                     "kéo đi", "lần sau ưu tiên độ C", "gọi t là Khang", "đang bị lỗi gì v",
+                     "mở file notes.txt", "nhắc tôi 8h", "thời tiết thế nào", "ok",
+                     "yes", "checking my xauusd and any news"):
+            with self.subTest(text=text):
+                self.assertIsNone(fast_preflight(text))
+        # a reply to Ciel's question or offer is a continuation, never small talk
+        self.assertIsNone(fast_preflight("Gà quá gà", last_assistant="Master muốn mình làm tiếp không?"))
+        self.assertIsNone(fast_preflight("cứng thế", last_assistant="Mình có thể gửi báo cáo nhé"))
+        self.assertIsNone(fast_preflight("Gà quá gà", has_pending=True))
+        from agent_system import config
+        from unittest.mock import patch
+        with patch.object(config, "FAST_SMALL_TALK_ENABLED", False):
+            self.assertIsNone(fast_preflight("Gà quá gà"))
+
     def test_fast_preflight_is_narrow_and_does_not_bypass_pending(self):
         self.assertEqual(fast_preflight("Hello!")["action"], "chat")
         for request in ("hello and send mail", "yes", "continue", "weather", "hello\nread file"):

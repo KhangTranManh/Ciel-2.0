@@ -394,6 +394,11 @@ def execute_tool(self, tool_name: str, tool_args: dict, response_hint: str = "",
 
     self._log_thought("TOOL", "result", f"{tool_name}: {result_text}")
 
+    # Short, redacted action record for the knowledge index (no-op unless enabled;
+    # background thread; can never fail the tool call).
+    from core.action_log import record_tool_success
+    record_tool_success(tool_name, current_args)
+
     if tool_name == "stealth_search":
         state.observe(tool_name, result_text)
 

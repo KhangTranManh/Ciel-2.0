@@ -147,6 +147,25 @@ PROACTIVE_DIGEST_MINUTE = int(os.getenv("PROACTIVE_DIGEST_MINUTE", "0"))
 # ignore the channel. Muting is per finding, not per trigger.
 PROACTIVE_REPEAT_LIMIT = int(os.getenv("PROACTIVE_REPEAT_LIMIT", "4"))
 
+# Skip the Brain routing call for conservative pure small talk (short, no question, no
+# action verb/number/path). Saves one provider round trip (~6 s median). Set false to
+# restore routing for every message.
+FAST_SMALL_TALK_ENABLED = os.getenv("FAST_SMALL_TALK_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# --- Knowledge index (documents + action history) ------------------------------------
+# Replaces raw-conversation RAG over time. OFF by default: enabling it writes short
+# action records to ciel_data/knowledge_index/ (background thread, never blocks a turn).
+KNOWLEDGE_INDEX_ENABLED = os.getenv("KNOWLEDGE_INDEX_ENABLED", "false").lower() in ("true", "1", "yes")
+# Legacy raw-conversation RAG (core/rag_manager.py). Default ON so behaviour is unchanged;
+# set LEGACY_RAG_ENABLED=false (together with KNOWLEDGE_INDEX_ENABLED=true) to switch over.
+# When off, nothing is recalled into prompts and nothing new is archived; the old
+# collection stays on disk untouched for rollback.
+LEGACY_RAG_ENABLED = os.getenv("LEGACY_RAG_ENABLED", "true").lower() in ("true", "1", "yes")
+KNOWLEDGE_INDEX_DIR = Path(os.getenv(
+    "KNOWLEDGE_INDEX_DIR",
+    str(Path(__file__).resolve().parent.parent / "ciel_data" / "knowledge_index"),
+))
+
 # --- Monthly/weekly planner --------------------------------------------------------
 # Structured plans live in one SQLite file. They are separate from conversational
 # memory and from ciel_workspace/todos.json (the immediate checklist). Planner tools

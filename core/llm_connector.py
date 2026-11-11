@@ -436,6 +436,13 @@ class CielCore:
             "Read one Ciel-owned native event by numeric event_id, including private "
             "notes/location only when explicitly requested."
         ),
+        "recall_past_actions": (
+            "Read what Ciel previously did (emails, reports, events, files) matching a query. "
+            "History only; never current prices. Arg: query."
+        ),
+        "search_my_documents": (
+            "Semantic search over indexed reports/documents; dated history. Arg: query."
+        ),
         "suggest_native_calendar_defaults": (
             "Read aggregated duration/location/timezone from past events with the same "
             "title; returns nothing unless enough history exists. Arg: title."
@@ -481,6 +488,8 @@ class CielCore:
         "list_native_calendar_events",
         "get_native_calendar_event",
         "suggest_native_calendar_defaults",
+        "recall_past_actions",
+        "search_my_documents",
         "create_native_calendar_event",
         "update_native_calendar_event",
         "cancel_native_calendar_event",
@@ -537,7 +546,7 @@ class CielCore:
         "list_calendar_events", "create_calendar_event", "update_calendar_event",
         "delete_calendar_event",
         "list_native_calendar_events", "get_native_calendar_event",
-        "suggest_native_calendar_defaults",
+        "suggest_native_calendar_defaults", "recall_past_actions", "search_my_documents",
         "create_native_calendar_event", "update_native_calendar_event",
         "cancel_native_calendar_event",
     }
@@ -622,6 +631,9 @@ class CielCore:
 
     def _archive_to_rag(self, messages: list):
         """Send trimmed messages to long-term RAG memory as user+assistant pairs."""
+        from agent_system import config as _cfg
+        if not _cfg.LEGACY_RAG_ENABLED:
+            return
         pairs = []
         current_pair = []
         for msg in messages:
@@ -710,7 +722,9 @@ class CielCore:
 
             # 1. Archive everything
             self._archive_to_rag(self.chat_history.messages)
-            rag_manager.embed_and_save(summary_entry)
+            from agent_system import config as _cfg
+            if _cfg.LEGACY_RAG_ENABLED:
+                rag_manager.embed_and_save(summary_entry)
             self._log_thought("RAG", "archived_daily_summary", summary_entry[:100])
 
             # 2. Clear memory and save

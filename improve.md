@@ -472,9 +472,17 @@ related 0.42–0.60, unrelated ≤0.27), relative margin 0.08, fetch 12, return 
 - [x] Step A: `core/knowledge_index.py`, `backtest/test_knowledge_index.py` (6/6).
 - [ ] Step B: labelled Vietnamese query set (~40, including no-answer cases) and threshold
       calibration; **pass when** recall@3 >= 80%, precision >= 90%, >=90% no-answer rejected.
-- [ ] Step C: AUTO read tools `search_my_documents` / `recall_past_actions`, action
-      recording hooks, doc sync job over allow-listed folders only.
-- [ ] Step D: stop automatic raw-conversation recall injection; update docs.
+- [x] Step C (partial): `core/action_log.py` records successful side-effect tools
+      (email, Telegram, reports, write_file, native calendar, reminders) from call
+      ARGUMENTS only; volatile subjects keep the event but no digits; background thread;
+      off unless `KNOWLEDGE_INDEX_ENABLED=true`. AUTO read tools
+      `recall_past_actions` / `search_my_documents` in `skills/internal/knowledge_ops.py`
+      (history-only note on time-sensitive queries). Test: `backtest/test_action_log.py`.
+- [ ] Step C (remaining): doc sync job over allow-listed folders only.
+- [x] Step D (switch): `LEGACY_RAG_ENABLED` (default true) gates old recall and
+      archiving; old collection stays on disk for rollback. To switch over set
+      `KNOWLEDGE_INDEX_ENABLED=true` and `LEGACY_RAG_ENABLED=false` in `.env`.
+- [ ] Step B/E: calibrate thresholds once the index holds real data; update docs.
 
 ### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **PHASES 0–1 DONE**
 
