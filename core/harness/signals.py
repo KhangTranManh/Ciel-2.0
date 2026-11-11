@@ -369,6 +369,9 @@ _RISK_DESCRIPTIONS = {
     "create_calendar_event":   "Create an event in your Google Calendar",
     "update_calendar_event":   "Modify an event in your Google Calendar",
     "delete_calendar_event":   "Delete an event from your Google Calendar",
+    "create_native_calendar_event": "Create an event in Ciel's native calendar",
+    "update_native_calendar_event": "Modify an event in Ciel's native calendar",
+    "cancel_native_calendar_event": "Cancel an event in Ciel's native calendar",
     "git_confirm_push":        "Commit and PUSH code to the remote repository",
     "vision_act":              "Autonomously control your screen (click, type, scroll)",
 }

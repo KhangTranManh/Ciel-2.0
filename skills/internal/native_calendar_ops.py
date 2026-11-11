@@ -1,4 +1,4 @@
-"""Read-only tools for Ciel's provider-independent native calendar."""
+"""Tools for Ciel's provider-independent native calendar."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -16,7 +16,12 @@ NATIVE_CALENDAR_PROMPT = """
 The native calendar is private Ciel-owned schedule data, independent of Google.
 Use `list_native_calendar_events` for a bounded time range and
 `get_native_calendar_event` only when the user explicitly needs one event's details.
-These Phase-1 tools are read-only; do not claim an event was created or changed.
+Use create/update/cancel only for Ciel-owned native events, never Google Calendar.
+Before creating a timed event whose end time or location the user did not give, call
+`suggest_native_calendar_defaults` and, if it has enough history, put the suggested
+values explicitly into the create call so confirmation shows them. Never guess the
+start date/time; if the suggestion has no history, ask the user.
+Native reads are automatic. Every mutation follows the normal confirmation path.
 """
 
 
@@ -132,6 +137,111 @@ def get_native_calendar_tools() -> dict:
                 tool_name="get_native_calendar_event",
             )
 
+    def suggest_native_calendar_defaults(title: str) -> dict:
+        """Suggest duration/location from past events with the same title."""
+        try:
+            envelope = _store().suggest_calendar_defaults(title)
+            return make_result(
+                True,
+                data={"message": f"{envelope['sample_count']} similar past event(s)",
+                      "suggestion": envelope},
+                tool_name="suggest_native_calendar_defaults",
+            )
+        except Exception as exc:
+            return make_result(False, code="NATIVE_CALENDAR_READ_ERROR", message=str(exc),
+                               tool_name="suggest_native_calendar_defaults")
+
+    def create_native_calendar_event(
+        title: str,
+        start_at: str = "",
+        end_at: str = "",
+        timezone_name: str = "",
+        all_day: bool = False,
+        start_date: str = "",
+        end_date_exclusive: str = "",
+        location: str = "",
+        notes: str = "",
+    ) -> dict:
+        """Create one Ciel-owned timed or all-day event."""
+        try:
+            event, created = _store().add_calendar_event(
+                title,
+                timezone_name=_timezone_name(timezone_name),
+                start_at=start_at,
+                end_at=end_at,
+                all_day=all_day,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                location=location,
+                notes=notes,
+            )
+            verb = "Created" if created else "Already exists"
+            return make_result(
+                True,
+                data={
+                    "message": f"{verb}: native event #{event['id']} {_when(event)}: {event['title']}",
+                    "event": _public_event(event),
+                    "created": created,
+                },
+                tool_name="create_native_calendar_event",
+            )
+        except Exception as exc:
+            return make_result(False, code="NATIVE_CALENDAR_CREATE_ERROR", message=str(exc),
+                               tool_name="create_native_calendar_event")
+
+    def update_native_calendar_event(
+        event_id: int,
+        title: str | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        timezone_name: str | None = None,
+        all_day: bool | None = None,
+        start_date: str | None = None,
+        end_date_exclusive: str | None = None,
+        location: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Partially update one Ciel-owned event by verified numeric ID."""
+        try:
+            event = _store().update_calendar_event(
+                event_id,
+                title=title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone_name=timezone_name,
+                all_day=all_day,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                location=location,
+                notes=notes,
+            )
+            return make_result(
+                True,
+                data={
+                    "message": f"Updated: native event #{event['id']} {_when(event)}: {event['title']}",
+                    "event": _public_event(event),
+                },
+                tool_name="update_native_calendar_event",
+            )
+        except Exception as exc:
+            return make_result(False, code="NATIVE_CALENDAR_UPDATE_ERROR", message=str(exc),
+                               tool_name="update_native_calendar_event")
+
+    def cancel_native_calendar_event(event_id: int) -> dict:
+        """Cancel one Ciel-owned event by verified numeric ID."""
+        try:
+            event = _store().cancel_calendar_event(event_id)
+            return make_result(
+                True,
+                data={
+                    "message": f"Cancelled: native event #{event['id']}: {event['title']}",
+                    "event": _public_event(event),
+                },
+                tool_name="cancel_native_calendar_event",
+            )
+        except Exception as exc:
+            return make_result(False, code="NATIVE_CALENDAR_CANCEL_ERROR", message=str(exc),
+                               tool_name="cancel_native_calendar_event")
     tools = [
         StructuredTool.from_function(
             list_native_calendar_events,
@@ -150,6 +260,44 @@ def get_native_calendar_tools() -> dict:
                 "notes/location. Read-only; use only for explicit event detail."
             ),
         ),
+        StructuredTool.from_function(
+            suggest_native_calendar_defaults,
+            name="suggest_native_calendar_defaults",
+            description=(
+                "Read-only. Given an event title, return aggregated duration_minutes, "
+                "location and timezone from past similar events, only when enough "
+                "history exists. Use to fill end_at/location before create."
+            ),
+        ),
+        StructuredTool.from_function(
+            create_native_calendar_event,
+            name="create_native_calendar_event",
+            description=(
+                "Create a Ciel-owned native calendar event. Timed events need ISO start_at/end_at; "
+                "all-day events need start_date/end_date_exclusive. Requires confirmation."
+            ),
+        ),
+        StructuredTool.from_function(
+            update_native_calendar_event,
+            name="update_native_calendar_event",
+            description=(
+                "Partially update a Ciel-owned native event by exact numeric event_id. "
+                "Requires confirmation."
+            ),
+        ),
+        StructuredTool.from_function(
+            cancel_native_calendar_event,
+            name="cancel_native_calendar_event",
+            description=(
+                "Cancel a Ciel-owned native event by exact numeric event_id. Requires confirmation."
+            ),
+        ),
     ]
-    names = [tool.name for tool in tools]
-    return {"tools": tools, "prompt": NATIVE_CALENDAR_PROMPT, "parallel_safe": names}
+    return {
+        "tools": tools,
+        "prompt": NATIVE_CALENDAR_PROMPT,
+        "parallel_safe": [
+            "list_native_calendar_events", "get_native_calendar_event",
+            "suggest_native_calendar_defaults",
+        ],
+    }

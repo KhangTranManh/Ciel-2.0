@@ -771,6 +771,191 @@ class PlannerStore:
         with self._connect() as conn:
             return self._calendar_event_with_alerts(conn, int(event_id))
 
+    def update_calendar_event(
+        self,
+        event_id: int,
+        *,
+        title: str | None = None,
+        timezone_name: str | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        all_day: bool | None = None,
+        start_date: str | None = None,
+        end_date_exclusive: str | None = None,
+        location: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Atomically apply a partial update to one active native event.
+
+        ``None`` means unchanged. Switching between timed and all-day shapes requires
+        both fields for the new shape, which prevents a partial model call from
+        inventing or retaining incompatible schedule data.
+        """
+        event_id = int(event_id)
+        with self._connect() as conn:
+            current = self._calendar_event_with_alerts(conn, event_id)
+            if current is None:
+                raise ValueError(f"calendar event #{event_id} was not found")
+            if current["status"] != "active":
+                raise ValueError(f"calendar event #{event_id} is {current['status']}")
+
+            next_title = current["title"] if title is None else self._title(title)
+            next_location = (
+                current["location"] if location is None else
+                self._calendar_text(location, field="location", maximum=300)
+            )
+            next_notes = (
+                current["notes"] if notes is None else
+                self._calendar_text(notes, field="notes", maximum=4000)
+            )
+            if all_day is None:
+                next_all_day = bool(current["all_day"])
+            elif isinstance(all_day, bool):
+                next_all_day = all_day
+            else:
+                raise ValueError("all_day must be true or false")
+
+            zone_raw = current["timezone"] if timezone_name is None else timezone_name
+            try:
+                next_zone = ZoneInfo(str(zone_raw or "").strip()).key
+            except Exception as exc:
+                raise ValueError(
+                    "timezone must be a valid IANA name, for example Asia/Ho_Chi_Minh"
+                ) from exc
+
+            switching_shape = next_all_day != bool(current["all_day"])
+            if next_all_day:
+                if any(str(value or "").strip() for value in (start_at, end_at)):
+                    raise ValueError("all-day events must not mix dateTime values with dates")
+                raw_start_date = (
+                    start_date if start_date is not None else
+                    ("" if switching_shape else current["start_date"])
+                )
+                raw_end_date = (
+                    end_date_exclusive if end_date_exclusive is not None else
+                    ("" if switching_shape else current["end_date_exclusive"])
+                )
+                next_start_date = normalize_calendar_date(raw_start_date, "start_date")
+                next_end_date = normalize_calendar_date(
+                    raw_end_date, "end_date_exclusive"
+                )
+                if date.fromisoformat(next_end_date) <= date.fromisoformat(next_start_date):
+                    raise ValueError("all-day event end must be after start")
+                next_start_utc = next_end_utc = None
+            else:
+                if any(str(value or "").strip() for value in (start_date, end_date_exclusive)):
+                    raise ValueError("timed events must not mix date values with dateTime values")
+                raw_start = (
+                    start_at if start_at is not None else
+                    ("" if switching_shape else current["start_at_utc"])
+                )
+                raw_end = (
+                    end_at if end_at is not None else
+                    ("" if switching_shape else current["end_at_utc"])
+                )
+                next_start_utc, next_zone = normalize_calendar_time(raw_start, next_zone)
+                next_end_utc, _ = normalize_calendar_time(raw_end, next_zone)
+                if datetime.fromisoformat(next_end_utc) <= datetime.fromisoformat(next_start_utc):
+                    raise ValueError("calendar event end must be after start")
+                next_start_date = next_end_date = None
+
+            values = (
+                next_title, next_start_utc, next_end_utc, next_zone,
+                int(next_all_day), next_start_date, next_end_date,
+                next_location, next_notes,
+            )
+            old_values = (
+                current["title"], current["start_at_utc"], current["end_at_utc"],
+                current["timezone"], int(current["all_day"]), current["start_date"],
+                current["end_date_exclusive"], current["location"], current["notes"],
+            )
+            if values != old_values:
+                schedule_changed = values[1:7] != old_values[1:7]
+                next_version = int(current["schedule_version"]) + int(schedule_changed)
+                try:
+                    conn.execute(
+                        """UPDATE calendar_events
+                           SET title = ?, start_at_utc = ?, end_at_utc = ?, timezone = ?,
+                               all_day = ?, start_date = ?, end_date_exclusive = ?,
+                               location = ?, notes = ?, schedule_version = ?,
+                               updated_at = ?
+                           WHERE id = ? AND status = 'active'""",
+                        (*values, next_version, _utc_now(), event_id),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(
+                        "an equivalent native calendar event already exists"
+                    ) from exc
+            updated = self._calendar_event_with_alerts(conn, event_id)
+        if updated is None:
+            raise ValueError(f"calendar event #{event_id} was not found")
+        return updated
+
+    def cancel_calendar_event(self, event_id: int) -> dict:
+        """Cancel one native event; repeating the same cancellation is harmless."""
+        event_id = int(event_id)
+        with self._connect() as conn:
+            current = self._calendar_event_with_alerts(conn, event_id)
+            if current is None:
+                raise ValueError(f"calendar event #{event_id} was not found")
+            if current["status"] == "active":
+                conn.execute(
+                    """UPDATE calendar_events
+                       SET status = 'cancelled', schedule_version = schedule_version + 1,
+                           updated_at = ?
+                       WHERE id = ? AND status = 'active'""",
+                    (_utc_now(), event_id),
+                )
+            cancelled = self._calendar_event_with_alerts(conn, event_id)
+        if cancelled is None:
+            raise ValueError(f"calendar event #{event_id} was not found")
+        return cancelled
+
+    def suggest_calendar_defaults(
+        self, title: str, *, min_samples: int = 3, max_samples: int = 20
+    ) -> dict:
+        """Summarise past active timed events with the same title.
+
+        Returns only bounded aggregates (never notes or raw rows). Duration and
+        location are suggested only with enough agreeing samples.
+        """
+        title = self._title(title)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT start_at_utc, end_at_utc, timezone, location
+                   FROM calendar_events
+                   WHERE status = 'active' AND all_day = 0 AND lower(title) = lower(?)
+                   ORDER BY id DESC LIMIT ?""",
+                (title, max(1, min(int(max_samples), 50))),
+            ).fetchall()
+        envelope: dict = {"title": title, "sample_count": len(rows)}
+        if len(rows) < min_samples:
+            envelope["enough_history"] = False
+            return envelope
+        envelope["enough_history"] = True
+        durations = sorted(
+            int(
+                (datetime.fromisoformat(r["end_at_utc"])
+                 - datetime.fromisoformat(r["start_at_utc"])).total_seconds() // 60
+            )
+            for r in rows
+        )
+        mid = len(durations) // 2
+        envelope["duration_minutes"] = (
+            durations[mid] if len(durations) % 2
+            else (durations[mid - 1] + durations[mid]) // 2
+        )
+        zones = [r["timezone"] for r in rows]
+        zone = max(set(zones), key=zones.count)
+        if zones.count(zone) * 2 > len(zones):
+            envelope["timezone"] = zone
+        locations = [r["location"] for r in rows if (r["location"] or "").strip()]
+        if locations:
+            top = max(set(locations), key=locations.count)
+            if locations.count(top) >= min_samples and locations.count(top) * 5 >= len(rows) * 3:
+                envelope["location"] = top
+        return envelope
+
     def list_calendar_events(
         self,
         range_start: str,

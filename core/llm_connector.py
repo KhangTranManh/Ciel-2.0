@@ -436,6 +436,20 @@ class CielCore:
             "Read one Ciel-owned native event by numeric event_id, including private "
             "notes/location only when explicitly requested."
         ),
+        "suggest_native_calendar_defaults": (
+            "Read aggregated duration/location/timezone from past events with the same "
+            "title; returns nothing unless enough history exists. Arg: title."
+        ),
+        "create_native_calendar_event": (
+            "Create a Ciel-owned event. Timed: title/start_at/end_at and optional timezone_name. "
+            "All-day: title, all_day=true, start_date/end_date_exclusive. Requires confirmation."
+        ),
+        "update_native_calendar_event": (
+            "Partially update a Ciel-owned event by exact numeric event_id. Requires confirmation."
+        ),
+        "cancel_native_calendar_event": (
+            "Cancel a Ciel-owned event by exact numeric event_id. Requires confirmation."
+        ),
         "create_calendar_event": (
             "Create Calendar event. Required: summary, ISO start, ISO end; optional "
             "timezone_name/calendar_id. Requires confirmation."
@@ -466,6 +480,10 @@ class CielCore:
         "list_calendar_events",
         "list_native_calendar_events",
         "get_native_calendar_event",
+        "suggest_native_calendar_defaults",
+        "create_native_calendar_event",
+        "update_native_calendar_event",
+        "cancel_native_calendar_event",
         # Local state changes: only their bounded success/error envelope is
         # formatted; file contents and private state are not read by this pass.
         "write_file",
@@ -519,6 +537,9 @@ class CielCore:
         "list_calendar_events", "create_calendar_event", "update_calendar_event",
         "delete_calendar_event",
         "list_native_calendar_events", "get_native_calendar_event",
+        "suggest_native_calendar_defaults",
+        "create_native_calendar_event", "update_native_calendar_event",
+        "cancel_native_calendar_event",
     }
 
     def _log_thought(self, actor: str, action: str, content: str):

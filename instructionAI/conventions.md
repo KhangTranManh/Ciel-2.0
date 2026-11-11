@@ -79,7 +79,7 @@ separate tool packs and one storage boundary:
 - `skills/internal/monthly_plan_ops.py` owns monthly goal tools.
 - `skills/internal/weekly_plan_ops.py` owns weekly task tools.
 - `skills/internal/reminder_ops.py` owns one-time reminder tools.
-- `skills/internal/native_calendar_ops.py` owns bounded native-calendar read tools.
+- `skills/internal/native_calendar_ops.py` owns bounded native-calendar read and mutation tools.
 - `core/planner_triggers.py` reads plans and creates notifications; it does not mutate
   plans.
 - `core/reminder_triggers.py` reads due reminders and closes them only from notifier
@@ -112,8 +112,13 @@ Identity and history:
 - Timed requests use `add_reminder`; immediate unscheduled todos remain in
   `ciel_workspace/todos.json` and never imply a notification.
 - Native event uniqueness is case-insensitive title plus normalized timed/all-day range
-  and timezone. Alert offsets are unique per event. Phase 1 has no model-facing native
-  mutation or alert delivery path.
+  and timezone. Alert offsets are unique per event. Native reads are AUTO; create,
+  update, and cancel use ordinary exact-call confirmation and DEFER unattended. Alert
+  delivery remains a later phase.
+- `PlannerStore.suggest_calendar_defaults` is the only history-default resolver: active,
+  timed, same-title events, >=3 samples; median duration, majority location/timezone.
+  The AUTO tool `suggest_native_calendar_defaults` returns that envelope; the model must
+  pass values explicitly to create so confirmation shows final args.
 
 Daily Brief references are display handles, not durable task IDs. The latest current-day
 brief may persist at most 20 entries containing only `D-number + source type/ID + title`.
@@ -121,6 +126,10 @@ Resolution requires the D prefix, one distinct reference, matching local date, a
 TTL. Python binds supported tool IDs/titles after routing; stale, ambiguous, unknown, or
 source/tool-mismatched references execute nothing. Run retries use the public goal as a
 fresh request and never restore historical arguments, artifacts, or consent.
+
+Native events enter Daily Brief as title, event ID, and start timing only. Notes and
+location never enter the brief or its identity-only reference snapshot. Calendar
+collection fails independently, so it cannot erase planner, reminder, todo, or run data.
 
 Proactive Daily Brief delivery is opt-in under the trigger name `daily_brief`. Its key
 is `daily_brief:<YYYY-MM-DD>` in `PLANNER_TIMEZONE`; configured hour/minute checks are

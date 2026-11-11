@@ -23,7 +23,7 @@ SINGLE_READ_TOOLS = frozenset({
     "list_weekly_plan", "list_reminders", "get_market_price", "get_crypto_stats",
     "get_daily_brief", "analyze_crypto_technical", "search_gmail", "get_gmail_message",
     "get_gmail_thread", "list_calendar_events", "list_native_calendar_events",
-    "get_native_calendar_event", "stealth_search", "smart_scrape",
+    "get_native_calendar_event", "suggest_native_calendar_defaults", "stealth_search", "smart_scrape",
     "read_document",
 })
 

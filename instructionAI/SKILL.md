@@ -29,10 +29,11 @@ Current baseline:
   same-day `D1...Dn` action references and opt-in catch-up delivery through the shared
   proactive Telegram path. Optional Gmail metadata, current weather, and Calendar event
   metadata fail independently; Calendar mutations retain ordinary confirmation rules.
-- Ciel Native Calendar Phase 1 adds provider-independent one-off timed/all-day event
-  storage in `planner.db` plus bounded read-only list/detail tools. Native mutations,
-  Daily Brief integration, alerts, recurrence, and provider synchronization remain
-  later phases.
+- Ciel Native Calendar Phase 2 provides provider-independent one-off timed/all-day event
+  storage in `planner.db`, bounded reads, confirmed create/update/cancel mutations, and
+  privacy-bounded Daily Brief/D-reference integration, and history-based defaults
+  (`suggest_native_calendar_defaults`, AUTO read of bounded aggregates). Alerts, recurrence, and provider
+  synchronization remain later phases.
 - Telegram image uploads are analyzed on headless deployments through independent
   `image_file_ops`; live VPS acceptance passed with three real uploads on 2026-11-02.
 - No graphical client is currently shipped. Remote clients use the API WebSocket
@@ -251,7 +252,12 @@ Living files outside this directory:
 27. `core/planner_store.py` is the only planner/reminder/native-calendar SQL boundary.
     SQLite writes are atomic, adds are idempotent, and completion/cancellation retains
     history. Native timed events store UTC instants plus an IANA display timezone;
-    all-day events store local date bounds without fake midnight instants.
+    all-day events store local date bounds without fake midnight instants. Native reads
+    are AUTO; create/update/cancel require confirmation and defer unattended. Daily Brief
+    exposes only bounded title/time/identity and binds native event actions to verified IDs.
+    Create defaults (duration/location/timezone) come only from aggregates over past active
+    same-title timed events (>=3 samples), are filled explicitly into the create call so
+    confirmation shows them, and never include notes or the start time.
 
 ### Deployment, testing, and documentation
 

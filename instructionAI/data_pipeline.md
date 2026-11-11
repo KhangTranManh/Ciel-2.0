@@ -182,8 +182,9 @@ calendar_event_alerts
 
 Monthly goals are high-level outcomes. Weekly tasks are concrete actions and may link
 to a monthly goal. Reminders are one-time timed notifications. Native calendar events
-reserve intervals and remain distinct from tasks/reminders; Phase 1 exposes only
-`list_native_calendar_events` and `get_native_calendar_event`. Timed rows store UTC
+reserve intervals and remain distinct from tasks/reminders. Bounded reads use
+`list_native_calendar_events` and `get_native_calendar_event`; create, update, and
+cancel use distinct native tools through normal confirmation. Timed rows store UTC
 instants plus an IANA display timezone. All-day rows store local start and exclusive end
 dates, so timezone conversion cannot shift them to another day. Immediate todos remain
 a separate lightweight unscheduled checklist.
@@ -192,12 +193,17 @@ SQLite settings include foreign keys, a busy timeout, per-operation connections,
 transactional writes. Unique indexes make equivalent retries idempotent. Completion
 retains history rather than deleting records.
 
-Native Calendar Phase 1 rejects nonexistent or ambiguous naive DST wall times; callers
+Native Calendar rejects nonexistent or ambiguous naive DST wall times; callers
 must supply an explicit ISO-8601 offset. Range reads use half-open overlap and are
 bounded. List output excludes notes/location, while an explicit single-event read may
 return them. The two read tools are AUTO, single-step eligible, and independently
-parallel-safe. Native mutations, Daily Brief references, alert delivery, recurrence,
-and external synchronization are not Phase 1 capabilities.
+parallel-safe. Native mutations are ASK attended and DEFER unattended. Daily Brief
+includes bounded event title/time and identity-only same-day D-references; verified
+references bind update/cancel to the stored numeric event ID. Alert delivery,
+recurrence, and external synchronization remain later capabilities.
+`suggest_native_calendar_defaults` (AUTO, parallel-safe) returns bounded aggregates
+(sample count, median duration, majority location/timezone) from past active same-title
+timed events once at least three exist; notes and raw rows never leave the store.
 
 Planner tools are always available. Planner announcements require named proactive
 triggers:

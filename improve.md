@@ -385,18 +385,25 @@ tests and unified unit regression stay green.
 
 #### Phase 2 — Mutations and Daily Brief integration
 
-- [ ] Add create, update, and cancel tools through ordinary plan validation and
+- [x] Add create, update, and cancel tools through ordinary plan validation and
       permission review; native reads are `AUTO`, mutations are `ASK` attended and
       `DEFER` unattended.
-- [ ] Add bounded native event title/time to Daily Brief without exposing notes or
+- [x] Add bounded native event title/time to Daily Brief without exposing notes or
       location by default and without suppressing other sources on failure.
-- [ ] Extend same-day D-references with `native_calendar_event` identity only; update or
+- [x] Extend same-day D-references with `native_calendar_event` identity only; update or
       cancel binds back to the verified event ID and never trusts a model-guessed ID.
 
 **Pass when:** create/update/cancel are atomic and idempotent; permission denial changes
 nothing; stale or mismatched D-references execute nothing; event notes never enter the
 Brief snapshot; one calendar failure does not erase tasks, todos, reminders, runs, or
 other external context; focused and unified regression are green.
+
+- Added history-based create defaults (`suggest_native_calendar_defaults`, >=3 samples,
+  aggregates only, shown via confirmation).
+- Current focused validation: **11/11** native calendar and **22/22** Daily Brief.
+- Unified feature suites are green; the full local run is not yet an acceptance pass
+  because this Python environment lacks declared optional dependencies
+  (`langchain-google-community`, `pandas-ta`) and `conversation_bugs` timed out.
 
 #### Phase 3 — Event alerts through the existing Notifier
 

@@ -235,6 +235,68 @@ class DailyBriefTests(unittest.TestCase):
         self.assertEqual([item["title"] for item in brief["items"]], ["Planner survives"])
         self.assertEqual(brief["unavailable_sources"], ["todos"])
 
+    def test_native_calendar_is_bounded_private_and_failure_is_isolated(self):
+        event, _ = self.store.add_calendar_event(
+            "Ciel core review",
+            timezone_name=self.zone.key,
+            start_at="2026-10-31T09:00",
+            end_at="2026-10-31T10:00",
+            location="PRIVATE ROOM",
+            notes="PRIVATE NOTES",
+        )
+        self.todos_path.write_text(json.dumps([
+            {"id": 1, "task": "Todo survives", "done": False}
+        ]), encoding="utf-8")
+        brief = self.collector().collect(now=self.now, max_items=20)
+        calendar_item = next(
+            item for item in brief["items"]
+            if item["source_type"] == "native_calendar_event"
+        )
+        self.assertEqual(calendar_item["source_id"], str(event["id"]))
+        self.assertEqual(calendar_item["title"], "Ciel core review")
+        self.assertEqual(calendar_item["due_at"], "2026-10-31T09:00+07:00")
+        self.assertEqual(brief["source_counts"]["native_calendar_events"], 1)
+        serialized = json.dumps(brief, ensure_ascii=False)
+        self.assertNotIn("PRIVATE ROOM", serialized)
+        self.assertNotIn("PRIVATE NOTES", serialized)
+
+        with patch.object(
+            DailyBriefCollector, "_native_calendar_items", side_effect=RuntimeError("down")
+        ):
+            degraded = self.collector().collect(now=self.now, max_items=20)
+        self.assertIn("Todo survives", [item["title"] for item in degraded["items"]])
+        self.assertEqual(degraded["unavailable_sources"], ["native_calendar"])
+
+    def test_native_calendar_reference_binds_only_verified_event_identity(self):
+        reference = self._reference_for_binding(
+            "native_calendar_event", "42", "Grounded event"
+        )
+        updated, error = bind_daily_brief_decision({
+            "action": "tool",
+            "tool_name": "update_native_calendar_event",
+            "tool_args": {"event_id": 999, "start_at": "2026-10-31T11:00"},
+        }, reference)
+        self.assertIsNone(error)
+        self.assertEqual(updated["tool_args"]["event_id"], 42)
+        self.assertEqual(updated["tool_args"]["start_at"], "2026-10-31T11:00")
+
+        cancelled, error = bind_daily_brief_decision({
+            "action": "tool",
+            "tool_name": "cancel_native_calendar_event",
+            "tool_args": {"event_id": 999},
+        }, reference)
+        self.assertIsNone(error)
+        self.assertEqual(cancelled["tool_args"], {"event_id": 42})
+
+        todo = self._reference_for_binding("todo", "42", "Not an event")
+        unchanged = {
+            "action": "tool", "tool_name": "cancel_native_calendar_event",
+            "tool_args": {"event_id": 999},
+        }
+        bound, error = bind_daily_brief_decision(unchanged, todo)
+        self.assertEqual(bound, unchanged)
+        self.assertIn("is a todo", error)
+
     def test_dates_and_timezone_are_validated(self):
         with self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
             self.collector().collect("31/10/2026", now=self.now)

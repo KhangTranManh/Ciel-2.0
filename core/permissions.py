@@ -85,6 +85,7 @@ _AUTO_TOOLS = frozenset({
     "search_gmail", "get_gmail_message", "get_gmail_thread",
     "list_calendar_events",
     "list_native_calendar_events", "get_native_calendar_event",
+    "suggest_native_calendar_defaults",
     "get_weather", "calculate", "get_current_time", "get_fact", "list_todos",
     "list_monthly_goals", "list_weekly_plan", "list_reminders", "get_daily_brief",
     "build_market_report_html",

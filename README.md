@@ -215,11 +215,15 @@ Timed requests use `add_reminder`, `list_reminders`, and `cancel_reminder`. `add
 only creates an unscheduled checklist item and never promises a notification. Reminder
 text uses `title`; `message` is accepted as a compatibility alias for provider plans.
 
-Native Calendar Phase 1 is independent of Google. `list_native_calendar_events` reads a
+Native Calendar (Phase 2) is independent of Google. `list_native_calendar_events` reads a
 bounded ISO-8601 range, while `get_native_calendar_event` reads one event's full detail.
-Timed and all-day events are stored separately and recurrence is not yet supported.
-Create/update/cancel tools, Daily Brief integration, and event-alert delivery remain
-later phases; the current native tools cannot mutate the calendar.
+`create_native_calendar_event`, `update_native_calendar_event`, and
+`cancel_native_calendar_event` are idempotent and go through the normal confirmation
+rules (deferred when unattended). Timed and all-day events are stored separately; Daily
+Brief shows only event title/time, never notes or location. Before creating, Ciel can
+call `suggest_native_calendar_defaults` to fill duration/location/timezone from at least
+three similar past events (aggregates only; the confirmation shows the final values).
+Recurrence and event-alert delivery remain later phases.
 
 `get_daily_brief` combines today's weekly tasks, open todos, upcoming reminders, and
 unfinished run metadata into one prioritized view. Its visible `D1...Dn` references are
@@ -355,7 +359,7 @@ python -m backtest.test_planner
 # Reminder persistence, retry, dedupe, and tool suite
 python -m backtest.test_reminders
 
-# Native calendar storage, time normalization, and bounded read tools
+# Native calendar storage, mutations, defaults, and bounded tools
 python -m backtest.test_native_calendar
 
 # Headless/project image path bounds and provider handling

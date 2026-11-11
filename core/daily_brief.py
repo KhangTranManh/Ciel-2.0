@@ -92,6 +92,11 @@ class DailyBriefReference:
                 "reminder can be atomically rescheduled: ask for a fresh time if it is missing, "
                 "and do not cancel the old reminder unless the current request explicitly says so."
             ),
+            "native_calendar_event": (
+                "Updating maps to update_native_calendar_event(event_id=source_id), and "
+                "cancellation maps to cancel_native_calendar_event(event_id=source_id). Only "
+                "apply fields grounded in the current request; never guess an event ID."
+            ),
             "run": (
                 "Only an explicit retry/resume/reissue request may restart this run. Treat the "
                 "stored title as a fresh goal; never load or reuse old step arguments, artifacts, "
@@ -110,7 +115,9 @@ class DailyBriefReferenceStore:
     SCHEMA_VERSION = 1
     MAX_ITEMS = 20
     DEFAULT_TTL_SECONDS = 43_200
-    SOURCE_TYPES = frozenset({"todo", "weekly_task", "reminder", "run"})
+    SOURCE_TYPES = frozenset({
+        "todo", "weekly_task", "reminder", "run", "native_calendar_event"
+    })
     _REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9])D\s*0*([1-9]\d*)(?![A-Za-z0-9])", re.IGNORECASE)
     _BARE_REFERENCE_RE = re.compile(
         r"\b(?:item|number|muc|viec|so)\s*#?\s*([1-9]\d*)\b", re.IGNORECASE
@@ -315,6 +322,8 @@ def bind_daily_brief_decision(
         "complete_weekly_task": ("weekly_task", "task_id"),
         "update_weekly_task": ("weekly_task", "task_id"),
         "cancel_reminder": ("reminder", "reminder_id"),
+        "update_native_calendar_event": ("native_calendar_event", "event_id"),
+        "cancel_native_calendar_event": ("native_calendar_event", "event_id"),
     }
 
     def bind_step(step: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -416,6 +425,9 @@ def render_daily_brief(brief: dict[str, Any], language: str = "Vietnamese") -> s
                 "open": "chưa hoàn thành",
                 "waiting_for_approval": "đang chờ xác nhận",
                 "interrupted": "đang bị gián đoạn",
+                "all_day": "cả ngày",
+                "in_progress": "đang diễn ra",
+                "started": "đã bắt đầu",
             }
             for item in items:
                 if not isinstance(item, dict):
@@ -426,7 +438,9 @@ def render_daily_brief(brief: dict[str, Any], language: str = "Vietnamese") -> s
                 label = status_labels.get(status, status.replace("_", " "))
                 when = _brief_time(item.get("due_at"))
                 source_type = str(item.get("source_type") or "")
-                if source_type == "run" and when:
+                if status == "all_day":
+                    detail = label
+                elif source_type == "run" and when:
                     detail = f"{label}; cập nhật gần nhất {when}"
                 elif when:
                     detail = f"{label} lúc {when}"
@@ -492,7 +506,8 @@ def render_daily_brief(brief: dict[str, Any], language: str = "Vietnamese") -> s
             "overdue": "overdue", "due_soon": "due soon", "upcoming": "upcoming",
             "scheduled": "scheduled", "unscheduled": "not yet scheduled",
             "open": "open", "waiting_for_approval": "waiting for approval",
-            "interrupted": "interrupted",
+            "interrupted": "interrupted", "all_day": "all day",
+            "in_progress": "in progress", "started": "started",
         }
         for item in items:
             if not isinstance(item, dict):
@@ -502,9 +517,12 @@ def render_daily_brief(brief: dict[str, Any], language: str = "Vietnamese") -> s
             status = str(item.get("status") or "").strip()
             label = status_labels.get(status, status.replace("_", " "))
             when = _brief_time(item.get("due_at"))
-            timing = f"; last updated {when}" if item.get("source_type") == "run" and when else (
-                f" at {when}" if when else ""
-            )
+            if status == "all_day":
+                timing = ""
+            elif item.get("source_type") == "run" and when:
+                timing = f"; last updated {when}"
+            else:
+                timing = f" at {when}" if when else ""
             detail = f" — {label}{timing}" if label else ""
             lines.append(f"- {reference}: {title}{detail}")
     goal_titles = [str(goal.get("title") or "").strip()
@@ -691,6 +709,51 @@ class DailyBriefCollector:
             })
         return items
 
+    def _native_calendar_items(
+        self,
+        target: date,
+        now: datetime,
+    ) -> list[dict]:
+        """Read only bounded event identity/timing; private detail never enters a brief."""
+        window_start = datetime.combine(target, time.min, tzinfo=now.tzinfo)
+        window_end = window_start + timedelta(days=1)
+        events = PlannerStore(self.planner_path).list_calendar_events(
+            window_start.isoformat(),
+            window_end.isoformat(),
+            timezone_name=self.timezone_name,
+            limit=self.MAX_ITEMS,
+        )
+        items = []
+        for event in events:
+            if event.get("all_day"):
+                event_date = date.fromisoformat(str(event["start_date"]))
+                due_at = datetime.combine(
+                    event_date, time.min, tzinfo=now.tzinfo
+                ).isoformat(timespec="minutes")
+                priority, status = 78, "all_day"
+            else:
+                start = self._parse_utc(event.get("start_at_utc")).astimezone(now.tzinfo)
+                end = self._parse_utc(event.get("end_at_utc")).astimezone(now.tzinfo)
+                due_at = start.isoformat(timespec="minutes")
+                if target == now.date() and start <= now < end:
+                    priority, status = 95, "in_progress"
+                elif target == now.date() and start < now:
+                    priority, status = 82, "started"
+                elif start <= now + timedelta(hours=2):
+                    priority, status = 88, "due_soon"
+                else:
+                    priority, status = 76, "scheduled"
+            items.append({
+                "source_type": "native_calendar_event",
+                "source_id": str(event["id"]),
+                "title": self._title(event.get("title")),
+                "priority": priority,
+                "status": status,
+                "due_at": due_at,
+                "monthly_goal": None,
+            })
+        return items
+
     def _run_items(self) -> list[dict]:
         if not self.runs_path.exists():
             return []
@@ -752,7 +815,10 @@ class DailyBriefCollector:
         items: list[dict] = []
         goals: list[dict] = []
         unavailable: list[str] = []
-        counts = {"weekly_tasks": 0, "reminders": 0, "todos": 0, "runs": 0}
+        counts = {
+            "weekly_tasks": 0, "reminders": 0, "todos": 0, "runs": 0,
+            "native_calendar_events": 0,
+        }
 
         try:
             planner_items, goals = self._planner_items(target, local_now, lookahead)
@@ -761,6 +827,12 @@ class DailyBriefCollector:
             counts["reminders"] = sum(i["source_type"] == "reminder" for i in planner_items)
         except Exception:
             unavailable.append("planner")
+        try:
+            calendar_items = self._native_calendar_items(target, local_now)
+            items.extend(calendar_items)
+            counts["native_calendar_events"] = len(calendar_items)
+        except Exception:
+            unavailable.append("native_calendar")
         try:
             todo_items = self._todo_items()
             items.extend(todo_items)

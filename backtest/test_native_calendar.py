@@ -1,4 +1,4 @@
-"""Phase-1 regression for Ciel's provider-independent native calendar."""
+"""Regression for Ciel's provider-independent native calendar."""
 from __future__ import annotations
 
 import json
@@ -157,18 +157,121 @@ class NativeCalendarTests(unittest.TestCase):
 
     def test_native_reads_are_auto_single_step_and_parallel_safe(self):
         from core.harness.classifier import SINGLE_READ_TOOLS
+        from core.harness.signals import _RISK_DESCRIPTIONS
         from core.parallel import collect_parallel_safe
         from core.permissions import Decision, PermissionPolicy, _AUTO_TOOLS
 
-        names = {"list_native_calendar_events", "get_native_calendar_event"}
+        reads = {
+            "list_native_calendar_events", "get_native_calendar_event",
+            "suggest_native_calendar_defaults",
+        }
+        mutations = {
+            "create_native_calendar_event", "update_native_calendar_event",
+            "cancel_native_calendar_event",
+        }
         pack = get_native_calendar_tools()
-        self.assertEqual({tool.name for tool in pack["tools"]}, names)
-        self.assertTrue(names.issubset(SINGLE_READ_TOOLS))
-        self.assertTrue(names.issubset(_AUTO_TOOLS))
-        self.assertTrue(names.issubset(collect_parallel_safe([pack])))
-        policy = PermissionPolicy(risky_names=[])
-        for name in names:
+        self.assertEqual({tool.name for tool in pack["tools"]}, reads | mutations)
+        self.assertTrue(reads.issubset(SINGLE_READ_TOOLS))
+        self.assertTrue(reads.issubset(_AUTO_TOOLS))
+        parallel_safe = collect_parallel_safe([pack])
+        self.assertTrue(reads.issubset(parallel_safe))
+        self.assertTrue(mutations.isdisjoint(parallel_safe))
+        policy = PermissionPolicy(_RISK_DESCRIPTIONS)
+        for name in reads:
             self.assertEqual(policy.decide(name, {})[0], Decision.AUTO)
+        for name in mutations:
+            self.assertNotIn(name, _AUTO_TOOLS)
+            self.assertEqual(policy.decide(name, {})[0], Decision.ASK)
+            self.assertEqual(policy.decide(name, {}, attended=False)[0], Decision.DEFER)
+
+    def test_defaults_need_history_and_never_expose_notes(self):
+        store = self.store
+        def add(day, end, loc, status_cancel=False):
+            ev, _ = store.add_calendar_event(
+                "Review Ciel", timezone_name="Asia/Ho_Chi_Minh",
+                start_at=f"2030-01-{day:02d}T09:00:00+07:00",
+                end_at=f"2030-01-{day:02d}T{end}:00+07:00",
+                location=loc, notes="SECRET")
+            if status_cancel:
+                store.cancel_calendar_event(ev["id"])
+        add(1, "10:30", "Discord")
+        add(2, "10:30", "Discord")
+        self.assertFalse(store.suggest_calendar_defaults("review ciel")["enough_history"])
+        add(3, "11:00", "Discord")
+        add(4, "12:00", "Other", status_cancel=True)
+        out = store.suggest_calendar_defaults("review ciel")
+        self.assertEqual(out["sample_count"], 3)
+        self.assertEqual(out["duration_minutes"], 90)
+        self.assertEqual(out["location"], "Discord")
+        self.assertEqual(out["timezone"], "Asia/Ho_Chi_Minh")
+        self.assertNotIn("SECRET", json.dumps(out))
+        self.assertEqual(store.suggest_calendar_defaults("Other")["sample_count"], 0)
+
+    def test_update_and_cancel_are_atomic_versioned_and_idempotent(self):
+        event, _ = self._timed(
+            "Review", "2026-11-02T10:00", "2026-11-02T11:00",
+            notes="keep private",
+        )
+        updated = self.store.update_calendar_event(
+            event["id"], title="Deep review", start_at="2026-11-02T10:30"
+        )
+        self.assertEqual(updated["title"], "Deep review")
+        self.assertEqual(updated["start_at_utc"], "2026-11-02T03:30:00+00:00")
+        self.assertEqual(updated["notes"], "keep private")
+        self.assertEqual(updated["schedule_version"], 2)
+
+        cosmetic = self.store.update_calendar_event(
+            event["id"], title="Deep review v2", location="Room B"
+        )
+        self.assertEqual(cosmetic["schedule_version"], 2)
+
+        repeated = self.store.update_calendar_event(
+            event["id"], title="Deep review v2", start_at="2026-11-02T10:30"
+        )
+        self.assertEqual(repeated["schedule_version"], 2)
+        with self.assertRaisesRegex(ValueError, "end must be after start"):
+            self.store.update_calendar_event(event["id"], start_at="2026-11-02T12:00")
+        unchanged = self.store.get_calendar_event(event["id"])
+        self.assertEqual(unchanged["start_at_utc"], "2026-11-02T03:30:00+00:00")
+        self.assertEqual(unchanged["schedule_version"], 2)
+
+        cancelled = self.store.cancel_calendar_event(event["id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["schedule_version"], 3)
+        repeated_cancel = self.store.cancel_calendar_event(event["id"])
+        self.assertEqual(repeated_cancel["schedule_version"], 3)
+        with self.assertRaisesRegex(ValueError, "is cancelled"):
+            self.store.update_calendar_event(event["id"], title="Must not change")
+
+    def test_mutation_tools_use_bounded_results_and_store_private_details(self):
+        with patch.object(config, "PLANNER_DB_PATH", self.path):
+            tools = {
+                tool.name: tool for tool in get_native_calendar_tools()["tools"]
+            }
+            created = tools["create_native_calendar_event"].invoke({
+                "title": "Private planning",
+                "start_at": "2026-11-02T10:00",
+                "end_at": "2026-11-02T11:00",
+                "timezone_name": "Asia/Ho_Chi_Minh",
+                "location": "Secret room",
+                "notes": "SECRET NOTES",
+            })
+            event_id = created["data"]["event"]["id"]
+            updated = tools["update_native_calendar_event"].invoke({
+                "event_id": event_id, "title": "Private planning v2"
+            })
+            cancelled = tools["cancel_native_calendar_event"].invoke({
+                "event_id": event_id
+            })
+        self.assertTrue(created["success"])
+        self.assertNotIn("SECRET", json.dumps(created["data"]))
+        self.assertNotIn("Secret room", json.dumps(created["data"]))
+        self.assertTrue(updated["success"])
+        self.assertTrue(cancelled["success"])
+        stored = self.store.get_calendar_event(event_id)
+        self.assertEqual(stored["notes"], "SECRET NOTES")
+        self.assertEqual(stored["location"], "Secret room")
+        self.assertEqual(stored["status"], "cancelled")
 
 
 if __name__ == "__main__":

@@ -65,7 +65,7 @@ api/
 skills/
   _result.py                   Standard tool result envelope
   internal/*_ops.py            Files, image analysis, reports, memory, todos, planner/calendar tools
-  internal/native_calendar_ops.py  Bounded provider-independent native event reads
+  internal/native_calendar_ops.py  Bounded native event reads, mutations, and history defaults
   external/*_ops.py            Gmail, Telegram, web, trading, GitHub tools
   external/calendar_ops.py     Separate Calendar reads and confirmed mutations
 
