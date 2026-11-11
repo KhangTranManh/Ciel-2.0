@@ -445,6 +445,37 @@ alerts usable; conflict ownership is explicit and covered by tests.
 
 ---
 
+### Feature — Knowledge Index (documents + action history) — **STEP A DONE**
+
+Replaces the role of raw-conversation RAG (`core/rag_manager.py`, left read-only) with two
+collections in `ciel_data/knowledge_index/`: **docs** (reports/notes/files) and **actions**
+(short records of what Ciel did). Multilingual embedding
+`paraphrase-multilingual-MiniLM-L12-v2`, because ~97% of stored memories are Vietnamese
+and the old `all-MiniLM-L6-v2` is English-centric.
+
+**Findings that drove it:** the legacy score `1 - distance/2` equals `(1+cos)/2`, so
+threshold 0.65 meant cosine 0.30; 32 `RECALL_DROPPED` log lines show the 600-token budget
+dropping the whole recall block instead of truncating it.
+
+**Volatile information policy (changing data is the default):**
+- Index entries are history, never current evidence; each hit carries `recorded_at`,
+  `age_days`, and `stale`.
+- Docs sync by SHA-256: a changed file replaces all its chunks; deleted files are removed.
+- Actions are append-only; hits sharing a `subject_key` collapse to the newest.
+- Volatile subjects (market/price/gold/crypto/weather/news) go stale after 1 day, others 30.
+- Prompt block is truncated to fit the 600-token budget, never dropped whole.
+
+**Provisional parameters (calibrate before enabling):** raw-cosine floor 0.38 (smoke set:
+related 0.42–0.60, unrelated ≤0.27), relative margin 0.08, fetch 12, return 3, chunk
+700/100, action record ≤300 chars.
+
+- [x] Step A: `core/knowledge_index.py`, `backtest/test_knowledge_index.py` (6/6).
+- [ ] Step B: labelled Vietnamese query set (~40, including no-answer cases) and threshold
+      calibration; **pass when** recall@3 >= 80%, precision >= 90%, >=90% no-answer rejected.
+- [ ] Step C: AUTO read tools `search_my_documents` / `recall_past_actions`, action
+      recording hooks, doc sync job over allow-listed folders only.
+- [ ] Step D: stop automatic raw-conversation recall injection; update docs.
+
 ### Feature — **Inbound file/ảnh (Telegram) → hiểu path → phân tích → (HTML / Telegram)** — **PHASES 0–1 DONE**
 
 > Level B không phụ thuộc feature này. Implement theo phase.

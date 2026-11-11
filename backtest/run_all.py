@@ -143,6 +143,12 @@ SUITES: list[Suite] = [
         "Native event schema, time normalization, bounded reads, and tool safety",
     ),
     Suite(
+        "knowledge_index",
+        "backtest.test_knowledge_index",
+        "unit",
+        "Docs/actions index: hash sync, subject collapse, staleness, budgeted recall",
+    ),
+    Suite(
         "image_file",
         "backtest.test_image_file",
         "unit",
