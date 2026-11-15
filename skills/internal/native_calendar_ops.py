@@ -29,6 +29,16 @@ def _store() -> PlannerStore:
     return PlannerStore(config.PLANNER_DB_PATH)
 
 
+def _alerts_enabled() -> bool:
+    return bool(config.PROACTIVE_ENABLED and "calendar_event_due" in config.PROACTIVE_TRIGGERS)
+
+
+_ALERTS_OFF_MESSAGE = (
+    "Calendar alerts are not enabled: add calendar_event_due to PROACTIVE_TRIGGERS "
+    "(with PROACTIVE_ENABLED=true) before scheduling alerts. Nothing was saved."
+)
+
+
 def _timezone_name(value: str = "") -> str:
     return str(value or "").strip() or config.PLANNER_TIMEZONE
 
@@ -161,9 +171,14 @@ def get_native_calendar_tools() -> dict:
         end_date_exclusive: str = "",
         location: str = "",
         notes: str = "",
+        alert_offsets: list[int] | None = None,
     ) -> dict:
-        """Create one Ciel-owned timed or all-day event."""
+        """Create one Ciel-owned timed or all-day event. alert_offsets = minutes before start."""
         try:
+            if alert_offsets and not _alerts_enabled():
+                return make_result(False, code="NATIVE_CALENDAR_ALERTS_DISABLED",
+                                   message=_ALERTS_OFF_MESSAGE,
+                                   tool_name="create_native_calendar_event")
             event, created = _store().add_calendar_event(
                 title,
                 timezone_name=_timezone_name(timezone_name),
@@ -174,6 +189,7 @@ def get_native_calendar_tools() -> dict:
                 end_date_exclusive=end_date_exclusive,
                 location=location,
                 notes=notes,
+                alert_offsets=alert_offsets or (),
             )
             verb = "Created" if created else "Already exists"
             return make_result(
@@ -200,9 +216,14 @@ def get_native_calendar_tools() -> dict:
         end_date_exclusive: str | None = None,
         location: str | None = None,
         notes: str | None = None,
+        alert_offsets: list[int] | None = None,
     ) -> dict:
         """Partially update one Ciel-owned event by verified numeric ID."""
         try:
+            if alert_offsets and not _alerts_enabled():
+                return make_result(False, code="NATIVE_CALENDAR_ALERTS_DISABLED",
+                                   message=_ALERTS_OFF_MESSAGE,
+                                   tool_name="update_native_calendar_event")
             event = _store().update_calendar_event(
                 event_id,
                 title=title,
@@ -214,6 +235,7 @@ def get_native_calendar_tools() -> dict:
                 end_date_exclusive=end_date_exclusive,
                 location=location,
                 notes=notes,
+                alert_offsets=alert_offsets,
             )
             return make_result(
                 True,

@@ -784,6 +784,7 @@ class PlannerStore:
         end_date_exclusive: str | None = None,
         location: str | None = None,
         notes: str | None = None,
+        alert_offsets=None,
     ) -> dict:
         """Atomically apply a partial update to one active native event.
 
@@ -792,6 +793,7 @@ class PlannerStore:
         inventing or retaining incompatible schedule data.
         """
         event_id = int(event_id)
+        next_alerts = None if alert_offsets is None else _normalize_alert_offsets(alert_offsets)
         with self._connect() as conn:
             current = self._calendar_event_with_alerts(conn, event_id)
             if current is None:
@@ -869,9 +871,13 @@ class PlannerStore:
                 current["timezone"], int(current["all_day"]), current["start_date"],
                 current["end_date_exclusive"], current["location"], current["notes"],
             )
-            if values != old_values:
-                schedule_changed = values[1:7] != old_values[1:7]
+            alerts_changed = (
+                next_alerts is not None and next_alerts != list(current["alert_offsets"])
+            )
+            if values != old_values or alerts_changed:
+                schedule_changed = values[1:7] != old_values[1:7] or alerts_changed
                 next_version = int(current["schedule_version"]) + int(schedule_changed)
+                stamp = _utc_now()
                 try:
                     conn.execute(
                         """UPDATE calendar_events
@@ -880,12 +886,34 @@ class PlannerStore:
                                location = ?, notes = ?, schedule_version = ?,
                                updated_at = ?
                            WHERE id = ? AND status = 'active'""",
-                        (*values, next_version, _utc_now(), event_id),
+                        (*values, next_version, stamp, event_id),
                     )
                 except sqlite3.IntegrityError as exc:
                     raise ValueError(
                         "an equivalent native calendar event already exists"
                     ) from exc
+                if schedule_changed:
+                    # A new schedule_version is a new alert identity: old delivery marks
+                    # no longer apply. Notifier history is untouched, so the old
+                    # identity can never be replayed.
+                    if next_alerts is not None:
+                        conn.execute(
+                            "DELETE FROM calendar_event_alerts WHERE event_id = ?",
+                            (event_id,),
+                        )
+                        conn.executemany(
+                            """INSERT INTO calendar_event_alerts
+                               (event_id, offset_minutes, delivered_at, created_at, updated_at)
+                               VALUES (?, ?, NULL, ?, ?)""",
+                            [(event_id, o, stamp, stamp) for o in next_alerts],
+                        )
+                    else:
+                        conn.execute(
+                            """UPDATE calendar_event_alerts
+                               SET delivered_at = NULL, updated_at = ?
+                               WHERE event_id = ?""",
+                            (stamp, event_id),
+                        )
             updated = self._calendar_event_with_alerts(conn, event_id)
         if updated is None:
             raise ValueError(f"calendar event #{event_id} was not found")
@@ -910,6 +938,77 @@ class PlannerStore:
         if cancelled is None:
             raise ValueError(f"calendar event #{event_id} was not found")
         return cancelled
+
+    def list_due_calendar_alerts(
+        self, now_utc: str, *, catchup_minutes: int, limit: int = 1
+    ) -> list[dict]:
+        """Undelivered alerts of active events whose fire time is in the catch-up window.
+
+        fire = event start - offset. Alerts before ``fire`` or older than the window stay
+        silent. All-day events start at local midnight of ``start_date``.
+        """
+        now = datetime.fromisoformat(str(now_utc).replace("Z", "+00:00"))
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        window = timedelta(minutes=max(0, int(catchup_minutes)))
+        due: list[dict] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT e.*, a.offset_minutes AS alert_offset
+                   FROM calendar_event_alerts a
+                   JOIN calendar_events e ON e.id = a.event_id
+                   WHERE e.status = 'active' AND a.delivered_at IS NULL"""
+            ).fetchall()
+        for row in rows:
+            event = dict(row)
+            try:
+                if event["all_day"]:
+                    zone = ZoneInfo(event["timezone"])
+                    day = date.fromisoformat(event["start_date"])
+                    start = datetime(day.year, day.month, day.day, tzinfo=zone)
+                else:
+                    start = datetime.fromisoformat(
+                        str(event["start_at_utc"]).replace("Z", "+00:00")
+                    )
+            except Exception:
+                continue
+            fire = start - timedelta(minutes=int(event["alert_offset"]))
+            if fire <= now <= fire + window:
+                event["fire_at"] = fire.astimezone(timezone.utc).isoformat(timespec="seconds")
+                due.append(event)
+        due.sort(key=lambda e: (e["fire_at"], e["id"], e["alert_offset"]))
+        return due[: max(1, int(limit))]
+
+    def calendar_alert_is_current(
+        self, event_id: int, offset_minutes: int, schedule_version: int
+    ) -> bool:
+        """True while the event is active, on this version, and the alert is undelivered."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM calendar_event_alerts a
+                   JOIN calendar_events e ON e.id = a.event_id
+                   WHERE a.event_id = ? AND a.offset_minutes = ? AND a.delivered_at IS NULL
+                     AND e.status = 'active' AND e.schedule_version = ?""",
+                (int(event_id), int(offset_minutes), int(schedule_version)),
+            ).fetchone()
+        return row is not None
+
+    def mark_calendar_alert_delivered(
+        self, event_id: int, offset_minutes: int, schedule_version: int, delivered_at: str = ""
+    ) -> bool:
+        """Mark one alert delivered, only if it still belongs to this schedule version."""
+        stamp = delivered_at or _utc_now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE calendar_event_alerts SET delivered_at = ?, updated_at = ?
+                   WHERE event_id = ? AND offset_minutes = ? AND delivered_at IS NULL
+                     AND EXISTS (SELECT 1 FROM calendar_events e
+                                 WHERE e.id = ? AND e.status = 'active'
+                                   AND e.schedule_version = ?)""",
+                (stamp, stamp, int(event_id), int(offset_minutes),
+                 int(event_id), int(schedule_version)),
+            )
+            return cur.rowcount > 0
 
     def suggest_calendar_defaults(
         self, title: str, *, min_samples: int = 3, max_samples: int = 20

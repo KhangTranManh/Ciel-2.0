@@ -115,7 +115,7 @@ AGENT_PARALLEL_MAX_WORKERS = int(os.getenv("AGENT_PARALLEL_MAX_WORKERS", "4"))
 # default-on trigger added later would start talking without anyone choosing it.
 # Known names — A (Ciel watching itself): unfinished_task, daily_cost, repeated_failure,
 # deferred_approval | B (clock): digest, morning_digest, monthly_plan, weekly_plan,
-# reminder_due, daily_brief |
+# reminder_due, calendar_event_due, daily_brief |
 # C (outside world, each needs a threshold below): price_alert, important_email, stale_todo.
 PROACTIVE_ENABLED = os.getenv("PROACTIVE_ENABLED", "false").lower() in ("true", "1", "yes")
 PROACTIVE_TRIGGERS = [t.strip() for t in os.getenv("PROACTIVE_TRIGGERS", "").split(",") if t.strip()]
@@ -146,6 +146,23 @@ PROACTIVE_DIGEST_MINUTE = int(os.getenv("PROACTIVE_DIGEST_MINUTE", "0"))
 # The Master has evidently decided not to act on it, and repeating only teaches them to
 # ignore the channel. Muting is per finding, not per trigger.
 PROACTIVE_REPEAT_LIMIT = int(os.getenv("PROACTIVE_REPEAT_LIMIT", "4"))
+# calendar_event_due: how long after its fire time a missed alert may still be sent
+# (e.g. after downtime). Bounded so a long outage never replays stale alerts.
+def _calendar_catchup_minutes() -> int:
+    """Parse safely: bad values fall back to 30 (never crash import); clamp to 5..1440.
+
+    The floor keeps the window wider than several 10-second polls so alerts that fall due
+    together are all drained before the window closes."""
+    raw = os.getenv("PROACTIVE_CALENDAR_CATCHUP_MINUTES", "30")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"[config] PROACTIVE_CALENDAR_CATCHUP_MINUTES={raw!r} is not a number; using 30")
+        value = 30
+    return max(5, min(value, 1440))
+
+
+PROACTIVE_CALENDAR_CATCHUP_MINUTES = _calendar_catchup_minutes()
 
 # Skip the Brain routing call for conservative pure small talk (short, no question, no
 # action verb/number/path). Saves one provider round trip (~6 s median). Set false to

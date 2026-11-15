@@ -280,8 +280,8 @@ Immediate todo ─> ciel_workspace/todos.json ───────────�
 `monthly_goals` stores high-level outcomes. `weekly_tasks` stores concrete actions and
 may reference a monthly goal. `reminders` stores one-time timed notifications separately
 from the unscheduled todo checklist. `calendar_events` stores provider-independent
-one-off timed/all-day intervals, with `calendar_event_alerts` reserved for later
-delivery phases. Phase 1 exposes bounded list/detail reads only. Adds use unique
+one-off timed/all-day intervals, with `calendar_event_alerts` delivered by the opt-in
+`calendar_event_due` trigger (`core/calendar_triggers.py`). Phase 1 exposes bounded list/detail reads only. Adds use unique
 identities for retry idempotence; completion, delivery, or cancellation retains history.
 
 Monthly and weekly triggers are catch-up checks: once the configured local time has

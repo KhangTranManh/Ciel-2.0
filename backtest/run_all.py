@@ -167,6 +167,12 @@ SUITES: list[Suite] = [
         "Daily aggregation, external fail-open context, proactive dedupe, and privacy",
     ),
     Suite(
+        "calendar_alerts",
+        "backtest.test_calendar_alerts",
+        "unit",
+        "Native calendar alerts: offsets, retry, restart, reschedule versioning, disabled-trigger atomicity",
+    ),
+    Suite(
         "reminders",
         "backtest.test_reminders",
         "unit",

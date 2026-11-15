@@ -295,6 +295,10 @@ noise; focused and unified unit regression are green.
 
 - Pass date: **2026-10-31**
 
+**Phase 3 status (code complete, live smoke pending):** `core/calendar_triggers.py` (`calendar_event_due`, `PROACTIVE_CALENDAR_CATCHUP_MINUTES`, default 30, max 1440). Alerts are marked delivered by an `on_outcome` handler only on `delivered` or a persisted notifier cooldown; failures/digest stay retryable. Reschedule or alert changes bump `schedule_version` and reset delivery marks; cosmetic edits do not. Create/update tools accept `alert_offsets` and fail atomically when the trigger is disabled.
+- Validation: `backtest/test_calendar_alerts.py` 35/35; native calendar 11/11; Daily Brief 22/22; reminders 23/23; proactive 153/153; planner 32/32.
+- Still open: Docker startup and live Telegram smoke on the VPS (no second Ciel process).
+
 #### Phase 4 — Optional external context — **DONE**
 
 - [x] Add opt-in bounded Gmail metadata and weather without letting either failure
@@ -407,21 +411,23 @@ other external context; focused and unified regression are green.
 
 #### Phase 3 — Event alerts through the existing Notifier
 
-- [ ] Add opt-in `calendar_event_due` scheduler trigger with configurable bounded
+- [x] Add opt-in `calendar_event_due` scheduler trigger with configurable bounded
       catch-up window and one or more offsets per event.
-- [ ] Use notification identity
+- [x] Use notification identity
       `calendar_event:<event_id>:<schedule_version>:<offset_minutes>`.
-- [ ] Mark an alert delivered only after provider success or persisted notifier dedupe;
+- [x] Mark an alert delivered only after provider success or persisted notifier dedupe;
       failed sends remain retryable and routine polling stays audit-silent.
-- [ ] If `calendar_event_due` is disabled, creating an event without alerts remains
+- [x] If `calendar_event_due` is disabled, creating an event without alerts remains
       valid, while a request that includes alerts fails atomically and honestly.
-- [ ] Reschedule/cancel invalidates old pending identities by source state; it never
+- [x] Reschedule/cancel invalidates old pending identities by source state; it never
       deletes notifier history or replays an alert from an old schedule version.
 
 **Pass when:** before-time checks are silent; each configured offset delivers once;
 failure retries; restart does not duplicate; cosmetic edits do not re-alert; time/alert
 changes use the new schedule version; cancelled/past-window events stay silent; Docker
 startup and a live Telegram delivery smoke pass without a second Ciel process.
+
+Status: code and local tests are done; the Docker + live Telegram smoke is pending on the VPS.
 
 #### Phase 4 — Recurrence and interoperability (deferred)
 

@@ -16,6 +16,7 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
     try:
         from core.notifier import CliChannel, Notifier, Presence, TelegramChannel
         from core.capability_triggers import build_capability_loss_triggers
+        from core.calendar_triggers import build_calendar_triggers
         from core.daily_brief_triggers import build_daily_brief_triggers
         from core.daily_brief_context import DailyBriefExternalContext
         from core.planner_triggers import build_planner_triggers
@@ -73,6 +74,11 @@ def setup_proactive(ciel, scheduler, *, include_cli: bool = False):
             enabled_names=config.PROACTIVE_TRIGGERS,
             planner_db=config.PLANNER_DB_PATH,
             timezone_name=config.PLANNER_TIMEZONE,
+        ))
+        triggers.extend(build_calendar_triggers(
+            enabled_names=config.PROACTIVE_TRIGGERS,
+            planner_db=config.PLANNER_DB_PATH,
+            catchup_minutes=config.PROACTIVE_CALENDAR_CATCHUP_MINUTES,
         ))
         triggers.extend(build_daily_brief_triggers(
             enabled_names=config.PROACTIVE_TRIGGERS,

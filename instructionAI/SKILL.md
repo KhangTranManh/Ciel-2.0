@@ -228,6 +228,12 @@ Living files outside this directory:
     send. `reminder_due` must be named in `PROACTIVE_TRIGGERS`; otherwise creation fails
     honestly instead of storing an undeliverable alert.
 
+25b. `calendar_event_due` (opt-in) alerts native calendar events at `start - offset` for each
+    `alert_offsets` entry, key `calendar_event:<id>:<schedule_version>:<offset>`, within
+    `PROACTIVE_CALENDAR_CATCHUP_MINUTES` (default 30, max 1440). Marked delivered only after
+    send or persisted cooldown. Time/alert edits bump `schedule_version`; cosmetic edits do
+    not. Creating/updating with alerts while the trigger is off fails atomically.
+
 25a. The optional Daily Brief trigger uses `daily_brief:<YYYY-MM-DD>`, the planner
     timezone, and its configured local hour/minute. It is silent for an empty brief,
     catches up later that day, retries failed provider sends, and persists dedupe only
