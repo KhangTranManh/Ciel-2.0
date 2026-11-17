@@ -17,6 +17,7 @@ from core.agent_loop import AgentLoop
 from core.scheduler import CielScheduler
 from core.proactive_setup import setup_proactive
 from core.redact import redact_secrets
+from core.rag_manager import start_background_warmup
 from api.confirm import WebSocketConfirmer
 
 langchain.debug = False
@@ -182,6 +183,7 @@ async def startup_event():
         print("[API Security] CIEL_API_TOKEN is not set — anyone who can reach this port "
               "can control Ciel. Set it before exposing the API beyond localhost.")
     try:
+        start_background_warmup()
         scheduler = CielScheduler()
         ciel_agent = AgentLoop()
         scheduler.cleanse_callback = ciel_agent.core._brain_cleanse

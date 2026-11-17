@@ -19,7 +19,9 @@ Design Decisions:
 
 import datetime
 import html
+import os
 import re
+import threading
 from pathlib import Path
 
 # Lazy imports — these are heavy libraries, only load when actually used
@@ -27,7 +29,10 @@ _chromadb = None
 _embedding_fn = None
 _collection = None
 _initialized = False
+_warmed_up = False
 _available = True  # Set to False if imports fail
+_initialization_lock = threading.RLock()
+_background_warmup_thread = None
 
 
 # ==========================================================
@@ -72,48 +77,92 @@ def _ensure_initialized():
     if _initialized:
         return _available
 
-    _initialized = True
+    with _initialization_lock:
+        if _initialized:
+            return _available
 
-    try:
-        import chromadb
-        from chromadb.utils import embedding_functions
+        try:
+            import chromadb
+            from chromadb.utils import embedding_functions
 
-        _chromadb = chromadb
+            _chromadb = chromadb
 
-        # Create persistent storage directory
-        VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
+            # Create persistent storage directory
+            VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-        # NOT DefaultEmbeddingFunction (ONNX) — tried that to cut torch out of the
-        # image, but the REAL ciel_data/vector_memory/ collection was created with
-        # SentenceTransformerEmbeddingFunction, and ChromaDB persists that choice
-        # IN the collection. Passing a different embedding_function here does not
-        # migrate an existing collection — it just fails the moment the collection
-        # is actually queried/written to ("sentence_transformers ... not installed").
-        # See docker/requirements-docker.txt for how the image keeps this cheap
-        # (CPU-only torch wheel) despite needing the library back.
-        _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
-        )
+            # NOT DefaultEmbeddingFunction (ONNX) — tried that to cut torch out of the
+            # image, but the REAL ciel_data/vector_memory/ collection was created with
+            # SentenceTransformerEmbeddingFunction, and ChromaDB persists that choice
+            # IN the collection. Passing a different embedding_function here does not
+            # migrate an existing collection — it just fails the moment the collection
+            # is actually queried/written to ("sentence_transformers ... not installed").
+            # See docker/requirements-docker.txt for how the image keeps this cheap
+            # (CPU-only torch wheel) despite needing the library back.
+            _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=EMBEDDING_MODEL
+            )
 
-        # Create/open persistent ChromaDB client
-        client = chromadb.PersistentClient(path=str(VECTOR_DB_DIR))
-        _collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            embedding_function=_embedding_fn,
-            metadata={"hnsw:space": "cosine"},  # Use cosine similarity
-        )
+            # Create/open persistent ChromaDB client
+            client = chromadb.PersistentClient(path=str(VECTOR_DB_DIR))
+            _collection = client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                embedding_function=_embedding_fn,
+                metadata={"hnsw:space": "cosine"},  # Use cosine similarity
+            )
 
-        print(f"[Ciel System] Long-term memory loaded: {_collection.count()} memories in vault.")
-        _available = True
+            print(f"[Ciel System] Long-term memory loaded: {_collection.count()} memories in vault.")
+            _available = True
+            _initialized = True
 
-    except ImportError as e:
-        print(f"[Ciel Warning] RAG disabled — missing dependency: {e}")
-        _available = False
-    except Exception as e:
-        print(f"[Ciel Warning] RAG disabled — initialization error: {e}")
-        _available = False
+        except ImportError as e:
+            print(f"[Ciel Warning] RAG disabled — missing dependency: {e}")
+            _available = False
+        except Exception as e:
+            print(f"[Ciel Warning] RAG disabled — initialization error: {e}")
+            _available = False
 
     return _available
+
+
+def warmup() -> bool:
+    """Load the optional RAG stack in the background before its first real use.
+
+    The legacy RAG flag also prevents startup work: when the compatibility path is
+    disabled, its collection and embedding model must stay unloaded.
+    """
+    global _warmed_up
+
+    if os.getenv("LEGACY_RAG_ENABLED", "true").lower() not in ("true", "1", "yes"):
+        return False
+    with _initialization_lock:
+        if _warmed_up:
+            return _available
+        if not _ensure_initialized():
+            return False
+
+        _warmed_up = True
+        try:
+            _embedding_fn(["warmup"])
+        except Exception as e:
+            print(f"[Ciel Warning] RAG warmup embedding failed: {e}")
+            return False
+        return True
+
+
+def start_background_warmup():
+    """Start one daemon warmup thread and return it without blocking startup."""
+    global _background_warmup_thread
+
+    with _initialization_lock:
+        if _background_warmup_thread is not None:
+            return _background_warmup_thread
+        _background_warmup_thread = threading.Thread(
+            target=warmup,
+            daemon=True,
+            name="ciel-rag-warmup",
+        )
+        _background_warmup_thread.start()
+        return _background_warmup_thread
 
 
 # ==========================================================

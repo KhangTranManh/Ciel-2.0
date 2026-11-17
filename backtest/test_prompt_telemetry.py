@@ -26,6 +26,25 @@ check("log_blocks writes PERF/PROMPT_BLOCKS with provider in", got and got[0][:2
 log_blocks(lambda *a: 1/0, "x", {"a": "b"})
 check("telemetry failure swallowed", True)
 
+from agent_system.utils.usage import extract_usage, format_usage
+ds_meta = SimpleNamespace(usage_metadata=None, response_metadata={"token_usage": {
+    "prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105, "prompt_cache_hit_tokens": 64}})
+check("extract cached from DeepSeek prompt_cache_hit_tokens", extract_usage(ds_meta)["cached"] == 64)
+oa_meta = SimpleNamespace(usage_metadata={"input_tokens": 100, "output_tokens": 5, "total_tokens": 105},
+                          response_metadata={"token_usage": {"prompt_tokens_details": {"cached_tokens": 32}}})
+check("extract cached from prompt_tokens_details fallback", extract_usage(oa_meta)["cached"] == 32)
+lc_meta = SimpleNamespace(usage_metadata={"input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
+                                          "input_token_details": {"cache_read": 80}})
+check("extract cached from usage_metadata cache_read", extract_usage(lc_meta)["cached"] == 80)
+check("cached key present and 0 when missing", extract_usage(SimpleNamespace())["cached"] == 0
+      and extract_usage(None)["cached"] == 0)
+check("format_usage appends cached only when >0",
+      format_usage("m", extract_usage(lc_meta)) == "model=m in=100 out=5 total=105 cached=80"
+      and format_usage("m", {"input": 1, "output": 2, "total": 3}) == "model=m in=1 out=2 total=3")
+cl = []
+log_blocks(lambda a, b, c: cl.append(c), "w", {"t": "x"}, lc_meta)
+check("PROMPT_BLOCKS line ends with cache=80", cl and cl[0].endswith("in=100 cache=80"))
+
 class LLM:
     def invoke(self, m):
         return SimpleNamespace(content='{"satisfied": true}', usage_metadata={"input_tokens": 50, "output_tokens": 5, "total_tokens": 55})

@@ -12,6 +12,13 @@ set_debug(False)
 set_verbose(False)
 
 
+def _start_rag_warmup():
+    """Start optional RAG model loading without delaying the CLI prompt."""
+    from core.rag_manager import start_background_warmup
+
+    return start_background_warmup()
+
+
 def _voice_capture(lang: str):
     """One voice capture → transcript string, or None. Imports lazily so the CLI
     still starts when audio deps (sounddevice/SpeechRecognition) aren't installed."""
@@ -48,6 +55,7 @@ def main():
         return run_desktop_pet()
 
     print(Fore.CYAN + "Ciel [System]: Core initialization..." + Style.RESET_ALL)
+    _start_rag_warmup()
     # Voice mode: `--voice` flag or INPUT_MODE=voice makes speech the default input.
     # Regardless of mode, typing ":v"/":voice" captures one utterance by voice.
     voice_default = ("--voice" in sys.argv) or (os.getenv("INPUT_MODE", "").lower() == "voice")

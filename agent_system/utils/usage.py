@@ -15,29 +15,64 @@ from typing import Any, Callable
 def extract_usage(response: Any) -> dict:
     """Best-effort token usage from a LangChain chat response.
 
-    Returns {"input": int, "output": int, "total": int}. Zeros when the provider
+    Returns {"input", "output", "total", "cached"} ints. Zeros when the provider
     did not report usage (never raises — cost tracking must never break a real call).
+    ``cached`` is the prompt-cache hit count (DeepSeek prompt_cache_hit_tokens or
+    OpenAI-style cached_tokens), 0 when absent.
     """
+    try:
+        return _extract_usage(response)
+    except Exception:
+        return {"input": 0, "output": 0, "total": 0, "cached": 0}
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cached_tokens(response: Any) -> int:
+    um = getattr(response, "usage_metadata", None)
+    if isinstance(um, dict):
+        details = um.get("input_token_details")
+        if isinstance(details, dict) and _int(details.get("cache_read")):
+            return _int(details.get("cache_read"))
+    rm = getattr(response, "response_metadata", None) or {}
+    tu = rm.get("token_usage") or rm.get("usage") or {}
+    if isinstance(tu, dict):
+        hit = _int(tu.get("prompt_cache_hit_tokens"))
+        if hit:
+            return hit
+        ptd = tu.get("prompt_tokens_details")
+        if isinstance(ptd, dict):
+            return _int(ptd.get("cached_tokens"))
+    return 0
+
+
+def _extract_usage(response: Any) -> dict:
+    cached = _cached_tokens(response)
     # Preferred: modern langchain-core AIMessage.usage_metadata (normalized across
     # providers). ChatOpenAI (DeepSeek/Vilao), Gemini, and Ollama all populate this.
     um = getattr(response, "usage_metadata", None)
     if isinstance(um, dict) and um:
-        inp = int(um.get("input_tokens", 0) or 0)
-        out = int(um.get("output_tokens", 0) or 0)
-        tot = int(um.get("total_tokens", inp + out) or (inp + out))
+        inp = _int(um.get("input_tokens"))
+        out = _int(um.get("output_tokens"))
+        tot = _int(um.get("total_tokens")) or (inp + out)
         if inp or out or tot:
-            return {"input": inp, "output": out, "total": tot}
+            return {"input": inp, "output": out, "total": tot, "cached": cached}
 
     # Fallback: raw response_metadata.token_usage (OpenAI-style prompt/completion).
     rm = getattr(response, "response_metadata", None) or {}
     tu = rm.get("token_usage") or rm.get("usage") or {}
     if isinstance(tu, dict) and tu:
-        inp = int(tu.get("prompt_tokens", 0) or 0)
-        out = int(tu.get("completion_tokens", 0) or 0)
-        tot = int(tu.get("total_tokens", inp + out) or (inp + out))
-        return {"input": inp, "output": out, "total": tot}
+        inp = _int(tu.get("prompt_tokens"))
+        out = _int(tu.get("completion_tokens"))
+        tot = _int(tu.get("total_tokens")) or (inp + out)
+        return {"input": inp, "output": out, "total": tot, "cached": cached}
 
-    return {"input": 0, "output": 0, "total": 0}
+    return {"input": 0, "output": 0, "total": 0, "cached": 0}
 
 
 def format_usage(model: str, usage: dict) -> str:
@@ -52,7 +87,9 @@ def format_usage(model: str, usage: dict) -> str:
     inp = int(usage.get("input", 0) or 0)
     out = int(usage.get("output", 0) or 0)
     tot = int(usage.get("total", inp + out) or (inp + out))
-    return f"model={model} in={inp} out={out} total={tot}"
+    cached = int(usage.get("cached", 0) or 0)
+    line = f"model={model} in={inp} out={out} total={tot}"
+    return f"{line} cached={cached}" if cached > 0 else line
 
 
 def format_latency(component: str, model: str, duration_ms: int, outcome: str) -> str:
@@ -99,7 +136,7 @@ def estimate_tokens(text: Any) -> int:
         return 0
 
 
-def format_blocks(component: str, blocks: dict, provider_in: int = 0) -> str:
+def format_blocks(component: str, blocks: dict, provider_in: int = 0, cached: int = 0) -> str:
     """Render the [PERF] [PROMPT_BLOCKS] line: block NAMES and estimated token counts
     only — never prompt content. ``est_total`` is the sum of the blocks; ``in`` is the
     provider-reported input tokens (0 if unreported).
@@ -111,7 +148,7 @@ def format_blocks(component: str, blocks: dict, provider_in: int = 0) -> str:
         n = text if isinstance(text, int) else estimate_tokens(text)
         total += n
         parts.append(f"{'_'.join(str(name).split())[:32]}={n}")
-    return f"component={clean} {' '.join(parts)} est_total={total} in={int(provider_in or 0)}"
+    return f"component={clean} {' '.join(parts)} est_total={total} in={int(provider_in or 0)} cache={int(cached or 0)}"
 
 
 def log_blocks(log_fn: Callable[[str, str, str], None] | None, component: str,
@@ -120,7 +157,8 @@ def log_blocks(log_fn: Callable[[str, str, str], None] | None, component: str,
     if log_fn is None:
         return
     try:
+        usage = extract_usage(response) if response is not None else {}
         log_fn("PERF", "PROMPT_BLOCKS",
-               format_blocks(component, blocks, extract_usage(response)["input"] if response is not None else 0))
+               format_blocks(component, blocks, usage.get("input", 0), usage.get("cached", 0)))
     except Exception:
         pass
