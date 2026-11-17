@@ -297,6 +297,11 @@ ACTIVE_SUBJECT_MAX_ENTITIES = int(os.getenv("ACTIVE_SUBJECT_MAX_ENTITIES", "5"))
 # Worker call with no error and no recovery. This bounds the wait so a stall raises
 # a real (retryable) timeout instead of hanging indefinitely.
 LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "90"))  # seconds
+# The OpenAI SDK under ChatOpenAI retries internally (default max_retries=2) and each
+# attempt gets the FULL timeout, so one call could wait ~3x90s=270s+backoff (observed
+# 275s/350s). Make the SDK-level retry count explicit and small; tenacity above the call
+# remains the single place for policy-level retries.
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "0"))
 
 # --- Retry: Gemini (cloud — fewer attempts, longer waits) ---
 GEMINI_RETRY_MAX_ATTEMPTS = 5

@@ -37,7 +37,7 @@ from ..config import (
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
-    LLM_REQUEST_TIMEOUT,
+    LLM_REQUEST_TIMEOUT, LLM_MAX_RETRIES,
 )
 from ..utils.logger import log
 from ..utils.usage import extract_usage, invoke_with_latency
@@ -104,6 +104,7 @@ class Middleware:
                 "base_url": VILAO_URL,
                 "temperature": MIDDLEWARE_TEMPERATURE,
                 "timeout": LLM_REQUEST_TIMEOUT,
+                "max_retries": LLM_MAX_RETRIES,
             }
             if VILAO_SAFETY_BYPASS:
                 llm_kwargs["extra_body"] = {"safe_mode": False, "safety": False, "content_filter": False}
@@ -118,6 +119,7 @@ class Middleware:
                 base_url="https://api.deepseek.com",
                 temperature=MIDDLEWARE_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             log.system(f"Middleware initialized: {MIDDLEWARE_MODEL} (DeepSeek)")
         elif provider == "custom":
@@ -130,6 +132,7 @@ class Middleware:
                 base_url=BASE_URL or None,
                 temperature=MIDDLEWARE_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             log.system(f"Middleware initialized: {MIDDLEWARE_MODEL} (custom/OpenAI-compatible)")
         elif provider == "ollama":

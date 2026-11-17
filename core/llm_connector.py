@@ -178,6 +178,7 @@ class CielCore:
         # mechanism causes extra calls (e.g. today's healing-waste finding), not exact
         # token math, and this needs no changes to Worker's return type/callers.
         self.worker.on_call = lambda model, usage=None: self._log_thought("WORKER", "LLM_CALL", format_usage(model, usage))
+        self.worker.on_blocks = self._log_thought
         self.worker.on_latency = lambda component, model, duration_ms, outcome: self._log_thought(
             "PERF", "LLM_LATENCY", format_latency(component, model, duration_ms, outcome)
         )

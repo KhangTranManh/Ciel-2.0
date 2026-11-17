@@ -7,12 +7,12 @@ from langchain_openai import ChatOpenAI
 from agent_system.models.brain import Brain, TRANSIENT_ERRORS
 from agent_system.utils.logger import log
 from agent_system.utils.usage import (
-    extract_usage, format_latency, format_usage, invoke_with_latency,
+    extract_usage, format_latency, format_usage, invoke_with_latency, log_blocks,
 )
 from agent_system.config import (
     RETRY_MAX_ATTEMPTS, RETRY_INITIAL_WAIT, RETRY_MAX_WAIT, BRAIN_MODEL,
     ROUTER_ASSISTANT_ENABLED, ROUTER_ASSISTANT_PROVIDER, ROUTER_ASSISTANT_MODEL,
-    VILAO_URL, VILAO_API_KEY, API_KEY, BASE_URL, LLM_REQUEST_TIMEOUT,
+    VILAO_URL, VILAO_API_KEY, API_KEY, BASE_URL, LLM_REQUEST_TIMEOUT, LLM_MAX_RETRIES,
     ROUTER_PERSONA_MODE,
 )
 
@@ -336,6 +336,7 @@ class Router:
                         base_url=VILAO_URL,
                         temperature=0.0,
                         timeout=LLM_REQUEST_TIMEOUT,
+                        max_retries=LLM_MAX_RETRIES,
                     )
                     log.system(f"Router assistant: {ROUTER_ASSISTANT_MODEL} (Vilao, triage)")
                 elif ROUTER_ASSISTANT_PROVIDER.lower() == "custom":
@@ -345,6 +346,7 @@ class Router:
                         base_url=BASE_URL or None,
                         temperature=0.0,
                         timeout=LLM_REQUEST_TIMEOUT,
+                        max_retries=LLM_MAX_RETRIES,
                     )
                     log.system(f"Router assistant: {ROUTER_ASSISTANT_MODEL} (custom, triage)")
                 else:
@@ -479,10 +481,18 @@ class Router:
         messages.append(HumanMessage(content=user_input))
 
         response = invoke_with_latency(
-            self.brain._router_llm, messages, component="brain", model=BRAIN_MODEL,
+            self.brain._router_llm, messages, component="brain_route", model=BRAIN_MODEL,
             on_latency=self._log_llm_latency,
         )
         self.log_thought("BRAIN", "LLM_CALL", format_usage(BRAIN_MODEL, extract_usage(response)))
+        try:
+            _persona = self._router_persona()
+            _rules_len = max(0, len(prompt) - len(_persona) - len(tool_list_str))
+            log_blocks(self.log_thought, "brain_route", {
+                "persona": _persona, "rules": "x" * _rules_len, "tools": tool_list_str,
+                "date_note": date_note, "user_msg": user_input}, response)
+        except Exception:
+            pass
         # Gemini occasionally returns content as a list of parts instead of a plain string
         content = response.content
         if isinstance(content, list):

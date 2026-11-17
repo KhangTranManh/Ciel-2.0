@@ -89,3 +89,38 @@ def invoke_with_latency(
             except Exception:
                 # Telemetry must never turn a successful provider call into a failed turn.
                 pass
+
+
+def estimate_tokens(text: Any) -> int:
+    """Cheap token estimate (len/4). Never raises; counts only, never keeps content."""
+    try:
+        return (len(text) + 3) // 4 if isinstance(text, str) else (len(str(text or "")) + 3) // 4
+    except Exception:
+        return 0
+
+
+def format_blocks(component: str, blocks: dict, provider_in: int = 0) -> str:
+    """Render the [PERF] [PROMPT_BLOCKS] line: block NAMES and estimated token counts
+    only — never prompt content. ``est_total`` is the sum of the blocks; ``in`` is the
+    provider-reported input tokens (0 if unreported).
+    """
+    clean = "_".join(str(component or "unknown").split())[:48]
+    parts = []
+    total = 0
+    for name, text in (blocks or {}).items():
+        n = text if isinstance(text, int) else estimate_tokens(text)
+        total += n
+        parts.append(f"{'_'.join(str(name).split())[:32]}={n}")
+    return f"component={clean} {' '.join(parts)} est_total={total} in={int(provider_in or 0)}"
+
+
+def log_blocks(log_fn: Callable[[str, str, str], None] | None, component: str,
+               blocks: dict, response: Any = None) -> None:
+    """Best-effort prompt-block telemetry; telemetry must never break a real call."""
+    if log_fn is None:
+        return
+    try:
+        log_fn("PERF", "PROMPT_BLOCKS",
+               format_blocks(component, blocks, extract_usage(response)["input"] if response is not None else 0))
+    except Exception:
+        pass

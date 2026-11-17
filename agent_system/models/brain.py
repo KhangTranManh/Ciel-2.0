@@ -30,7 +30,7 @@ from ..config import (
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
     ALLOWED_TOOL_NAMES,
-    LLM_REQUEST_TIMEOUT,
+    LLM_REQUEST_TIMEOUT, LLM_MAX_RETRIES,
 )
 from ..utils.logger import log
 
@@ -162,6 +162,7 @@ class Brain:
                 base_url="https://api.deepseek.com",
                 temperature=BRAIN_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {BRAIN_MODEL} (DeepSeek)")
@@ -179,6 +180,7 @@ class Brain:
                 "base_url": VILAO_URL,
                 "temperature": BRAIN_TEMPERATURE,
                 "timeout": LLM_REQUEST_TIMEOUT,
+                "max_retries": LLM_MAX_RETRIES,
             }
             if extra and "extra_body" in extra:
                 llm_kwargs["extra_body"] = extra["extra_body"]
@@ -197,6 +199,7 @@ class Brain:
                 base_url=BASE_URL or None,
                 temperature=BRAIN_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             self._reflect_llm = self._router_llm
             log.system(f"Brain initialized: {BRAIN_MODEL} (custom/OpenAI-compatible)")

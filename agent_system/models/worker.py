@@ -22,14 +22,14 @@ from ..config import (
     RETRY_MAX_ATTEMPTS,
     RETRY_INITIAL_WAIT,
     RETRY_MAX_WAIT,
-    LLM_REQUEST_TIMEOUT,
+    LLM_REQUEST_TIMEOUT, LLM_MAX_RETRIES,
     VILAO_URL,
     VILAO_API_KEY,
     API_KEY,
     BASE_URL,
 )
 from ..utils.logger import log
-from ..utils.usage import extract_usage, invoke_with_latency
+from ..utils.usage import extract_usage, invoke_with_latency, log_blocks
 
 
 # Transient errors the Worker should retry on
@@ -147,6 +147,7 @@ class Worker:
         # usable standalone.
         self.on_call = None
         self.on_latency = None
+        self.on_blocks = None
 
         if WORKER_PROVIDER.lower() == "deepseek":
             self._llm = ChatOpenAI(
@@ -155,6 +156,7 @@ class Worker:
                 base_url="https://api.deepseek.com",
                 temperature=WORKER_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (DeepSeek)")
         elif WORKER_PROVIDER.lower() == "vilao":
@@ -175,6 +177,7 @@ class Worker:
                 "base_url": VILAO_URL,
                 "temperature": WORKER_TEMPERATURE,
                 "timeout": LLM_REQUEST_TIMEOUT,
+                "max_retries": LLM_MAX_RETRIES,
             }
             if extra_body:
                 llm_kwargs["extra_body"] = extra_body
@@ -189,6 +192,7 @@ class Worker:
                 base_url=BASE_URL or None,
                 temperature=WORKER_TEMPERATURE,
                 timeout=LLM_REQUEST_TIMEOUT,
+                max_retries=LLM_MAX_RETRIES,
             )
             log.system(f"Worker initialized: {WORKER_MODEL} (custom/OpenAI-compatible)")
         elif WORKER_PROVIDER.lower() == "gemini":
@@ -240,6 +244,8 @@ class Worker:
                 self.on_call(WORKER_MODEL, extract_usage(response))
             except Exception:
                 pass
+        log_blocks(getattr(self, "on_blocks", None), "worker_generate", {
+            "system": WORKER_SYSTEM_PROMPT, "context": context, "task": task}, response)
         content = response.content.strip()
 
         # Issue 3 fix: Robust markdown stripping

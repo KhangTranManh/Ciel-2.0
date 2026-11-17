@@ -143,7 +143,21 @@ def _evaluate_result(self, user_input: str, tool_name: str, tool_args: dict, res
             SystemMessage(content=SELF_CORRECTION_PROMPT),
             HumanMessage(content=eval_request)
         ]
-        response = self.brain._router_llm.invoke(messages)
+        from agent_system.utils.usage import (
+            extract_usage, format_usage, invoke_with_latency, log_blocks)
+        from agent_system.config import BRAIN_MODEL
+        _rt = getattr(self, "router", None)
+        response = invoke_with_latency(
+            self.brain._router_llm, messages, component="brain_evaluate", model=BRAIN_MODEL,
+            on_latency=getattr(_rt, "_log_llm_latency", None),
+        )
+        try:
+            self._log_thought("BRAIN", "LLM_CALL", format_usage(BRAIN_MODEL, extract_usage(response)))
+            log_blocks(self._log_thought, "brain_evaluate", {
+                "eval_rules": SELF_CORRECTION_PROMPT, "user_msg": user_input,
+                "tool_result": safe_result[:3000], "tools": self._tool_list_str}, response)
+        except Exception:
+            pass
         # Gemini occasionally returns content as a list of parts instead of a plain string
         _eval_content = response.content
         if isinstance(_eval_content, list):
