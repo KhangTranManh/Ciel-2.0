@@ -25,6 +25,12 @@ cd "$APP_DIR"
 # git's "dubious ownership" guard or leaves root-owned files behind.
 g() { sudo -u "$APP_USER" git "$@"; }
 install_requirements() {
+  # Releases older than wave 2 have no requirements-core.txt; their packages are
+  # a subset of what is already installed, so keep the venv as it is.
+  if [[ ! -f requirements-core.txt ]]; then
+    printf 'deploy_vps: no requirements-core.txt in this release; keeping installed packages\n' >&2
+    return 0
+  fi
   sudo -u "$APP_USER" env UV_CACHE_DIR="$APP_DIR/.tools/cache" \
     "$UV_BIN" pip install --python "$VENV_PY" -r requirements-core.txt
 }
@@ -42,8 +48,12 @@ verify_release() {
     sleep 2
   done
   health_ready || return 1
-  ss -ltnH 'sport = :8000' | grep -Eq '^(127\.0\.0\.1|\[::1\]):8000\b' || return 1
-  ! ss -ltnH 'sport = :8000' | grep -Eq '^(0\.0\.0\.0|\[::\]):8000\b' || return 1
+  # ss prints "LISTEN 0 2048 127.0.0.1:8000 0.0.0.0:*": the local address is column 4.
+  # Require at least one loopback listener and no listener on any other address.
+  local listeners
+  listeners="$(ss -ltnH 'sport = :8000' | awk '{print $4}')"
+  grep -Eq '^(127\.0\.0\.1|\[::1\]):8000$' <<<"$listeners" || return 1
+  ! grep -Evq '^(127\.0\.0\.1|\[::1\]):8000$' <<<"$listeners" || return 1
   journalctl -u "$SERVICE" --since "$STARTED_AT" --no-pager | grep -Fq '[Telegram] Bot online' || return 1
   ! journalctl -u "$SERVICE" --since "$STARTED_AT" --no-pager | grep -Fq 'Traceback (most recent call last)' || return 1
 }
