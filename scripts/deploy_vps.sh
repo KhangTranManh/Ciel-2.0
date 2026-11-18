@@ -54,8 +54,12 @@ verify_release() {
   listeners="$(ss -ltnH 'sport = :8000' | awk '{print $4}')"
   grep -Eq '^(127\.0\.0\.1|\[::1\]):8000$' <<<"$listeners" || return 1
   ! grep -Evq '^(127\.0\.0\.1|\[::1\]):8000$' <<<"$listeners" || return 1
-  journalctl -u "$SERVICE" --since "$STARTED_AT" --no-pager | grep -Fq '[Telegram] Bot online' || return 1
-  ! journalctl -u "$SERVICE" --since "$STARTED_AT" --no-pager | grep -Fq 'Traceback (most recent call last)' || return 1
+  # Read the journal once: piping journalctl into `grep -q` makes journalctl die
+  # of SIGPIPE when grep stops early, which pipefail reports as a failure.
+  local journal
+  journal="$(journalctl -u "$SERVICE" --since "$STARTED_AT" --no-pager)"
+  grep -Fq '[Telegram] Bot online' <<<"$journal" || return 1
+  ! grep -Fq 'Traceback (most recent call last)' <<<"$journal" || return 1
 }
 
 restore_previous() {
