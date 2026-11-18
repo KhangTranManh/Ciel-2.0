@@ -1,2 +1,8 @@
-# Optional Windows desktop-pet interface. The server and Docker images do not install this.
+# Máy bàn Windows = core + giao diện/giọng nói/điều khiển máy.
+-r requirements-core.txt
+pyautogui
+pyperclip
+sounddevice
+faster-whisper
 PyQt6>=6.4.0
+# Optional TTS: pyttsx3, gradio_client

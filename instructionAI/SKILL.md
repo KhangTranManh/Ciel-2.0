@@ -268,25 +268,29 @@ Living files outside this directory:
 ### Deployment, testing, and documentation
 
 28. One Ciel process writes shared `ciel_data/`, `ciel_workspace/`, and `agent_output/`.
-    The Docker deployment is one `ciel` container: `main_api.py` serves the API and (with `CIEL_API_TELEGRAM=true`) the Telegram bot in-process.
+    Production runs `main_api.py` and (with `CIEL_API_TELEGRAM=true`) the Telegram bot in-process as
+    systemd service `ciel.service`, user `ciel`, from `/srv/ciel`. It binds only `127.0.0.1:8000`.
     `AgentLoop.run_step()` holds a turn lock, so turns from all front ends run one at a
     time, and each turn passes its own front end's `confirm_callback`; a front end never
     replaces the core's default callback. Do not add a second container or process that
     writes this state.
 
-29. `docker/Dockerfile` builds a Python runtime image and copies source with `COPY . .`.
-    Deploy is `git pull` then `docker compose -f docker/docker-compose.yml --profile
-    tunnel up -d --build`. The `cloudflared` service publishes HTTPS through a
-    Cloudflare Tunnel; its token lives only in gitignored `docker/tunnel.env`, and port
-    8000 is bound to `127.0.0.1`. `.env`, credentials, and persistent data stay bind-mounted and
-    are never replaced by source deployment.
+29. Deploy on the VPS from `/srv/ciel` as root with `bash scripts/deploy_vps.sh`. It records the
+    preceding commit, fast-forwards source as user `ciel`, installs `requirements-core.txt` only
+    when it changes, restarts `ciel.service`, then requires `/health` ready, loopback-only port
+    8000, a fresh Telegram-online journal line, and no fresh traceback. A failed check restores
+    the preceding commit automatically. `scripts/deploy_vps.sh --rollback` restores the recorded
+    previous release. Use `bash scripts/deploy_vps.sh --rollback` for a deliberate rollback.
+    `.env`, credentials, and persistent data are never replaced by deployment.
 
 30. Headless deployments disable display-dependent `vision_ops` at load time through
     `DISABLED_SKILL_MODULES`; `image_file_ops` remains available for sandboxed uploads,
     and runtime denial lists remain a separate control.
 
 31. Regression lives in `backtest/run_all.py` and maintained `backtest/test_*.py`
-    modules. Live smokes use isolated temporary state and clean up after themselves.
+    modules. Run `python backtest/run_all.py --tier unit` before deploy; it is offline and
+    fail-closed for nonzero exits or missing test-result evidence. `--tier smoke` runs live,
+    non-exploratory suites. Live smokes use isolated temporary state and clean up after themselves.
 
 32. Windows PowerShell is placed in UTF-8 mode before piping Vietnamese source or
     subjects to Python. If `?` reaches the tool log, corruption occurred before Ciel.

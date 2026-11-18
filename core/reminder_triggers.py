@@ -29,6 +29,12 @@ def make_due_reminder_check(store: PlannerStore, *, timezone_name: str):
         if not due:
             return None
         reminder = due[0]
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": "✅ Xong", "callback_data": f"rmd:done:{reminder['id']}"},
+                {"text": "⏰ Hoãn 15p", "callback_data": f"rmd:snooze:{reminder['id']}:15"},
+            ]]
+        }
         return Notification(
             key=f"reminder:{reminder['id']}",
             title="Nhắc việc",
@@ -37,6 +43,7 @@ def make_due_reminder_check(store: PlannerStore, *, timezone_name: str):
             urgency=NOTIFY,
             trigger="reminder_due",
             created_at=now,
+            metadata={"reply_markup": reply_markup, "reminder_id": reminder["id"]},
         )
     return check
 

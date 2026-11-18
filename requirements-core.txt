@@ -1,0 +1,38 @@
+# Goi chay tren VPS (Trade_bot), ghim theo venv /srv/ciel/.venv ngay 2026-11-18.
+# torch: ban CPU (xem requirements.lock).
+--extra-index-url https://download.pytorch.org/whl/cpu
+beautifulsoup4==4.15.0
+chromadb==1.5.9
+colorama==0.4.6
+ddgs==9.16.1
+edge-tts==7.3.1
+fastapi==0.163.1
+google-api-python-client==2.202.0
+google-auth-httplib2==0.4.4
+google-auth-oauthlib==1.5.0
+google-genai==3.4.0
+httpx==0.28.1
+langchain==1.5.0
+langchain-community==0.4.2
+langchain-core==1.8.1
+langchain-google-community==5.1.1
+langchain-google-genai==4.5.0
+langchain-ollama==1.1.0
+langchain-openai==1.8.0
+langgraph==1.2.22
+numpy==2.2.6
+pandas==3.1.1
+pandas-ta==0.4.71b0
+pillow==13.0.0
+psutil==7.2.2
+pypdf==7.1.0
+python-docx==1.2.0
+python-dotenv==1.2.4
+requests==2.34.2
+schedule==1.2.2
+sentence-transformers==6.3.0
+tenacity==9.1.4
+tiktoken==0.14.0
+uvicorn==0.54.0
+websockets==17.4
+SpeechRecognition==3.17.0  # tin nhan thoai Telegram (Google STT, can ffmpeg he thong)

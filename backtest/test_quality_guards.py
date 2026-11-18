@@ -216,7 +216,7 @@ def test_shell_allowlist_matches_host_os():
         v = os_ops._validate_shell_command
         check("linux: which/cat/ls/git are allowed",
               all(v(c) is None for c in ("which git", "cat /repo/README.md", "ls -la", "git -C /repo log --oneline -10")))
-        check("linux: a pipe between allowed commands is fine", v("git log --oneline | head -5") is None)
+        check("linux: pipes are rejected (no shell since security wave 1)", v("git log --oneline | head -5")[0] == "UNSAFE_OPERATOR")
         check("linux: windows-only commands are not offered",
               v("where git") and v("where git")[0] == "NOT_ALLOWLISTED")
         check("linux: package installs stay blocked",

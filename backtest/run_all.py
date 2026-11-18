@@ -5,7 +5,8 @@ LLM suites). Writes a single summary under backtest/logs/run_all_*.txt.
 
 Usage (from project root):
     python -m backtest.run_all
-    python -m backtest.run_all --unit-only
+    python -m backtest.run_all --tier unit
+    python -m backtest.run_all --unit-only  # legacy alias
     python -m backtest.run_all --live-only
     python -m backtest.run_all --skip-exploratory   # skip live multi-turn sim
 
@@ -191,6 +192,36 @@ SUITES: list[Suite] = [
         "API access controls, per-connection approvals, one turn at a time, Telegram in-process",
     ),
     Suite(
+        "security_wave1",
+        "backtest.test_security_wave1",
+        "unit",
+        "Wave-1 shell, sender binding, API bind, and secret-redaction regressions",
+    ),
+    Suite(
+        "rag_warmup",
+        "backtest.test_rag_warmup",
+        "unit",
+        "Legacy RAG initialization and background warmup concurrency (0 network)",
+    ),
+    Suite(
+        "prompt_telemetry",
+        "backtest.test_prompt_telemetry",
+        "unit",
+        "Prompt-block telemetry and cached-token extraction (0 LLM)",
+    ),
+    Suite(
+        "small_talk_lean_prompt",
+        "backtest.test_small_talk_lean_prompt",
+        "unit",
+        "Fast small-talk lean prompt behavior (0 LLM)",
+    ),
+    Suite(
+        "telegram_quick_commands",
+        "backtest.test_telegram_quick_commands",
+        "unit",
+        "Telegram /today /reminders /market, reminder buttons, voice notes (0 network)",
+    ),
+    Suite(
         "integration",
         "backtest.test_integration",
         "live",
@@ -239,6 +270,23 @@ def _parse_pass_total(text: str, suite: Suite) -> tuple[int | None, int | None]:
     if pass_n or fail_n:
         return pass_n, pass_n + fail_n
     return None, None
+
+
+def _has_success_evidence(text: str, passed: int | None, total: int | None) -> bool:
+    """Fail closed when a test process exits cleanly without reporting a result."""
+    if passed is not None and total is not None:
+        return total > 0 and passed >= total
+    # unittest's standard runner prints ``OK`` rather than a numeric summary;
+    # explicitly reject its otherwise-green zero-test output.
+    ran = re.search(r"^Ran\s+(\d+)\s+tests?\b", text, re.MULTILINE)
+    if ran and int(ran.group(1)) == 0:
+        return False
+    if re.search(r"^OK(?:\s|$)", text, re.MULTILINE):
+        return True
+    # Plain-print suites: at least one PASS line and no FAIL line at all.
+    has_pass = re.search(r"^\s*(?:\[PASS\]|PASS\b)|:\s*PASS\s*$", text, re.MULTILINE)
+    has_fail = re.search(r"^\s*(?:\[FAIL\]|FAIL\b)|:\s*FAIL\s*$", text, re.MULTILINE)
+    return bool(has_pass) and not has_fail
 
 
 def _run_suite(suite: Suite, timeout: int) -> dict:
@@ -298,14 +346,16 @@ def _run_suite(suite: Suite, timeout: int) -> dict:
             ok = False
             status = "FAIL"
         # Prefer parsed result when available; else exit code.
-        elif passed is not None and total is not None:
-            ok = passed >= total and total > 0
+        elif _has_success_evidence(out, passed, total):
+            ok = True
             # integration treats TRANSIENT as soft-pass in its own summary;
             # if pattern matched Total: x/y we trust that.
             status = "PASS" if ok else "FAIL"
         else:
-            ok = True
-            status = "PASS" if ok else "FAIL"
+            # A zero exit alone is insufficient: an accidentally empty test file,
+            # swallowed exception, or removed test main must fail the deploy gate.
+            ok = False
+            status = "FAIL"
         return {
             "name": suite.name,
             "tier": suite.tier,
@@ -355,6 +405,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unit-only", action="store_true", help="Only 0-LLM / stub suites")
     parser.add_argument("--live-only", action="store_true", help="Only live LLM suites")
     parser.add_argument(
+        "--tier", choices=("unit", "smoke", "live", "exploratory"),
+        help="Run one tier; smoke is the live, non-exploratory tier",
+    )
+    parser.add_argument(
         "--skip-exploratory",
         action="store_true",
         help="Skip expensive multi-turn live_conversation_test",
@@ -380,7 +434,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     suites = list(SUITES)
-    if args.unit_only:
+    if args.tier and (args.unit_only or args.live_only):
+        parser.error("--tier cannot be combined with --unit-only or --live-only")
+    if args.tier == "unit":
+        suites = [s for s in suites if s.tier == "unit"]
+    elif args.tier == "smoke":
+        suites = [s for s in suites if s.tier == "live"]
+    elif args.tier in ("live", "exploratory"):
+        suites = [s for s in suites if s.tier == args.tier]
+    elif args.unit_only:
         suites = [s for s in suites if s.tier == "unit"]
     elif args.live_only:
         suites = [s for s in suites if s.tier in ("live", "exploratory")]

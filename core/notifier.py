@@ -71,6 +71,7 @@ class Notification:
     urgency: str = NOTIFY
     trigger: str = ""
     created_at: float = field(default_factory=time.time)
+    metadata: dict = field(default_factory=dict)
 
     def effective_urgency(self) -> str:
         """An actionless message cannot interrupt, whatever the trigger asked for.
@@ -224,7 +225,14 @@ class TelegramChannel(Channel):
 
     def send(self, note: Notification, now: float) -> bool:
         try:
-            return bool(self._resolve()(note.render()))
+            sender = self._resolve()
+            reply_markup = getattr(note, "metadata", {}).get("reply_markup")
+            if reply_markup:
+                try:
+                    return bool(sender(note.render(), reply_markup=reply_markup))
+                except TypeError:
+                    return bool(sender(note.render()))
+            return bool(sender(note.render()))
         except Exception:
             return False
 
@@ -310,6 +318,15 @@ class Notifier:
         today = self._day_of(now)
         if self._day != today:
             self._day, self._count = today, 0
+
+    def reset_cooldown(self, key: str) -> bool:
+        """Clear the cooldown for a specific key so it can notify again immediately."""
+        with self._lock:
+            removed = self._last_sent.pop(key, None) is not None
+            self._pending_ack.pop(key, None)
+            if removed:
+                self._save_locked()
+            return removed
 
     # ------------------------------------------------------------- delivery
     def deliver(self, note: Notification, now: float, cooldown: float = None) -> Outcome:

@@ -22,7 +22,7 @@ You possess tools to message the Master via Telegram.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
-def send_telegram_message(message: str, *, return_detail: bool = False):
+def send_telegram_message(message: str, *, reply_markup: dict = None, return_detail: bool = False):
     """Send plain text via Telegram bot. Returns bool, or (ok, detail) if return_detail."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -54,9 +54,15 @@ def send_telegram_message(message: str, *, return_detail: bool = False):
         except Exception as e:
             return False, f"exception: {redact_secrets(e)}"
 
-    ok, detail = _post({"chat_id": chat_id, "text": text})
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    ok, detail = _post(payload)
     if not ok:
-        ok2, detail2 = _post({"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+        payload_html = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload_html["reply_markup"] = reply_markup
+        ok2, detail2 = _post(payload_html)
         if ok2:
             ok, detail = True, detail2 + " (html parse_mode)"
         else:

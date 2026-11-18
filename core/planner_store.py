@@ -632,6 +632,46 @@ class PlannerStore:
                 raise ValueError(f"reminder #{reminder_id} is {row['status']}")
         return self._row(row)
 
+    def snooze_reminder(
+        self,
+        reminder_id: int,
+        delay_minutes: int = 15,
+        *,
+        now_utc: str | None = None,
+    ) -> dict:
+        """Snooze a reminder by setting a new due_at_utc and resetting status to pending."""
+        reminder_id = int(reminder_id)
+        delay_minutes = int(delay_minutes)
+        if delay_minutes <= 0:
+            raise ValueError("delay_minutes must be positive")
+
+        if now_utc:
+            base_dt = datetime.fromisoformat(str(now_utc).replace("Z", "+00:00"))
+        else:
+            base_dt = datetime.now(timezone.utc)
+        new_due_dt = base_dt + timedelta(minutes=delay_minutes)
+        new_due_utc = new_due_dt.isoformat(timespec="seconds")
+        stamp = _utc_now()
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE reminders
+                   SET due_at_utc = ?, status = 'pending', notified_at = NULL, updated_at = ?
+                   WHERE id = ? AND status != 'cancelled'""",
+                (new_due_utc, stamp, reminder_id),
+            )
+            if cur.rowcount != 1:
+                current = conn.execute(
+                    "SELECT status FROM reminders WHERE id = ?", (reminder_id,)
+                ).fetchone()
+                if current is None:
+                    raise ValueError(f"reminder #{reminder_id} was not found")
+                raise ValueError(f"reminder #{reminder_id} is already {current['status']}")
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+        return self._row(row)
+
     # ----------------------------------------------------------- native calendar
     def _calendar_event_with_alerts(
         self, conn: sqlite3.Connection, event_id: int

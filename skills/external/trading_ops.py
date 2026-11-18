@@ -1,7 +1,10 @@
 import os
 import requests
 import pandas as pd
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    ta = None
 from langchain_core.tools import StructuredTool
 
 TRADING_SYSTEM_PROMPT = """
@@ -137,6 +140,8 @@ def _to_binance_symbol(symbol: str) -> str:
 
 def fetch_crypto_stats(symbol: str) -> str:
     """Get 24h stats for Crypto only (Binance Free API). Raw function."""
+    if ta is None:
+        return "Error: pandas_ta is not installed."
     try:
         symbol = _to_binance_symbol(symbol)
         data = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=10).json()
