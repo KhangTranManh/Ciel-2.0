@@ -168,6 +168,9 @@ PROACTIVE_CALENDAR_CATCHUP_MINUTES = _calendar_catchup_minutes()
 # action verb/number/path). Saves one provider round trip (~6 s median). Set false to
 # restore routing for every message.
 FAST_SMALL_TALK_ENABLED = os.getenv("FAST_SMALL_TALK_ENABLED", "true").lower() in ("true", "1", "yes")
+# Use a deliberately small Worker prompt for greetings and other conservative
+# fast-path small talk. Set false to retain the full chat prompt for diagnosis.
+FAST_SMALL_TALK_LEAN_PROMPT = os.getenv("FAST_SMALL_TALK_LEAN_PROMPT", "true").lower() in ("true", "1", "yes")
 
 # --- Knowledge index (documents + action history) ------------------------------------
 # Replaces raw-conversation RAG over time. OFF by default: enabling it writes short

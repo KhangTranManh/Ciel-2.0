@@ -187,7 +187,9 @@ def dispatch_decision(self, decision, user_input, recalled):
                     f"claim that isn't given to you here.")
         else:
             task = user_input
-        response = self.execute_chat(task)
+        # Only deterministic fast-preflight small talk may use the lean prompt.
+        # Brain-routed chat keeps its existing prompt byte-for-byte.
+        response = self.execute_chat(task, lean_prompt=bool(decision.get("small_talk")))
         # A chat turn cannot execute tools. Keep the Worker from turning a
         # clarification into a fictional background search before any optional
         # deterministic search fallback is considered below.

@@ -1447,8 +1447,53 @@ class CielCore:
     # silently guess the task, and not to compress it into two words.
     _CHAT_LONG_INPUT_TOKENS = 220
 
-    def execute_chat(self, task: str) -> str:
+    def _small_talk_recent_block(self) -> str:
+        """Return at most three short prior messages for a lean small-talk turn."""
+        try:
+            history = self.chat_history.messages[:-1] if self.chat_history.messages else []
+            lines = []
+            for message in history[-3:]:
+                role = "Master" if message.type == "human" else "Ciel"
+                text = (message.content or "").strip().replace("\n", " ")[:160]
+                lines.append(f"{role}: {text}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _lean_small_talk_prompt_enabled() -> bool:
+        try:
+            from agent_system import config
+            return bool(getattr(config, "FAST_SMALL_TALK_LEAN_PROMPT", True))
+        except Exception:
+            return False
+
+    def execute_chat(self, task: str, *, lean_prompt: bool = False) -> str:
         """Worker generates a natural language response."""
+        if lean_prompt and self._lean_small_talk_prompt_enabled():
+            recent_turns = self._small_talk_recent_block()
+            recent_section = (
+                "[RECENT CONVERSATION — for context only; answer the CURRENT request below]:\n"
+                f"{recent_turns}\n\n"
+            ) if recent_turns else ""
+            prompt = (
+                f"{self.ciel_persona}\n\n"
+                "Respond EXTREMELY concisely. Give the absolute shortest, clearest answer possible. "
+                "No filler, no pleasantries. Address the Master by name where it falls naturally in "
+                "a sentence — it does not belong on the front of every reply, and a one-line answer "
+                "usually needs no address at all.\n\n"
+                "[CHAT EXECUTION BOUNDARY]\n"
+                "This turn was routed as chat: no tool has run, and your response cannot "
+                "start one. Do NOT say or imply that you are running, about to run, or "
+                "waiting on a tool/search. Do not promise results later.\n\n"
+                f"{recent_section}"
+                f"User's request: {task}"
+            )
+            self._log_thought("WORKER", "chat_task lean=1", prompt)
+            response = self.worker.generate(prompt)
+            self._log_thought("WORKER", "chat_response", response)
+            return response
+
         session_history_reference = self._references_session_history(task)
         capabilities_context = ""
         task_lower = task.lower()

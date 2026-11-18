@@ -94,9 +94,9 @@ def fast_preflight(user_input: str, *, has_pending: bool = False,
     if has_pending or has_open_thread or unattended:
         return None
     if _GREETING.fullmatch(_fold(user_input).strip()):
-        return {"action": "chat", "lane": Lane.FAST.value}
+        return {"action": "chat", "lane": Lane.FAST.value, "small_talk": True}
     if _small_talk_enabled() and looks_like_small_talk(user_input, last_assistant):
-        return {"action": "chat", "lane": Lane.FAST.value}
+        return {"action": "chat", "lane": Lane.FAST.value, "small_talk": True}
     return None
 
 
