@@ -33,10 +33,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class TelegramInterface:
-    def __init__(self, ciel_agent, bot_token: str = None, chat_id: str = None):
+    def __init__(self, ciel_agent, bot_token: str = None, chat_id: str = None, user_id: str = None):
         self.ciel = ciel_agent
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = str(chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+        self.user_id = str(user_id or os.getenv("TELEGRAM_USER_ID", "")).strip()
         if not self.bot_token or not self.chat_id:
             raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env")
 
@@ -45,6 +46,11 @@ class TelegramInterface:
         self._pending_confirm = {}   # token -> (threading.Event, result dict)
         self._confirm_lock = threading.Lock()
         self._stop = threading.Event()
+
+    def _is_authorized_user(self, sender: dict | None) -> bool:
+        if not self.user_id:
+            return True
+        return str((sender or {}).get("id", "")) == self.user_id
 
     # ---------- low-level Bot API ----------
     def _call(self, method: str, **params) -> dict:
@@ -146,6 +152,9 @@ class TelegramInterface:
         if "callback_query" in update:
             cq = update["callback_query"]
             self._answer_callback(cq["id"])
+            if (not self.user_id and self.chat_id.startswith("-")) or not self._is_authorized_user(cq.get("from")):
+                print(Fore.YELLOW + "[Telegram] Ignored confirmation from unauthorized user" + Style.RESET_ALL)
+                return
             data = cq.get("data", "")
             if ":" not in data:
                 return
@@ -167,6 +176,9 @@ class TelegramInterface:
             # bot can run real tools (shell, email, file writes).
             print(Fore.YELLOW + f"[Telegram] Ignored message from unauthorized "
                   f"chat_id={sender_chat_id}" + Style.RESET_ALL)
+            return
+        if not self._is_authorized_user(msg.get("from")):
+            print(Fore.YELLOW + "[Telegram] Ignored message from unauthorized user" + Style.RESET_ALL)
             return
 
         # Telegram puts a photo/document's accompanying text in `caption`, not

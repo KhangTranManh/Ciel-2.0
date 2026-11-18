@@ -133,6 +133,16 @@ class PermissionPolicy:
         if name in self._auto:
             return Decision.AUTO, "read-only"
 
+        # The shell entry point contains a deterministic allowlist of inspection
+        # commands.  Keep those non-interactive while code execution, installs,
+        # network fetches and non-read-only Git calls use the normal confirmation
+        # callback.  Invalid arguments fail closed as ASK.
+        if name == "execute_shell_command":
+            from skills.internal.os_ops import shell_command_requires_approval
+            command = (tool_args or {}).get("command", "") if isinstance(tool_args, dict) else ""
+            if not shell_command_requires_approval(command):
+                return Decision.AUTO, "read-only shell command"
+
         if name not in self._risky:
             return Decision.AUTO, "not classified as risky"
 

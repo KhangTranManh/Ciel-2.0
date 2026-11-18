@@ -31,6 +31,7 @@ app = FastAPI(title="Ciel API", description="Ciel 2.0 WebSocket Backend")
 # commands and send email — so when CIEL_API_TOKEN is set, every route except
 # /health requires it. Unset keeps the old open behaviour for localhost-only use.
 API_TOKEN = os.getenv("CIEL_API_TOKEN", "").strip()
+API_HOST = os.getenv("CIEL_API_HOST", "127.0.0.1").strip() or "127.0.0.1"
 # Raw thoughts.log lines carry full prompts and email bodies; no shipped client
 # renders them, so they are only streamed when explicitly enabled.
 STREAM_THOUGHTS = os.getenv("CIEL_API_STREAM_THOUGHTS", "false").strip().lower() in ("1", "true", "yes")
@@ -39,6 +40,14 @@ STREAM_THOUGHTS = os.getenv("CIEL_API_STREAM_THOUGHTS", "false").strip().lower()
 # must not start a second poller on the same bot.
 RUN_TELEGRAM = os.getenv("CIEL_API_TELEGRAM", "false").strip().lower() in ("1", "true", "yes")
 WS_UNAUTHORIZED = 4401
+
+
+def validate_bind_config(host: str = None, token: str = None) -> None:
+    """Reject an unauthenticated non-loopback tool API."""
+    host = (host if host is not None else API_HOST).strip().lower()
+    token = API_TOKEN if token is None else token.strip()
+    if host not in {"127.0.0.1", "::1", "localhost"} and not token:
+        raise RuntimeError("CIEL_API_TOKEN is required when CIEL_API_HOST is not loopback")
 
 
 def _bearer(value: str | None) -> str | None:
@@ -429,5 +438,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     port = int(os.getenv("CIEL_PORT", "8000"))
-    print(f"[API] Starting Ciel on http://localhost:{port} (WebSocket /ws)")
-    uvicorn.run("main_api:app", host="0.0.0.0", port=port, reload=False)
+    validate_bind_config()
+    print(f"[API] Starting Ciel on http://{API_HOST}:{port} (WebSocket /ws)")
+    uvicorn.run("main_api:app", host=API_HOST, port=port, reload=False)

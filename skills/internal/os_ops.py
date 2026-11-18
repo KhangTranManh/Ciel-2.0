@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import re
+import shlex
 from datetime import datetime
 from pathlib import Path
 from langchain_core.tools import StructuredTool
@@ -36,7 +37,7 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 _WINDOWS_COMMANDS = {
     # Basic info
-    "echo", "dir", "type", "whoami", "hostname", "ver", "cls", "where",
+    "whoami", "hostname", "where",
     # Networking
     "ipconfig", "ping", "systeminfo", "tasklist", "netstat", "nslookup",
     "tracert", "arp", "route", "curl",
@@ -45,11 +46,9 @@ _WINDOWS_COMMANDS = {
     # Developer tools
     "python", "pip", "git", "node", "npm", "npx",
     # System info
-    "wmic", "set", "path", "date", "time",
-    # Navigation
-    "cd", "pushd", "popd",
+    "wmic", "date", "time",
     # Process management
-    "start", "taskkill",
+    "taskkill",
 }
 
 # The Docker deployment runs Linux; offering the Windows list there made the
@@ -82,11 +81,144 @@ BLOCKED_COMMAND_PATTERNS = [
     r"\bnet\s+stop\b",
 ]
 
-# Block dangerous operators but ALLOW piping (|) between safe commands
-BLOCKED_META_CHARS = ["&&", "||", ">", ">>", "<", ";", "`"]
+# The executor accepts one allowlisted process only; shell syntax is rejected.
+BLOCKED_META_CHARS = ["&&", "||", "|", ">", ">>", "<", ";", "`", "$("]
+
+# Interpreters, installers and anything that talks to an arbitrary host (ping and
+# nslookup can leak data through the hostname they resolve) need confirmation.
+_APPROVAL_COMMANDS = frozenset({"python", "python3", "pip", "node", "npm", "npx", "curl", "ping", "nslookup", "tracert"})
+# File names that hold credentials. Reading them, even inside the repo, asks first.
+_SECRET_NAME_PATTERNS = (
+    ".env", ".env.*", "*.env", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+    "*credential*", "*token*", "*secret*", "*password*", ".netrc", ".git-credentials", "*.sqlite", "*.sqlite3", "*.db",
+)
+_SECRET_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".kube", ".docker"})
+_APPROVAL_WINDOWS_COMMANDS = frozenset({"taskkill", "route"})
+_FIND_WRITE_OR_EXECUTE = frozenset({"-delete", "-fprint", "-fprint0", "-fprintf", "-fls"})
+_GIT_DANGEROUS_OPTIONS = (
+    "--output", "--ext-diff", "--no-ext-diff", "--textconv", "--exec", "--upload-pack",
+    "--receive-pack", "--config", "core.sshcommand",
+)
+
+
+def _command_tokens(command: str) -> list[str]:
+    """Parse exactly one command for subprocess(shell=False)."""
+    return shlex.split(command, posix=not IS_WINDOWS)
+
+
+def _path_candidates(args: list[str]) -> list[str]:
+    """Every argument that could name a file: positional args and --opt=value."""
+    out = []
+    for arg in args:
+        if arg.startswith("-"):
+            if "=" in arg:
+                out.append(arg.split("=", 1)[1])
+            continue
+        out.append(arg)
+    return out
+
+
+def _touches_outside_or_secret(args: list[str]) -> bool:
+    """True if any argument resolves outside BASE_DIR or names a credential file.
+
+    The shell tool runs with cwd=BASE_DIR, so relative paths resolve there.  A
+    non-path argument (a grep pattern, `aux`) resolves inside the repo and stays
+    AUTO; unparseable values fail closed.
+    """
+    import fnmatch
+    root = BASE_DIR.resolve()
+    for value in _path_candidates(args):
+        if not value:
+            continue
+        try:
+            raw = Path(os.path.expanduser(value))
+            resolved = (raw if raw.is_absolute() else root / raw).resolve()
+            rel = resolved.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            return True
+        parts = [part.lower() for part in rel.parts] + [Path(value).name.lower()]
+        if any(part in _SECRET_DIR_NAMES for part in parts):
+            return True
+        if any(fnmatch.fnmatch(part, pattern) for part in parts for pattern in _SECRET_NAME_PATTERNS):
+            return True
+    return False
+
+
+def shell_command_requires_approval(command: str) -> bool:
+    """Return True unless this is a narrowly-defined inspection command.
+
+    This is deliberately an allowlist rather than an attempt to recognize every
+    mutating option supported by Git and POSIX tools.  Unknown syntax keeps the
+    existing confirmation gate, rather than becoming an accidental bypass.
+    """
+    try:
+        tokens = _command_tokens(command)
+    except ValueError:
+        return True
+    if not tokens:
+        return True
+    base = Path(tokens[0]).name.lower()
+    if base in _APPROVAL_COMMANDS or base in _APPROVAL_WINDOWS_COMMANDS:
+        return True
+    args = tokens[1:]
+    if base != "git" and _touches_outside_or_secret(args):
+        return True
+    if base == "find":
+        return any(arg in _FIND_WRITE_OR_EXECUTE or arg.startswith(("-exec", "-ok")) for arg in args)
+    if base == "sort":
+        return any(arg == "-o" or arg.startswith("--output=") for arg in args)
+    if base == "tree":
+        return any(arg == "-o" or arg.startswith("--output=") for arg in args)
+    if base != "git":
+        return False
+    if any(arg == "-c" or arg.startswith("-c") or arg.startswith("--config=")
+           or any(marker in arg.lower() for marker in _GIT_DANGEROUS_OPTIONS)
+           for arg in args):
+        return True
+    # Git's global -C can change the target repository.  A repository within the
+    # Ciel workspace remains an inspection target; all other destinations ask.
+    filtered = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "-C":
+            if index + 1 >= len(args):
+                return True
+            try:
+                Path(args[index + 1]).resolve().relative_to(BASE_DIR.resolve())
+            except ValueError:
+                return True
+            index += 2
+            continue
+        filtered.append(arg)
+        index += 1
+    if filtered == ["--version"]:
+        return False
+    if not filtered:
+        return True
+    subcommand, rest = filtered[0].lower(), filtered[1:]
+    # Each accepted form below has no write mode and cannot invoke a helper.
+    if subcommand in {"version", "rev-parse", "ls-files", "ls-tree"}:
+        return False
+    if subcommand == "status":
+        return any(arg not in {"--short", "--branch", "--porcelain", "-s", "-b"} for arg in rest)
+    if subcommand == "log":
+        return any(arg not in {"--oneline", "--decorate", "--all", "--graph", "--stat", "--name-only"}
+                   for arg in rest)
+    if subcommand == "diff":
+        return any(arg not in {"--stat", "--name-only", "--name-status", "--cached", "--staged"}
+                   for arg in rest)
+    if subcommand == "show":
+        return any(arg not in {"--stat", "--name-only", "--name-status"} for arg in rest)
+    if subcommand == "branch":
+        return any(arg not in {"-a", "-r", "-v", "-vv", "--list", "--show-current"} for arg in rest)
+    if subcommand == "remote":
+        return not (rest in ([], ["-v"]) or (len(rest) == 2 and rest[0] in {"show", "get-url"}))
+    return True
 
 
 from skills._result import make_result as _make_result
+from core.redact import redact_secrets
 
 
 def _extract_base_command(command: str) -> str:
@@ -101,6 +233,14 @@ def _validate_shell_command(command: str):
         return "INVALID_COMMAND", "Lệnh shell không hợp lệ hoặc đang trống."
 
     normalized = command.strip().lower()
+    try:
+        tokens = _command_tokens(command)
+    except ValueError as exc:
+        return "INVALID_COMMAND", f"Invalid shell command: {exc}"
+    if not tokens:
+        return "INVALID_COMMAND", "Shell command is empty."
+    if Path(tokens[0]).name.lower() not in SAFE_COMMANDS:
+        return "NOT_ALLOWLISTED", f"Command '{tokens[0]}' is not allowlisted."
 
     # Block dangerous meta-characters (but NOT pipe |)
     if any(token in normalized for token in BLOCKED_META_CHARS):
@@ -137,7 +277,13 @@ def get_os_tools() -> dict:
                     code, msg = validation
                     return _make_result(False, code=code, message=msg, tool_name="execute_shell_command")
                 
-                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+                result = subprocess.run(_command_tokens(command), shell=False, capture_output=True,
+                                        text=True, timeout=15, cwd=str(BASE_DIR))
+                # Recursive reads (grep -r .) can still touch credential files the
+                # path check cannot see; mask known secret values before the
+                # output reaches the model, logs or Telegram.
+                result.stdout = redact_secrets(result.stdout)
+                result.stderr = redact_secrets(result.stderr)
                 if result.returncode == 0:
                     return _make_result(
                         True,
