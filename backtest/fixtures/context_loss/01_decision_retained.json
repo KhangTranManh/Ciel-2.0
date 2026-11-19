@@ -1,0 +1,8 @@
+{
+  "id": "decision_retained_after_long_chat",
+  "padding_turns": 43,
+  "dialogue": ["Tôi chốt dùng gói Basic, ngân sách 299.000 VND mỗi tháng.", "Đã ghi nhận lựa chọn gói Basic."],
+  "summary": {"decided": ["Dùng gói Basic, ngân sách 299.000 VND/tháng"], "constraints": [], "working": [], "open": [], "facts": ["Ngân sách: 299.000 VND/tháng"]},
+  "contains": ["gói Basic", "299.000 VND"],
+  "baseline_known_fail": true
+}

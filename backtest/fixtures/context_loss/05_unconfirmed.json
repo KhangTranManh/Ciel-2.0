@@ -1,0 +1,8 @@
+{
+  "id": "hypothesis_is_not_fact",
+  "padding_turns": 15,
+  "dialogue": ["Có lẽ ngân sách khoảng 5 triệu, tôi chưa xác nhận.", "Tôi sẽ coi đây là ước tính chưa xác nhận."],
+  "summary": {"decided": [], "constraints": [], "working": [], "open": ["Cần xác nhận ngân sách"], "facts": ["Ngân sách khoảng 5 triệu (chưa xác nhận)"]},
+  "contains": ["(chưa xác nhận)"],
+  "baseline_known_fail": false
+}

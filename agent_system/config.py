@@ -283,7 +283,7 @@ CONTEXT_RECENT_TURNS_BUDGET = int(os.getenv("CONTEXT_RECENT_TURNS_BUDGET", "700"
 # ordinary discussion without relying on RAG's semantic lookup.
 SESSION_COMPACT_ENABLED = os.getenv("SESSION_COMPACT_ENABLED", "true").lower() in ("true", "1", "yes")
 SESSION_COMPACT_REFRESH_TURNS = int(os.getenv("SESSION_COMPACT_REFRESH_TURNS", "4"))
-SESSION_COMPACT_MAX_CHARS = int(os.getenv("SESSION_COMPACT_MAX_CHARS", "480"))
+SESSION_COMPACT_MAX_CHARS = int(os.getenv("SESSION_COMPACT_MAX_CHARS", "1200"))
 
 # Compact session subject passed to Brain before routing. This is structured state
 # (topic/entities/last action), not raw history and not durable memory.

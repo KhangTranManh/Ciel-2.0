@@ -1,0 +1,9 @@
+{
+  "id": "explicit_topic_switch_does_not_attach",
+  "padding_turns": 15,
+  "dialogue": ["Tìm thời tiết cho tôi.", "Bạn muốn xem thời tiết ở đâu?"],
+  "summary": {"decided": [], "constraints": [], "working": [], "open": [], "facts": ["Không có dữ kiện lâu dài"]},
+  "contains": [],
+  "pending": {"response": "Bạn muốn xem thời tiết ở đâu?", "answer": "Tìm giá vàng hôm nay", "kind": "location", "must_match": false},
+  "baseline_known_fail": false
+}

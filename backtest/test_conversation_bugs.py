@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
+# These cases stub worker.generate; keep the background session-compact refresh out of it.
+os.environ["SESSION_COMPACT_ENABLED"] = "false"
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

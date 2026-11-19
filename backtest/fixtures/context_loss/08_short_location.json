@@ -1,0 +1,9 @@
+{
+  "id": "short_location_answer",
+  "padding_turns": 15,
+  "dialogue": ["Tìm thời tiết cho tôi.", "Bạn muốn xem thời tiết ở đâu?"],
+  "summary": {"decided": [], "constraints": [], "working": ["Tra cứu thời tiết"], "open": ["Chờ địa điểm"], "facts": []},
+  "contains": ["Chờ địa điểm"],
+  "pending": {"response": "Bạn muốn xem thời tiết ở đâu?", "answer": "Hà Nội", "kind": "location", "must_match": true},
+  "baseline_known_fail": true
+}

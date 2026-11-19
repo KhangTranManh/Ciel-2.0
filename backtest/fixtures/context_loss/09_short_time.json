@@ -1,0 +1,9 @@
+{
+  "id": "short_time_answer",
+  "padding_turns": 15,
+  "dialogue": ["Nhắc tôi gọi khách hàng.", "Bạn muốn nhắc lúc mấy giờ?"],
+  "summary": {"decided": [], "constraints": [], "working": ["Chuẩn bị lời nhắc gọi khách hàng"], "open": ["Chờ giờ nhắc"], "facts": []},
+  "contains": ["Chờ giờ nhắc"],
+  "pending": {"response": "Bạn muốn nhắc lúc mấy giờ?", "answer": "9 giờ", "kind": "time", "must_match": true},
+  "baseline_known_fail": true
+}

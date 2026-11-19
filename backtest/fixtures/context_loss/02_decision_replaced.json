@@ -1,0 +1,9 @@
+{
+  "id": "changed_decision_keeps_latest_only",
+  "padding_turns": 15,
+  "dialogue": ["Ban đầu dùng PostgreSQL, nhưng hủy quyết định đó và đổi sang SQLite.", "Đã đổi sang SQLite."],
+  "summary": {"decided": ["Dùng SQLite thay PostgreSQL"], "constraints": [], "working": [], "open": [], "facts": []},
+  "contains": ["SQLite"],
+  "not_contains": ["Dùng PostgreSQL"],
+  "baseline_known_fail": true
+}

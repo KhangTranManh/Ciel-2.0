@@ -34,6 +34,7 @@ from .permissions import PermissionPolicy, Decision, DeferredStore
 from .outbound import OUTBOUND_KEYS, delivery_key, plaintext_to_html, recipients_lowered
 from .plan_validation import PlanValidation, validate_plan
 from .active_subject import ActiveSubject
+from .pending_slot import PendingSlot
 from .session_compact import SessionCompact
 from . import rag_manager
 
@@ -262,6 +263,13 @@ class CielCore:
             ttl_seconds=ACTIVE_SUBJECT_TTL_SECONDS,
             max_idle_turns=ACTIVE_SUBJECT_MAX_IDLE_TURNS,
             max_entities=ACTIVE_SUBJECT_MAX_ENTITIES,
+        )
+        # RAM-only: the one clarifying question Ciel just asked, so a short reply
+        # ("Hà Nội", "2", "9h") is joined to it. Never carries consent, paths or recipients.
+        self.pending_slot = PendingSlot(
+            enabled=os.getenv("PENDING_SLOT_ENABLED", "true").strip().lower() not in ("0", "false", "no"),
+            ttl_seconds=int(os.getenv("PENDING_SLOT_TTL_SECONDS", "600")),
+            max_turns=int(os.getenv("PENDING_SLOT_MAX_TURNS", "2")),
         )
         # TIER 7 — the Master's profile, on the PUSH side: unlike facts.json (pull-only,
         # holds credentials, never injected) this small block is added to the prompts
@@ -731,6 +739,7 @@ class CielCore:
             # 2. Clear memory and save
             self.chat_history.messages = []
             self.session_compact.clear()
+            self.pending_slot.clear()
             self._save_chat_memory()
 
             # 3. Notify

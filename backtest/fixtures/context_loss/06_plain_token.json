@@ -1,0 +1,8 @@
+{
+  "id": "ordinary_token_word_kept",
+  "padding_turns": 16,
+  "dialogue": ["Hãy tối ưu token DeepSeek, không bàn về khóa bí mật.", "Tôi sẽ phân tích mức dùng token DeepSeek."],
+  "summary": {"decided": [], "constraints": [], "working": ["Tối ưu token DeepSeek"], "open": [], "facts": []},
+  "contains": ["token DeepSeek"],
+  "baseline_known_fail": true
+}

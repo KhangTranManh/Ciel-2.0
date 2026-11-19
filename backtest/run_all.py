@@ -72,6 +72,24 @@ SUITES: list[Suite] = [
         "Persisted Worker-side conversation compact and redaction (0 LLM)",
     ),
     Suite(
+        "context_loss",
+        "backtest.test_context_loss",
+        "unit",
+        "Vietnamese context-retention scorecard and pending short-answer handoff (0 LLM)",
+    ),
+    Suite(
+        "pending_slot",
+        "backtest.test_pending_slot",
+        "unit",
+        "RAM-only clarifying-question slot for short replies (0 LLM)",
+    ),
+    Suite(
+        "context_replay",
+        "backtest.test_context_replay",
+        "unit",
+        "Turn-by-turn context-loss replay with a grounded fake summarizer (0 LLM)",
+    ),
+    Suite(
         "user_model",
         "backtest.test_user_model",
         "unit",
@@ -245,12 +263,6 @@ SUITES: list[Suite] = [
         "live",
         "RAG amnesia stress after short-term overflow (live)",
     ),
-    Suite(
-        "live_conversation",
-        "backtest.live_conversation_test",
-        "exploratory",
-        "Adaptive multi-turn User-Sim vs real Ciel (expensive)",
-    ),
 ]
 
 
@@ -411,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-exploratory",
         action="store_true",
-        help="Skip expensive multi-turn live_conversation_test",
+        help="Skip exploratory suites (none registered; kept for old commands)",
     )
     parser.add_argument(
         "--unit-timeout",

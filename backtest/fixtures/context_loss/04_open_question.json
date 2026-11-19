@@ -1,0 +1,8 @@
+{
+  "id": "open_question_survives",
+  "padding_turns": 18,
+  "dialogue": ["So sánh hai gói trước, rồi hỏi lại tôi chọn gói nào.", "Bạn muốn chọn gói Basic hay Pro?"],
+  "summary": {"decided": [], "constraints": [], "working": ["So sánh gói Basic và Pro"], "open": ["Chờ Master chọn Basic hay Pro"], "facts": []},
+  "contains": ["Chờ Master chọn Basic hay Pro"],
+  "baseline_known_fail": true
+}

@@ -273,6 +273,15 @@ def process_turn(self, user_input: str) -> str:
                 f"{type(subject_err).__name__}: {str(subject_err)[:160]}",
             )
 
+        try:
+            if getattr(self, "pending_slot", None) is not None:
+                self.pending_slot.observe_response(user_input, response, action)
+        except Exception as slot_err:
+            self._log_thought(
+                "CONTEXT", "pending_slot_observe_failed",
+                f"{type(slot_err).__name__}: {str(slot_err)[:120]}",
+            )
+
         # TIER 2: close the record. A staged confirmation is NOT completion — the
         # job is waiting on the Master, so it stays visible as `blocked` and turns
         # up in describe_unfinished() if the session ends here.

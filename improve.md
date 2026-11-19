@@ -863,7 +863,7 @@ for ownership, rollout, boundaries and commands.
 | hard_special | live | `backtest.test_hard_special` |
 | brain_worker | live | `backtest.test_brain_worker` |
 | rag_memory | live | `backtest.test_rag_memory` |
-| live_conversation | exploratory | `backtest.live_conversation_test` |
+| ~~live_conversation~~ | removed 2026-11-18 (never run) | — |
 
 Removed as non-regression: sample generators (`generate_test_samples` / `run_test_samples`).
 

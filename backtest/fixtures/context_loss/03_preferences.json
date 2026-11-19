@@ -1,0 +1,8 @@
+{
+  "id": "preference_survives_noise",
+  "padding_turns": 20,
+  "dialogue": ["Từ giờ trả lời ngắn, giá tiền luôn dùng VND.", "Đã lưu sở thích trả lời ngắn và dùng VND."],
+  "summary": {"decided": [], "constraints": ["Trả lời ngắn", "Đơn vị tiền: VND"], "working": [], "open": [], "facts": []},
+  "contains": ["Trả lời ngắn", "VND"],
+  "baseline_known_fail": true
+}

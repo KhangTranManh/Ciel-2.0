@@ -1,0 +1,9 @@
+{
+  "id": "short_numeric_choice",
+  "padding_turns": 15,
+  "dialogue": ["So sánh hai gói.", "1. Basic\n2. Pro\nBạn chọn số mấy?"],
+  "summary": {"decided": [], "constraints": [], "working": ["So sánh hai gói"], "open": ["Chờ chọn phương án"], "facts": []},
+  "contains": ["Chờ chọn phương án"],
+  "pending": {"response": "1. Basic\n2. Pro\nBạn chọn số mấy?", "answer": "2", "kind": "choice", "must_match": true},
+  "baseline_known_fail": true
+}

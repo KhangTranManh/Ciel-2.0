@@ -1,0 +1,9 @@
+{
+  "id": "act_ok_is_not_consent",
+  "padding_turns": 15,
+  "dialogue": ["Gửi email báo giá cho khách.", "Bạn muốn gửi email này cho ai?"],
+  "summary": {"decided": [], "constraints": [], "working": ["Soạn email báo giá"], "open": ["Chờ thông tin người nhận"], "facts": []},
+  "contains": ["Chờ thông tin người nhận"],
+  "pending": {"response": "Bạn muốn gửi email này cho ai?", "answer": "ok", "kind": "name", "must_match": false},
+  "baseline_known_fail": false
+}
